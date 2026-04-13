@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>JARVIS — Token Counter Proposals</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a12; color: #4af; font-family: 'JetBrains Mono', 'Courier New', monospace; padding: 30px; }
+  h1 { font-family: 'Orbitron', monospace; font-size: 14px; letter-spacing: 4px; color: #5a6a7a; margin-bottom: 30px; }
+  h2 { font-family: 'Orbitron', monospace; font-size: 10px; letter-spacing: 2px; color: #5a6a7a; margin: 20px 0 10px; }
+  .proposals { display: flex; gap: 30px; flex-wrap: wrap; }
+  .proposal { border: 1px solid #2a3a4a; border-radius: 4px; background: rgba(10,10,15,0.85); padding: 16px; width: 280px; }
+  .proposal-title { font-family: 'Orbitron', monospace; font-size: 8px; letter-spacing: 2px; color: #5a6a7a; text-transform: uppercase; margin-bottom: 12px; border-bottom: 1px solid #2a3a4a; padding-bottom: 6px; }
+</style>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<h1>TOKEN COUNTER — PROPOSALS</h1>
+
+<div class="proposals">
+
+<!-- Proposal 1: Arc Gauges -->
+<div class="proposal">
+  <div class="proposal-title">1. ARC GAUGES</div>
+  <canvas id="arc1" width="250" height="180"></canvas>
+  <div style="font-size: 9px; color: #5a6a7a; margin-top: 8px;">
+    Semicircular gauges for input/output tokens. Color changes as usage grows. Glow on active.
+  </div>
+</div>
+
+<!-- Proposal 2: Horizontal Bars with Segments -->
+<div class="proposal">
+  <div class="proposal-title">2. SEGMENTED BARS</div>
+  <canvas id="bars2" width="250" height="180"></canvas>
+  <div style="font-size: 9px; color: #5a6a7a; margin-top: 8px;">
+    Segmented bars showing breakdown: cached vs new tokens. Compact, fits current panel.
+  </div>
+</div>
+
+<!-- Proposal 3: Circular Ring -->
+<div class="proposal">
+  <div class="proposal-title">3. CONTEXT RING</div>
+  <canvas id="ring3" width="250" height="180"></canvas>
+  <div style="font-size: 9px; color: #5a6a7a; margin-top: 8px;">
+    Single ring showing context usage. Inner text shows %. Segments for system/tools/messages.
+  </div>
+</div>
+
+<!-- Proposal 4: Stacked Metric Cards -->
+<div class="proposal">
+  <div class="proposal-title">4. METRIC CARDS</div>
+  <div id="cards4" style="display: flex; flex-direction: column; gap: 6px;">
+  </div>
+  <div style="font-size: 9px; color: #5a6a7a; margin-top: 8px;">
+    Compact stacked cards with mini sparklines. Shows trend over time.
+  </div>
+</div>
+
+<!-- Proposal 5: Radial HUD -->
+<div class="proposal">
+  <div class="proposal-title">5. RADIAL HUD</div>
+  <canvas id="radial5" width="250" height="200"></canvas>
+  <div style="font-size: 9px; color: #5a6a7a; margin-top: 8px;">
+    JARVIS-style radial display with concentric rings. Sci-fi aesthetic matching the orb.
+  </div>
+</div>
+
+</div>
+
+<script>
+// Simulated data
+const data = {
+  model: 'claude-sonnet-4-6',
+  inputTokens: 47412,
+  outputTokens: 1627,
+  cacheHit: 42000,
+  cacheNew: 5412,
+  maxContext: 200000,
+  systemPrompt: 3200,
+  tools: 2800,
+  messages: 41412,
+  requestCount: 8,
+};
+
+// ===== PROPOSAL 1: Arc Gauges =====
+(() => {
+  const c = document.getElementById('arc1');
+  const ctx = c.getContext('2d');
+  const cx1 = 70, cx2 = 180, cy = 100, r = 50;
+
+  function drawArc(cx, cy, r, value, max, label, color) {
+    const pct = Math.min(value / max, 1);
+    const startAngle = Math.PI;
+    const endAngle = Math.PI + Math.PI * pct;
+
+    // Background arc
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, Math.PI, 2 * Math.PI);
+    ctx.strokeStyle = 'rgba(42,58,74,0.5)';
+    ctx.lineWidth = 8;
+    ctx.stroke();
+
+    // Value arc
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, startAngle, endAngle);
+    const grad = ctx.createLinearGradient(cx - r, cy, cx + r, cy);
+    grad.addColorStop(0, color);
+    grad.addColorStop(1, pct > 0.8 ? '#f44' : color);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    // Glow
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, startAngle, endAngle);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Value text
+    ctx.fillStyle = '#fff';
+    ctx.font = '500 14px "JetBrains Mono"';
+    ctx.textAlign = 'center';
+    ctx.fillText((value / 1000).toFixed(1) + 'k', cx, cy - 5);
+
+    // Label
+    ctx.fillStyle = '#5a6a7a';
+    ctx.font = '9px "Orbitron"';
+    ctx.fillText(label, cx, cy + 15);
+  }
+
+  drawArc(cx1, cy, r, data.inputTokens, data.maxContext, 'INPUT', '#4af');
+  drawArc(cx2, cy, r, data.outputTokens, data.maxContext / 10, 'OUTPUT', '#4a8');
+
+  // Model label
+  ctx.fillStyle = '#4af';
+  ctx.font = '8px "Orbitron"';
+  ctx.textAlign = 'center';
+  ctx.fillText(data.model, 125, 25);
+
+  // Request count
+  ctx.fillStyle = '#5a6a7a';
+  ctx.fillText('REQUESTS: ' + data.requestCount, 125, 165);
+})();
+
+// ===== PROPOSAL 2: Segmented Bars =====
+(() => {
+  const c = document.getElementById('bars2');
+  const ctx = c.getContext('2d');
+  const w = 230, barH = 14, gap = 30, x = 10;
+
+  function drawBar(y, cached, fresh, total, label, maxVal) {
+    const barW = w;
+    const cachedW = (cached / maxVal) * barW;
+    const freshW = (fresh / maxVal) * barW;
+
+    // Label
+    ctx.fillStyle = '#5a6a7a';
+    ctx.font = '8px "Orbitron"';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, x, y - 4);
+
+    // Value
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#4af';
+    ctx.font = '10px "JetBrains Mono"';
+    ctx.fillText((total / 1000).toFixed(1) + 'k', x + barW, y - 4);
+
+    // Background
+    ctx.fillStyle = 'rgba(42,58,74,0.3)';
+    ctx.fillRect(x, y, barW, barH);
+
+    // Cached (darker)
+    ctx.fillStyle = 'rgba(68,170,255,0.2)';
+    ctx.fillRect(x, y, cachedW, barH);
+
+    // Fresh (bright)
+    ctx.fillStyle = 'rgba(68,170,255,0.7)';
+    ctx.fillRect(x + cachedW, y, freshW, barH);
+
+    // Segments
+    const segW = barW / 20;
+    for (let i = 0; i < 20; i++) {
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(x + i * segW + segW - 1, y, 1, barH);
+    }
+  }
+
+  ctx.fillStyle = '#4af';
+  ctx.font = '8px "Orbitron"';
+  ctx.textAlign = 'center';
+  ctx.fillText(data.model, 125, 15);
+
+  drawBar(35, data.cacheHit, data.cacheNew, data.inputTokens, 'INPUT', data.maxContext);
+  drawBar(35 + gap + barH, 0, data.outputTokens, data.outputTokens, 'OUTPUT', data.maxContext / 5);
+
+  // Legend
+  const ly = 120;
+  ctx.fillStyle = 'rgba(68,170,255,0.2)';
+  ctx.fillRect(x, ly, 10, 10);
+  ctx.fillStyle = '#5a6a7a';
+  ctx.font = '8px "JetBrains Mono"';
+  ctx.textAlign = 'left';
+  ctx.fillText('cached', x + 14, ly + 8);
+
+  ctx.fillStyle = 'rgba(68,170,255,0.7)';
+  ctx.fillRect(x + 70, ly, 10, 10);
+  ctx.fillStyle = '#5a6a7a';
+  ctx.fillText('new', x + 84, ly + 8);
+
+  // Cache ratio
+  ctx.fillStyle = '#4a8';
+  ctx.font = '10px "JetBrains Mono"';
+  ctx.textAlign = 'center';
+  const cacheRatio = ((data.cacheHit / data.inputTokens) * 100).toFixed(0);
+  ctx.fillText('CACHE HIT: ' + cacheRatio + '%', 125, 155);
+
+  ctx.fillStyle = '#5a6a7a';
+  ctx.font = '8px "JetBrains Mono"';
+  ctx.fillText('REQUESTS: ' + data.requestCount, 125, 172);
+})();
+
+// ===== PROPOSAL 3: Context Ring =====
+(() => {
+  const c = document.getElementById('ring3');
+  const ctx = c.getContext('2d');
+  const cx = 125, cy = 90, r = 60, lw = 12;
+
+  const segments = [
+    { label: 'SYSTEM', value: data.systemPrompt, color: '#a6f' },
+    { label: 'TOOLS', value: data.tools, color: '#4a8' },
+    { label: 'MESSAGES', value: data.messages, color: '#4af' },
+  ];
+  const total = segments.reduce((a, s) => a + s.value, 0);
+  const free = data.maxContext - total;
+
+  let angle = -Math.PI / 2;
+  segments.forEach(seg => {
+    const sweep = (seg.value / data.maxContext) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, angle, angle + sweep);
+    ctx.strokeStyle = seg.color;
+    ctx.lineWidth = lw;
+    ctx.lineCap = 'butt';
+    ctx.stroke();
+
+    // Glow
+    ctx.shadowColor = seg.color;
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, angle, angle + sweep);
+    ctx.strokeStyle = seg.color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    angle += sweep;
+  });
+
+  // Free space (dark)
+  const freeSweep = (free / data.maxContext) * Math.PI * 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, angle, angle + freeSweep);
+  ctx.strokeStyle = 'rgba(42,58,74,0.3)';
+  ctx.lineWidth = lw;
+  ctx.stroke();
+
+  // Center text
+  const usedPct = ((total / data.maxContext) * 100).toFixed(0);
+  ctx.fillStyle = '#fff';
+  ctx.font = '500 18px "JetBrains Mono"';
+  ctx.textAlign = 'center';
+  ctx.fillText(usedPct + '%', cx, cy + 2);
+  ctx.fillStyle = '#5a6a7a';
+  ctx.font = '7px "Orbitron"';
+  ctx.fillText('CONTEXT', cx, cy + 14);
+
+  // Legend
+  const lx = 10, ly = 165;
+  segments.forEach((seg, i) => {
+    const sx = lx + i * 85;
+    ctx.fillStyle = seg.color;
+    ctx.fillRect(sx, ly, 6, 6);
+    ctx.fillStyle = '#5a6a7a';
+    ctx.font = '7px "JetBrains Mono"';
+    ctx.textAlign = 'left';
+    ctx.fillText(seg.label, sx + 10, ly + 6);
+  });
+})();
+
+// ===== PROPOSAL 4: Metric Cards =====
+(() => {
+  const container = document.getElementById('cards4');
+  const metrics = [
+    { label: 'MODEL', value: data.model, color: '#4af' },
+    { label: 'INPUT', value: (data.inputTokens / 1000).toFixed(1) + 'k', sub: 'cache ' + ((data.cacheHit / data.inputTokens) * 100).toFixed(0) + '%', color: '#4af', pct: data.inputTokens / data.maxContext },
+    { label: 'OUTPUT', value: (data.outputTokens / 1000).toFixed(1) + 'k', color: '#4a8', pct: data.outputTokens / (data.maxContext / 10) },
+    { label: 'CONTEXT', value: (((data.inputTokens) / data.maxContext) * 100).toFixed(0) + '%', sub: (data.inputTokens / 1000).toFixed(0) + 'k / ' + (data.maxContext / 1000) + 'k', color: '#fa4', pct: data.inputTokens / data.maxContext },
+    { label: 'REQUESTS', value: data.requestCount, color: '#5a6a7a' },
+  ];
+
+  metrics.forEach(m => {
+    const card = document.createElement('div');
+    card.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:4px 8px; border-left:2px solid ' + m.color;
+    card.innerHTML = `
+      <div>
+        <div style="font-size:7px; font-family:Orbitron; letter-spacing:1px; color:#5a6a7a">${m.label}</div>
+        ${m.sub ? `<div style="font-size:7px; color:#5a6a7a">${m.sub}</div>` : ''}
+      </div>
+      <div style="font-size:12px; color:${m.color}; font-weight:500">${m.value}</div>
+    `;
+    container.appendChild(card);
+
+    if (m.pct !== undefined) {
+      const bar = document.createElement('div');
+      bar.style.cssText = 'height:2px; background:rgba(42,58,74,0.3); margin-top:2px; border-radius:1px; overflow:hidden';
+      bar.innerHTML = `<div style="height:100%; width:${m.pct * 100}%; background:${m.color}; border-radius:1px"></div>`;
+      card.appendChild(bar);
+    }
+  });
+})();
+
+// ===== PROPOSAL 5: Radial HUD =====
+(() => {
+  const c = document.getElementById('radial5');
+  const ctx = c.getContext('2d');
+  const cx = 125, cy = 100;
+
+  // Outer ring — context usage
+  const contextPct = data.inputTokens / data.maxContext;
+  const outerR = 80;
+  ctx.beginPath();
+  ctx.arc(cx, cy, outerR, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(42,58,74,0.2)';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, outerR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * contextPct);
+  ctx.strokeStyle = contextPct > 0.8 ? '#f44' : contextPct > 0.5 ? '#fa4' : '#4af';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // Middle ring — cache ratio
+  const cacheR = 60;
+  const cachePct = data.cacheHit / data.inputTokens;
+  ctx.beginPath();
+  ctx.arc(cx, cy, cacheR, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(42,58,74,0.2)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, cacheR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cachePct);
+  ctx.strokeStyle = '#4a8';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // Inner ring — output tokens
+  const innerR = 42;
+  const outputPct = data.outputTokens / (data.maxContext / 10);
+  ctx.beginPath();
+  ctx.arc(cx, cy, innerR, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(42,58,74,0.2)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, innerR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * outputPct);
+  ctx.strokeStyle = '#a6f';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // Tick marks on outer ring
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2 - Math.PI / 2;
+    const x1 = cx + Math.cos(a) * (outerR + 4);
+    const y1 = cy + Math.sin(a) * (outerR + 4);
+    const x2 = cx + Math.cos(a) * (outerR + 8);
+    const y2 = cy + Math.sin(a) * (outerR + 8);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.strokeStyle = 'rgba(68,170,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Center text
+  ctx.fillStyle = '#fff';
+  ctx.font = '500 16px "JetBrains Mono"';
+  ctx.textAlign = 'center';
+  ctx.fillText((data.inputTokens / 1000).toFixed(1) + 'k', cx, cy - 2);
+  ctx.fillStyle = '#5a6a7a';
+  ctx.font = '7px "Orbitron"';
+  ctx.fillText('TOKENS', cx, cy + 10);
+
+  // Labels
+  ctx.fillStyle = '#4af';
+  ctx.font = '7px "JetBrains Mono"';
+  ctx.textAlign = 'right';
+  ctx.fillText('CTX ' + (contextPct * 100).toFixed(0) + '%', cx + outerR + 35, cy - outerR + 15);
+
+  ctx.fillStyle = '#4a8';
+  ctx.fillText('CACHE ' + (cachePct * 100).toFixed(0) + '%', cx + outerR + 35, cy - outerR + 30);
+
+  ctx.fillStyle = '#a6f';
+  ctx.fillText('OUT ' + (data.outputTokens / 1000).toFixed(1) + 'k', cx + outerR + 35, cy - outerR + 45);
+
+  // Model
+  ctx.fillStyle = '#5a6a7a';
+  ctx.font = '7px "Orbitron"';
+  ctx.textAlign = 'center';
+  ctx.fillText(data.model, cx, cy + outerR + 20);
+})();
+</script>
+</body>
+</html>

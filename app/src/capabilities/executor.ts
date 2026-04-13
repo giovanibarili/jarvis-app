@@ -1,0 +1,113 @@
+// src/capabilities/executor.ts
+import type { EventBus } from "../core/bus.js";
+import type { CapabilityRegistry } from "./registry.js";
+import type { CapabilityRequestMessage, CapabilityResultMessage, HudUpdateMessage } from "../core/types.js";
+import type { Piece } from "../core/piece.js";
+import { log } from "../logger/index.js";
+
+export class CapabilityExecutor implements Piece {
+  readonly id = "capability-executor";
+  readonly name = "Capability Executor";
+
+  private bus!: EventBus;
+  private registry: CapabilityRegistry;
+  private totalCalls = 0;
+  private totalErrors = 0;
+  private totalTimeMs = 0;
+  private callsPerTool = new Map<string, number>();
+
+  constructor(registry: CapabilityRegistry) {
+    this.registry = registry;
+  }
+
+  async start(bus: EventBus): Promise<void> {
+    this.bus = bus;
+
+    this.bus.subscribe<CapabilityRequestMessage>("capability.request", (msg) => this.handleRequest(msg));
+
+    // Track ALL capability executions (core + actors) via registry listener
+    this.registry.onExecution((toolName, isError, timeMs) => {
+      this.callsPerTool.set(toolName, (this.callsPerTool.get(toolName) ?? 0) + 1);
+      this.totalCalls++;
+      if (isError) this.totalErrors++;
+      this.totalTimeMs += timeMs;
+      this.bus.publish({
+        channel: "hud.update",
+        source: this.id,
+        action: "update",
+        pieceId: this.id,
+        data: this.getData(),
+        status: "running",
+      });
+    });
+
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "add",
+      pieceId: this.id,
+      piece: {
+        pieceId: this.id,
+        type: "panel",
+        name: this.name,
+        status: "running",
+        data: this.getData(),
+        position: { x: 1680, y: 10 },
+        size: { width: 240, height: 100 },
+      },
+    });
+
+    log.info("CapabilityExecutor: initialized (event-driven)");
+  }
+
+  async stop(): Promise<void> {
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "remove",
+      pieceId: this.id,
+    });
+    log.info("CapabilityExecutor: stopped");
+  }
+
+  private async handleRequest(msg: CapabilityRequestMessage): Promise<void> {
+    const sessionId = msg.target!;
+    const calls = msg.calls;
+    const t0 = Date.now();
+    log.info({ sessionId, count: calls.length, names: calls.map(c => c.name) }, "CapabilityExecutor: executing");
+
+    // Inject sessionId into inputs so capabilities know the calling context
+    const enrichedCalls = calls.map(c => ({ ...c, input: { ...c.input, __sessionId: sessionId } }));
+    const results = await this.registry.execute(enrichedCalls);
+
+    // Metrics tracked via registry.onExecution listener
+
+    this.bus.publish({
+      channel: "capability.result",
+      source: "capability-executor",
+      target: sessionId,
+      results,
+    });
+
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "update",
+      pieceId: this.id,
+      data: this.getData(),
+      status: "running",
+    });
+
+    log.info({ sessionId, ms: Date.now() - t0 }, "CapabilityExecutor: done");
+  }
+
+  getData(): Record<string, unknown> {
+    return {
+      totalCalls: this.totalCalls,
+      totalErrors: this.totalErrors,
+      avgTimeMs: this.totalCalls > 0 ? Math.round(this.totalTimeMs / this.totalCalls) : 0,
+      tools: this.registry.names,
+      callsPerTool: Object.fromEntries(this.callsPerTool),
+    };
+  }
+}

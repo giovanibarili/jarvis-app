@@ -1,0 +1,13 @@
+{
+  "name": "jarvis_reset",
+  "description": "Graceful shutdown of JARVIS. Stops all pieces, closes connections, and exits. The user must restart manually. No confirmation needed.",
+  "type": "script",
+  "command": "bash",
+  "args": ["capabilities/scripts/reset.sh", "${message}"],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string", "description": "Optional message for JARVIS to process on next startup (e.g. context, reminders, continuation instructions)" }
+    }
+  }
+}

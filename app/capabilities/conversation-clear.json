@@ -1,0 +1,11 @@
+{
+  "name": "conversation_clear",
+  "description": "Clear saved conversation history. Next restart will start fresh with no memory of previous messages. Use when the user wants to start completely clean.",
+  "type": "script",
+  "command": "bash",
+  "args": ["capabilities/scripts/conversation-clear.sh"],
+  "input_schema": {
+    "type": "object",
+    "properties": {}
+  }
+}

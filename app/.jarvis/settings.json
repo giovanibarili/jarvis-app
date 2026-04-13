@@ -1,0 +1,40 @@
+{
+  "pieces": {
+    "jarvis-core": {
+      "enabled": true,
+      "visible": true
+    },
+    "capability-executor": {
+      "enabled": true,
+      "visible": true
+    },
+    "capability-loader": {
+      "enabled": true,
+      "visible": true
+    },
+    "token-counter": {
+      "enabled": true,
+      "visible": true
+    },
+    "mcp-manager": {
+      "enabled": true,
+      "visible": true
+    },
+    "grpc": {
+      "enabled": true,
+      "visible": true
+    },
+    "chat": {
+      "enabled": true,
+      "visible": true
+    },
+    "cron": {
+      "enabled": true,
+      "visible": true
+    },
+    "plugin-manager": {
+      "enabled": true,
+      "visible": true
+    }
+  }
+}

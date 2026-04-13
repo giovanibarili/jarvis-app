@@ -1,0 +1,58 @@
+<h2>JARVIS Core Identity</h2>
+<p class="subtitle">What should be the central visual element of the HUD?</p>
+
+<div class="cards">
+  <div class="card" data-choice="arc-reactor-3d" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0a0a1a;display:flex;align-items:center;justify-content:center;height:200px;position:relative;overflow:hidden;">
+      <!-- 3D Arc Reactor mockup -->
+      <div style="width:140px;height:140px;border-radius:50%;position:relative;">
+        <div style="position:absolute;inset:0;border-radius:50%;border:2px solid #4af;opacity:0.3;animation:spin 4s linear infinite;"></div>
+        <div style="position:absolute;inset:15px;border-radius:50%;border:1px solid #4af;opacity:0.5;animation:spin 3s linear infinite reverse;"></div>
+        <div style="position:absolute;inset:30px;border-radius:50%;border:2px solid #4af;opacity:0.7;animation:spin 5s linear infinite;"></div>
+        <div style="position:absolute;inset:45px;border-radius:50%;background:radial-gradient(circle,#4af,#0af,transparent);box-shadow:0 0 30px rgba(68,170,255,0.6),0 0 60px rgba(68,170,255,0.3);animation:pulse 1.5s ease-in-out infinite;"></div>
+      </div>
+      <style>
+        @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+        @keyframes pulse{0%,100%{opacity:.7;transform:scale(1)}50%{opacity:1;transform:scale(1.05)}}
+      </style>
+    </div>
+    <div class="card-body">
+      <h3>Arc Reactor (3D + Energy Shader)</h3>
+      <p>Concentric rings with GLSL energy shader. Pulsing core, rotating rings at different speeds. The classic Iron Man arc reactor. Uses Three.js + R3F.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="holographic-sphere" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0a0a1a;display:flex;align-items:center;justify-content:center;height:200px;position:relative;overflow:hidden;">
+      <!-- Holographic sphere mockup -->
+      <div style="width:130px;height:130px;border-radius:50%;position:relative;">
+        <div style="position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle at 30% 30%,rgba(68,170,255,0.15),transparent);border:1px solid rgba(68,170,255,0.3);"></div>
+        <div style="position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,transparent,rgba(68,170,255,0.1),transparent,rgba(68,170,255,0.1),transparent);animation:spin 6s linear infinite;"></div>
+        <div style="position:absolute;inset:20px;border-radius:50%;border:1px dashed rgba(68,170,255,0.2);animation:spin 8s linear infinite reverse;"></div>
+        <div style="position:absolute;inset:35px;border-radius:50%;background:radial-gradient(circle,rgba(0,229,176,0.8),rgba(0,229,176,0.2),transparent);box-shadow:0 0 40px rgba(0,229,176,0.3);animation:pulse 2s ease-in-out infinite;"></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Holographic Sphere (Particle Cloud)</h3>
+      <p>10k particles forming a sphere with hologram shader. Fresnel edge glow, scanlines, wireframe overlay. More organic and AI-like. Uses Three.js + GLSL.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="voice-orb" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0a0a1a;display:flex;align-items:center;justify-content:center;height:200px;position:relative;overflow:hidden;">
+      <!-- Voice orb mockup -->
+      <div style="width:120px;height:120px;position:relative;">
+        <div style="position:absolute;inset:0;border-radius:48% 52% 55% 45%/42% 58% 42% 58%;background:linear-gradient(135deg,rgba(68,170,255,0.6),rgba(170,102,255,0.4));filter:blur(2px);animation:morph 4s ease-in-out infinite;"></div>
+        <div style="position:absolute;inset:10px;border-radius:52% 48% 45% 55%/55% 45% 55% 45%;background:linear-gradient(225deg,rgba(0,229,176,0.5),rgba(68,170,255,0.3));mix-blend-mode:screen;animation:morph 3s ease-in-out infinite reverse;"></div>
+        <div style="position:absolute;inset:20px;border-radius:45% 55% 50% 50%/50% 50% 55% 45%;background:radial-gradient(circle,rgba(255,255,255,0.3),transparent);animation:morph 5s ease-in-out infinite;"></div>
+      </div>
+      <style>
+        @keyframes morph{0%,100%{border-radius:48% 52% 55% 45%/42% 58% 42% 58%}25%{border-radius:55% 45% 42% 58%/52% 48% 55% 45%}50%{border-radius:42% 58% 48% 52%/58% 42% 45% 55%}75%{border-radius:52% 48% 58% 42%/45% 55% 52% 48%}}
+      </style>
+    </div>
+    <div class="card-body">
+      <h3>Voice Orb (Organic Blob)</h3>
+      <p>Morphing blob with mix-blend-mode:screen layers. Iridescent, organic, reactive. Less mechanical, more AI personality. Uses Framer Motion + CSS.</p>
+    </div>
+  </div>
+</div>

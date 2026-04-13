@@ -1,0 +1,127 @@
+// src/main.ts
+import { EventBus } from "./core/bus.js";
+import { SessionManager } from "./core/session-manager.js";
+import { JarvisCore } from "./core/jarvis.js";
+import { HudState } from "./core/hud-state.js";
+import { CapabilityRegistry } from "./capabilities/registry.js";
+import { CapabilityExecutor } from "./capabilities/executor.js";
+import { CapabilityLoaderPiece } from "./capabilities/loader.js";
+import { McpManager } from "./mcp/manager.js";
+import { ChatPiece } from "./input/chat-piece.js";
+import { GrpcPiece } from "./input/grpc-piece.js";
+import { HttpServer } from "./server.js";
+import { PieceManager } from "./core/piece-manager.js";
+import { PluginManager } from "./core/plugin-manager.js";
+import { CronPiece } from "./core/cron-piece.js";
+import type { Piece } from "./core/piece.js";
+import { log } from "./logger/index.js";
+import { launchHud } from "./transport/hud/electron.js";
+import { config, setModel, getValidModels, getCurrentProvider } from "./config/index.js";
+import { ProviderRouter } from "./ai/provider.js";
+import { createAnthropicProvider } from "./ai/anthropic/provider.js";
+import { createOpenAIProvider } from "./ai/openai/provider.js";
+
+async function main() {
+  const bus = new EventBus();
+  const capabilityRegistry = new CapabilityRegistry();
+
+  const chatPiece = new ChatPiece();
+  const jarvisCore = new JarvisCore();
+
+  const pieces: Piece[] = [
+    jarvisCore,
+    new CapabilityExecutor(capabilityRegistry),
+    new CapabilityLoaderPiece(capabilityRegistry),
+    new McpManager(capabilityRegistry),
+    new GrpcPiece(capabilityRegistry),
+    chatPiece,
+  ];
+
+  // Provider router — manages active AI provider + metrics HUD
+  const providerRouter = new ProviderRouter({
+    getTools: () => capabilityRegistry.getDefinitions(),
+    getCoreContext: () => pieces.filter(p => p.id !== "plugin-manager" && p.systemContext).map(p => p.systemContext!()),
+    getPluginContext: () => pieces.filter(p => p.id === "plugin-manager" && p.systemContext).map(p => p.systemContext!()),
+    getInstructions: () => jarvisCore.getJarvisMd(),
+  });
+  providerRouter.registerProviderFactory("anthropic", createAnthropicProvider);
+  providerRouter.registerProviderFactory("openai", createOpenAIProvider);
+
+  // SessionManager — factory set after provider activation
+  const sessions = new SessionManager(null as any);
+  jarvisCore.setSessions(sessions);
+
+  // Model management tools — now provider-aware
+  capabilityRegistry.register({
+    name: "model_set",
+    description: `Switch the AI model. Examples: claude-sonnet-4-6, claude-opus-4-6, gpt-4o, gpt-4o-mini, o3. Anthropic models use Claude, others use OpenAI-compatible API.`,
+    input_schema: {
+      type: "object",
+      properties: { model: { type: "string", description: "Model ID to switch to" } },
+      required: ["model"],
+    },
+    handler: async (input) => {
+      const result = setModel(input.model as string);
+      if (result.providerChanged) {
+        await providerRouter.switchTo(result.provider, bus);
+        sessions.updateFactory(providerRouter.getFactory());
+        sessions.setProvider(result.provider);
+        jarvisCore.abortSession("main");
+      }
+      return result.message;
+    },
+  });
+  capabilityRegistry.register({
+    name: "model_get",
+    description: "Get the current AI model and provider being used.",
+    input_schema: { type: "object", properties: {} },
+    handler: async () => ({
+      model: config.model,
+      provider: getCurrentProvider(),
+      available: getValidModels(),
+    }),
+  });
+
+  // Cron scheduler
+  pieces.push(new CronPiece(capabilityRegistry));
+
+  // Plugin manager
+  const pluginManager = new PluginManager(capabilityRegistry);
+  pieces.push(pluginManager);
+
+  const hudState = new HudState(bus);
+
+  // Activate initial provider AFTER HudState exists (so metrics HUD registers)
+  await providerRouter.switchTo(getCurrentProvider(), bus);
+  sessions.updateFactory(providerRouter.getFactory());
+  sessions.setProvider(getCurrentProvider());
+  sessions.startAutoSave();
+  pluginManager.setFactory(providerRouter.getFactory());
+
+  const pieceManager = new PieceManager(pieces, bus, capabilityRegistry);
+  pluginManager.setPieceManager(pieceManager);
+
+  const server = new HttpServer(50052, chatPiece, () => hudState.getState(), () => jarvisCore.abortSession("main"), () => capabilityRegistry.getSlashCommands());
+  pluginManager.setHttpServer(server);
+
+  await pieceManager.startAll();
+
+  console.log("JARVIS starting...");
+  console.log(`HUD  ${server.url}\n`);
+  launchHud(server.url);
+  jarvisCore.ready();
+  console.log("JARVIS online\n");
+
+  process.on("SIGINT", async () => {
+    log.info("Shutting down...");
+    sessions.stopAutoSave();
+    sessions.saveAll();
+    await pieceManager.stopAll();
+    const activeProvider = providerRouter.getActiveProvider();
+    if (activeProvider) await activeProvider.metricsPiece.stop();
+    server.stop();
+    process.exit(0);
+  });
+}
+
+main().catch((err) => { log.fatal({ err }, "Startup failed"); process.exit(1); });

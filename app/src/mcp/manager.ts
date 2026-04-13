@@ -1,0 +1,572 @@
+// src/mcp/manager.ts
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { EventBus } from "../core/bus.js";
+import type { SystemEventMessage, HudUpdateMessage } from "../core/types.js";
+import type { CapabilityRegistry } from "../capabilities/registry.js";
+import type { Piece } from "../core/piece.js";
+import { log } from "../logger/index.js";
+import { JarvisOAuthProvider } from "./oauth.js";
+
+interface McpServerConfig {
+  type: "http" | "sse" | "stdio";
+  url?: string;
+  headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  oauth?: { clientId?: string; callbackPort?: number };
+  autoConnect?: boolean;
+}
+
+type ServerStatus = "disconnected" | "connecting" | "connected" | "auth_required" | "error";
+
+interface McpServerState {
+  name: string;
+  config: McpServerConfig;
+  status: ServerStatus;
+  error?: string;
+  client?: Client;
+  transport?: StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
+  authProvider?: JarvisOAuthProvider;
+  toolNames: string[];
+  /** Resolves when connectServer() finishes (success or failure). Prevents duplicate spawns. */
+  connectPromise?: Promise<string>;
+}
+
+export class McpManager implements Piece {
+  readonly id = "mcp-manager";
+  readonly name = "MCP Manager";
+
+  private bus!: EventBus;
+  private registry: CapabilityRegistry;
+  private servers = new Map<string, McpServerState>();
+  private configPath: string;
+
+  systemContext(): string {
+    const serverList = [...this.servers.entries()]
+      .map(([name, s]) => `${name}: ${s.status}, ${s.toolNames.length} tools`)
+      .join('; ');
+    return `## MCP Manager Piece
+You can connect to external services via Model Context Protocol.
+Configured servers: ${serverList || 'none loaded yet'}.
+Tools: mcp_list, mcp_connect, mcp_disconnect, mcp_login, mcp_refresh.
+Connect servers on demand when the user needs external services (Jira, Slack, Confluence, etc).`;
+  }
+
+  constructor(registry: CapabilityRegistry, configPath?: string) {
+    this.registry = registry;
+    this.configPath = configPath ?? join(process.cwd(), "mcp.json");
+  }
+
+  async start(bus: EventBus): Promise<void> {
+    this.bus = bus;
+    this.loadServers();
+    this.registerManagementTools();
+
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "add",
+      pieceId: this.id,
+      piece: {
+        pieceId: this.id,
+        type: "panel",
+        name: this.name,
+        status: "running",
+        data: this.getData(),
+        position: { x: 1680, y: 208 },
+        size: { width: 240, height: 130 },
+      },
+    });
+
+    log.info({ serverCount: this.servers.size }, "McpManager: started");
+
+    // Fire-and-forget: auto-connect servers with autoConnect: true
+    this.autoConnectServers();
+  }
+
+  private autoConnectServers(): void {
+    const autoConnectNames = [...this.servers.entries()]
+      .filter(([_, s]) => s.config.autoConnect === true)
+      .map(([name]) => name);
+
+    if (autoConnectNames.length === 0) return;
+
+    log.info({ servers: autoConnectNames }, "McpManager: auto-connecting servers in background");
+
+    for (const name of autoConnectNames) {
+      this.connectServer(name)
+        .then((result) => {
+          log.info({ name, result }, "McpManager: auto-connect finished");
+          this.bus.publish({
+            channel: "system.event",
+            source: "mcp-manager",
+            event: "mcp.auto-connected",
+            data: { server: name, result },
+          });
+        })
+        .catch((err) => {
+          log.error({ name, err }, "McpManager: auto-connect failed");
+        });
+    }
+  }
+
+  async stop(): Promise<void> {
+    for (const [name, server] of this.servers) {
+      if (server.client && server.status === "connected") {
+        try {
+          await server.client.close();
+          log.info({ name }, "McpManager: disconnected");
+        } catch (err) {
+          log.error({ name, err }, "McpManager: error disconnecting");
+        }
+      }
+    }
+    this.servers.clear();
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "remove",
+      pieceId: this.id,
+    });
+    log.info("McpManager: stopped");
+  }
+
+  getData(): Record<string, unknown> {
+    const servers = [...this.servers.values()].map(s => ({
+      name: s.name,
+      type: s.config.type,
+      status: s.status,
+      tools: s.toolNames.length,
+      error: s.error,
+    }));
+    const connected = servers.filter(s => s.status === "connected").length;
+    return { servers, connected, total: servers.length };
+  }
+
+  // --- Public actions (called by tools) ---
+
+  async connectServer(name: string): Promise<string> {
+    const server = this.servers.get(name);
+    if (!server) return `Server '${name}' not found. Available: ${[...this.servers.keys()].join(", ")}`;
+    if (server.status === "connected") return `Server '${name}' is already connected.`;
+
+    // Guard: if a connect is already in flight, wait for it instead of spawning a second process
+    if (server.connectPromise) {
+      log.info({ name }, "McpManager: connect already in progress, waiting for existing attempt");
+      return server.connectPromise;
+    }
+
+    server.connectPromise = this.doConnect(server);
+    try {
+      return await server.connectPromise;
+    } finally {
+      server.connectPromise = undefined;
+    }
+  }
+
+  private async doConnect(server: McpServerState): Promise<string> {
+    const name = server.name;
+    server.status = "connecting";
+    server.error = undefined;
+
+    try {
+      const client = new Client({ name: `jarvis-${name}`, version: "1.0.0" });
+      let transport: StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
+      let authProvider: JarvisOAuthProvider | undefined;
+
+      if (server.config.type === "http") {
+        if (!server.config.url) throw new Error("HTTP type requires url");
+        authProvider = new JarvisOAuthProvider(name, server.config.oauth);
+        transport = new StreamableHTTPClientTransport(new URL(server.config.url), {
+          requestInit: { headers: server.config.headers ?? {} },
+          authProvider,
+        });
+      } else if (server.config.type === "sse") {
+        if (!server.config.url) throw new Error("SSE type requires url");
+        authProvider = new JarvisOAuthProvider(name, server.config.oauth);
+        transport = new SSEClientTransport(new URL(server.config.url), {
+          requestInit: { headers: server.config.headers ?? {} },
+          authProvider,
+        });
+      } else if (server.config.type === "stdio") {
+        if (!server.config.command) throw new Error("stdio type requires command");
+        transport = new StdioClientTransport({
+          command: server.config.command,
+          args: server.config.args ?? [],
+          env: { ...process.env, ...(server.config.env ?? {}) } as Record<string, string>,
+          ...(server.config.cwd ? { cwd: server.config.cwd } : {}),
+        });
+      } else {
+        throw new Error(`Unknown type: ${server.config.type}`);
+      }
+
+      // Pre-check: if HTTP and no saved tokens, probe for device code support BEFORE connect
+      if (authProvider && server.config.url && !authProvider.tokens()) {
+        const deviceSupport = await authProvider.discoverDeviceCodeSupport(server.config.url).catch(() => null);
+        if (deviceSupport) {
+          server.status = "auth_required";
+          server.client = client;
+          server.transport = transport;
+          server.authProvider = authProvider;
+          log.info({ name }, "McpManager: device code flow detected — authenticating before connect");
+          this.awaitDeviceCodeInBackground(server);
+          return `Server '${name}' requires authentication. Check the terminal for the device code and verification URL.`;
+        }
+      }
+
+      try {
+        await client.connect(transport);
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          server.status = "auth_required";
+          server.client = client;
+          server.transport = transport;
+          server.authProvider = authProvider;
+          log.info({ name }, "McpManager: auth required — waiting for browser login in background");
+          if (authProvider) {
+            this.awaitLoginInBackground(server);
+          }
+          return `Server '${name}' requires authentication. Browser opened — complete the login and the connection will finalize automatically.`;
+        }
+        throw error;
+      }
+
+      // Connected — list and register tools
+      server.client = client;
+      server.transport = transport;
+      server.authProvider = authProvider;
+      await this.registerServerTools(server);
+      server.status = "connected";
+      log.info({ name, tools: server.toolNames.length }, "McpManager: connected");
+      this.publishHudUpdate();
+      return `Connected to '${name}'. ${server.toolNames.length} tools available.`;
+
+    } catch (err) {
+      server.status = "error";
+      server.error = String(err);
+      log.error({ name, err }, "McpManager: connect failed");
+      this.publishHudUpdate();
+      return `Failed to connect to '${name}': ${err}`;
+    }
+  }
+
+  private awaitLoginInBackground(server: McpServerState): void {
+    const name = server.name;
+    server.authProvider!.waitForCallback()
+      .then(async (code) => {
+        log.info({ name }, "McpManager: OAuth callback received");
+        if (server.transport instanceof StreamableHTTPClientTransport || server.transport instanceof SSEClientTransport) {
+          await server.transport.finishAuth(code);
+        }
+        if (server.client) {
+          await server.client.connect(server.transport!);
+        }
+        await this.registerServerTools(server);
+        server.status = "connected";
+        log.info({ name, tools: server.toolNames.length }, "McpManager: background login successful");
+
+        // Notify via EventBus
+        this.bus.publish({
+          channel: "system.event",
+          source: "mcp-manager",
+          event: "mcp.connected",
+          data: { server: name, tools: server.toolNames },
+        });
+        this.publishHudUpdate();
+      })
+      .catch((err) => {
+        server.status = "error";
+        server.error = String(err);
+        log.error({ name, err }, "McpManager: background login failed");
+        this.publishHudUpdate();
+      });
+  }
+
+  private awaitDeviceCodeInBackground(server: McpServerState): void {
+    const name = server.name;
+    server.authProvider!.deviceCodeFlow(server.config.url!)
+      .then(async () => {
+        log.info({ name }, "McpManager: device code auth completed — reconnecting");
+
+        // Reconnect with the new tokens
+        const client = new Client({ name: `jarvis-${name}`, version: "1.0.0" });
+        let transport: StreamableHTTPClientTransport | SSEClientTransport;
+
+        if (server.config.type === "http") {
+          transport = new StreamableHTTPClientTransport(new URL(server.config.url!), {
+            requestInit: { headers: server.config.headers ?? {} },
+            authProvider: server.authProvider,
+          });
+        } else {
+          transport = new SSEClientTransport(new URL(server.config.url!), {
+            requestInit: { headers: server.config.headers ?? {} },
+            authProvider: server.authProvider,
+          });
+        }
+
+        await client.connect(transport);
+        server.client = client;
+        server.transport = transport;
+        await this.registerServerTools(server);
+        server.status = "connected";
+        log.info({ name, tools: server.toolNames.length }, "McpManager: device code login successful");
+
+        // Notify via EventBus
+        this.bus.publish({
+          channel: "system.event",
+          source: "mcp-manager",
+          event: "mcp.connected",
+          data: { server: name, tools: server.toolNames },
+        });
+        this.publishHudUpdate();
+      })
+      .catch((err) => {
+        server.status = "error";
+        server.error = String(err);
+        log.error({ name, err }, "McpManager: device code login failed");
+        this.publishHudUpdate();
+      });
+  }
+
+  async loginServer(name: string): Promise<string> {
+    const server = this.servers.get(name);
+    if (!server) return `Server '${name}' not found.`;
+    if (server.status !== "auth_required") return `Server '${name}' is not waiting for auth (status: ${server.status}).`;
+    if (!server.authProvider || !server.transport) return `Server '${name}' has no auth provider.`;
+
+    try {
+      log.info({ name }, "McpManager: starting OAuth login");
+      const code = await server.authProvider.waitForCallback();
+
+      if (server.transport instanceof StreamableHTTPClientTransport || server.transport instanceof SSEClientTransport) {
+        await server.transport.finishAuth(code);
+      }
+
+      // Reconnect
+      if (server.client) {
+        await server.client.connect(server.transport);
+      }
+
+      await this.registerServerTools(server);
+      server.status = "connected";
+      log.info({ name, tools: server.toolNames.length }, "McpManager: login successful");
+      this.publishHudUpdate();
+      return `Authenticated and connected to '${name}'. ${server.toolNames.length} tools available.`;
+
+    } catch (err) {
+      server.status = "error";
+      server.error = String(err);
+      log.error({ name, err }, "McpManager: login failed");
+      this.publishHudUpdate();
+      return `Login failed for '${name}': ${err}`;
+    }
+  }
+
+  async refreshConfig(): Promise<string> {
+    const configs = this.loadConfig();
+    const added: string[] = [];
+    const removed: string[] = [];
+
+    // Add new servers
+    for (const [name, config] of Object.entries(configs)) {
+      if (!this.servers.has(name)) {
+        this.servers.set(name, { name, config, status: "disconnected", toolNames: [] });
+        added.push(name);
+      }
+    }
+
+    // Remove servers no longer in config (disconnect first)
+    for (const [name, server] of this.servers) {
+      if (!(name in configs)) {
+        if (server.client && server.status === "connected") {
+          try { await server.client.close(); } catch { /* ignore */ }
+        }
+        this.servers.delete(name);
+        removed.push(name);
+      }
+    }
+
+    log.info({ added, removed }, "McpManager: config refreshed");
+    const parts: string[] = [];
+    if (added.length) parts.push(`Added: ${added.join(", ")}`);
+    if (removed.length) parts.push(`Removed: ${removed.join(", ")}`);
+    if (!parts.length) parts.push("No changes");
+    parts.push(`Total: ${this.servers.size} servers`);
+    return parts.join(". ");
+  }
+
+  async disconnectServer(name: string): Promise<string> {
+    const server = this.servers.get(name);
+    if (!server) return `Server '${name}' not found.`;
+    if (server.status === "disconnected") return `Server '${name}' is already disconnected.`;
+
+    // Wait for any in-flight connect to finish before tearing down
+    if (server.connectPromise) {
+      log.info({ name }, "McpManager: waiting for in-flight connect before disconnect");
+      await server.connectPromise.catch(() => {});
+    }
+
+    if (server.client) {
+      try { await server.client.close(); } catch { /* ignore */ }
+    }
+
+    server.status = "disconnected";
+    server.client = undefined;
+    server.transport = undefined;
+    server.toolNames = [];
+    server.error = undefined;
+    log.info({ name }, "McpManager: disconnected");
+    this.publishHudUpdate();
+    return `Disconnected from '${name}'.`;
+  }
+
+  private publishHudUpdate(): void {
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "update",
+      pieceId: this.id,
+      data: this.getData(),
+      status: "running",
+    });
+  }
+
+  // --- Internal ---
+
+  private loadServers(): void {
+    const configs = this.loadConfig();
+    for (const [name, config] of Object.entries(configs)) {
+      this.servers.set(name, {
+        name,
+        config,
+        status: "disconnected",
+        toolNames: [],
+      });
+    }
+    log.info({ servers: [...this.servers.keys()] }, "McpManager: servers loaded from config");
+  }
+
+  private async registerServerTools(server: McpServerState): Promise<void> {
+    if (!server.client) return;
+
+    const { tools } = await server.client.listTools();
+    server.toolNames = [];
+
+    for (const tool of tools) {
+      const toolName = `mcp__${server.name}__${tool.name}`;
+      server.toolNames.push(toolName);
+
+      this.registry.register({
+        name: toolName,
+        description: tool.description ?? `Tool ${tool.name} from MCP server ${server.name}`,
+        input_schema: (tool.inputSchema as Record<string, unknown>) ?? { type: "object", properties: {} },
+        handler: async (input) => {
+          const result = await server.client!.callTool({ name: tool.name, arguments: input });
+          if (Array.isArray(result.content)) {
+            return (result.content as Array<{ type: string; text?: string }>)
+              .filter((c) => c.type === "text")
+              .map((c) => c.text)
+              .join("\n");
+          }
+          return result.content;
+        },
+      });
+    }
+  }
+
+  private registerManagementTools(): void {
+    this.registry.register({
+      name: "mcp_list",
+      description: "List all configured MCP servers with their connection status",
+      input_schema: { type: "object", properties: {}, required: [] },
+      handler: async () => {
+        return [...this.servers.values()].map(s => ({
+          name: s.name,
+          type: s.config.type,
+          status: s.status,
+          tools: s.toolNames.length,
+          error: s.error,
+        }));
+      },
+    });
+
+    this.registry.register({
+      name: "mcp_connect",
+      description: "Connect to a configured MCP server by name",
+      input_schema: {
+        type: "object",
+        properties: { name: { type: "string", description: "Server name from mcp.json" } },
+        required: ["name"],
+      },
+      handler: async (input) => this.connectServer(input.name as string),
+    });
+
+    this.registry.register({
+      name: "mcp_login",
+      description: "Authenticate with an MCP server that requires OAuth login. Opens browser for auth flow.",
+      input_schema: {
+        type: "object",
+        properties: { name: { type: "string", description: "Server name requiring auth" } },
+        required: ["name"],
+      },
+      handler: async (input) => this.loginServer(input.name as string),
+    });
+
+    this.registry.register({
+      name: "mcp_disconnect",
+      description: "Disconnect from a connected MCP server",
+      input_schema: {
+        type: "object",
+        properties: { name: { type: "string", description: "Server name to disconnect" } },
+        required: ["name"],
+      },
+      handler: async (input) => this.disconnectServer(input.name as string),
+    });
+
+    this.registry.register({
+      name: "mcp_refresh",
+      description: "Reload mcp.json config — picks up new servers or removes deleted ones without restarting JARVIS",
+      input_schema: { type: "object", properties: {}, required: [] },
+      handler: async () => this.refreshConfig(),
+    });
+  }
+
+  private loadConfig(): Record<string, McpServerConfig> {
+    const defaultConfig = this.loadConfigFile(this.configPath);
+    const userPath = this.configPath.replace(/\.json$/, ".user.json");
+    const userConfig = this.loadConfigFile(userPath);
+
+    // User overrides default — server-level merge (user wins entirely per server name)
+    const merged = { ...defaultConfig, ...userConfig };
+    log.info({
+      defaultPath: this.configPath,
+      userPath,
+      defaultServers: Object.keys(defaultConfig),
+      userServers: Object.keys(userConfig),
+      mergedServers: Object.keys(merged),
+    }, "McpManager: config loaded (default + user)");
+    return merged;
+  }
+
+  private loadConfigFile(path: string): Record<string, McpServerConfig> {
+    if (!existsSync(path)) {
+      return {};
+    }
+    try {
+      const content = readFileSync(path, "utf-8");
+      const parsed = JSON.parse(content);
+      return parsed.mcpServers ?? {};
+    } catch (err) {
+      log.error({ path, err }, "McpManager: failed to parse config file");
+      return {};
+    }
+  }
+}

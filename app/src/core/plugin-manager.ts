@@ -1,0 +1,473 @@
+// src/core/plugin-manager.ts
+// Manages JARVIS plugins from GitHub repos.
+// Plugins are cloned to ~/.jarvis/plugins/ and referenced by settings.
+// Tools, prompts loaded at runtime. Pieces/renderers in phase 2.
+
+import { execSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import type { EventBus } from "./bus.js";
+import type { Piece } from "./piece.js";
+import type { HudUpdateMessage } from "./types.js";
+import type { CapabilityRegistry } from "../capabilities/registry.js";
+import type { PieceManager } from "./piece-manager.js";
+import type { PluginContext } from "@jarvis/core";
+import type { AISessionFactory } from "../ai/types.js";
+
+interface HttpServerLike {
+  registerRoute(method: string, path: string, handler: (req: any, res: any) => void): void;
+}
+import { load as loadSettings, save as saveSettings, type PluginSettings } from "./settings.js";
+import { log } from "../logger/index.js";
+
+const PLUGINS_DIR = join(process.env.HOME ?? "~", ".jarvis", "plugins");
+
+interface PluginManifest {
+  name: string;
+  version: string;
+  description: string;
+  author?: string;
+  entry?: string;
+  capabilities?: {
+    tools?: boolean;
+    pieces?: boolean;
+    renderers?: boolean;
+    prompts?: boolean;
+  };
+}
+
+interface LoadedPlugin {
+  name: string;
+  manifest: PluginManifest;
+  settings: PluginSettings;
+  tools: string[];
+  prompts: string[];
+  pieces: string[];      // piece IDs loaded from this plugin
+  renderers: string[];   // renderer file names (without .tsx)
+}
+
+export class PluginManager implements Piece {
+  readonly id = "plugin-manager";
+  readonly name = "Plugin Manager";
+
+  private bus!: EventBus;
+  private registry: CapabilityRegistry;
+  private plugins = new Map<string, LoadedPlugin>();
+  private pieceManager?: PieceManager;
+  private factory?: AISessionFactory;
+  private httpServer?: HttpServerLike;
+
+  constructor(registry: CapabilityRegistry) {
+    this.registry = registry;
+  }
+
+  setPieceManager(pm: PieceManager): void {
+    this.pieceManager = pm;
+  }
+
+  setFactory(factory: AISessionFactory): void {
+    this.factory = factory;
+  }
+
+  setHttpServer(server: HttpServerLike): void {
+    this.httpServer = server;
+  }
+
+  systemContext(): string {
+    if (this.plugins.size === 0) return "";
+    const list = [...this.plugins.values()]
+      .map(p => `${p.name}: ${p.manifest.description} (${p.tools.length} tools, ${p.pieces.length} pieces)`)
+      .join("\n");
+    return `## Plugins\n${list}\nTools: plugin_install, plugin_list, plugin_update, plugin_enable, plugin_disable, plugin_remove`;
+  }
+
+  async start(bus: EventBus): Promise<void> {
+    this.bus = bus;
+
+    if (!existsSync(PLUGINS_DIR)) mkdirSync(PLUGINS_DIR, { recursive: true });
+
+    // Load enabled plugins from settings
+    const settings = loadSettings();
+    for (const [name, ps] of Object.entries(settings.plugins ?? {})) {
+      if (ps.enabled) await this.loadPlugin(name, ps);
+    }
+
+    this.registerTools();
+
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "add",
+      pieceId: this.id,
+      piece: {
+        pieceId: this.id,
+        type: "indicator",
+        name: this.name,
+        status: "running",
+        data: this.getData(),
+        position: { x: 10, y: 114 },
+        size: { width: 150, height: 40 },
+      },
+    });
+
+    log.info({ plugins: [...this.plugins.keys()] }, "PluginManager: started");
+  }
+
+  async stop(): Promise<void> {
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "remove",
+      pieceId: this.id,
+    });
+  }
+
+  // ─── Plugin Loading ───────────────────────────────────────
+
+  private async loadPlugin(name: string, ps: PluginSettings): Promise<void> {
+    const pluginDir = ps.path;
+    if (!existsSync(pluginDir)) {
+      log.warn({ name, path: pluginDir }, "PluginManager: plugin dir not found");
+      return;
+    }
+
+    // Read manifest
+    const manifestPath = join(pluginDir, "plugin.json");
+    if (!existsSync(manifestPath)) {
+      log.warn({ name }, "PluginManager: no plugin.json");
+      return;
+    }
+
+    const manifest: PluginManifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    const loaded: LoadedPlugin = { name, manifest, settings: ps, tools: [], prompts: [], pieces: [], renderers: [] };
+
+    // Load tools
+    const toolsDir = join(pluginDir, "tools");
+    if (existsSync(toolsDir)) {
+      const files = readdirSync(toolsDir).filter(f => f.endsWith(".json"));
+      for (const file of files) {
+        try {
+          const content = readFileSync(join(toolsDir, file), "utf-8");
+          const config = JSON.parse(content);
+          // Adjust script paths to be relative to plugin dir
+          if (config.args) {
+            config.args = config.args.map((a: string) =>
+              a.startsWith("tools/") ? join(pluginDir, a) : a
+            );
+          }
+          this.registry.register({
+            name: config.name,
+            description: `[${manifest.name}] ${config.description}`,
+            input_schema: config.input_schema,
+            handler: this.createToolHandler(config, pluginDir),
+          });
+          loaded.tools.push(config.name);
+        } catch (err) {
+          log.error({ name, file, err: String(err) }, "PluginManager: failed to load tool");
+        }
+      }
+    }
+
+    // Load prompts
+    const promptsDir = join(pluginDir, "prompts");
+    if (existsSync(promptsDir)) {
+      const files = readdirSync(promptsDir).filter(f => f.endsWith(".md"));
+      for (const file of files) {
+        try {
+          const content = readFileSync(join(promptsDir, file), "utf-8");
+          loaded.prompts.push(content);
+        } catch {}
+      }
+    }
+
+    // Load pieces (Phase 2)
+    if (manifest.capabilities?.pieces && manifest.entry) {
+      try {
+        const entryPath = join(pluginDir, manifest.entry);
+        if (existsSync(entryPath)) {
+          const mod = await import(entryPath);
+          if (typeof mod.createPieces === "function" && this.pieceManager) {
+            const configKey = `plugin:${name}`;
+            const ctx: PluginContext = {
+              bus: this.bus as unknown as PluginContext["bus"],
+              capabilityRegistry: this.registry,
+              config: loadSettings().pieces?.[configKey]?.config ?? {},
+              pluginDir,
+              sessionFactory: this.factory as unknown as PluginContext["sessionFactory"],
+              registerRoute: (method: string, path: string, handler: any) => {
+                if (this.httpServer) {
+                  this.httpServer.registerRoute(method, path, handler);
+                }
+              },
+              saveConfig: (config: Record<string, unknown>) => {
+                const settings = loadSettings();
+                if (!settings.pieces[configKey]) settings.pieces[configKey] = { enabled: true, visible: true };
+                settings.pieces[configKey].config = config;
+                saveSettings(settings);
+              },
+            };
+            const pieces = mod.createPieces(ctx);
+            for (const piece of pieces) {
+              await this.pieceManager.registerDynamic(piece, `plugin:${name}`);
+              loaded.pieces.push(piece.id);
+            }
+            log.info({ name, pieces: loaded.pieces }, "PluginManager: loaded pieces");
+          }
+        }
+      } catch (err) {
+        log.error({ name, err: String(err) }, "PluginManager: failed to load pieces");
+      }
+    }
+
+    // Discover renderers
+    if (manifest.capabilities?.renderers) {
+      const renderersDir = join(pluginDir, "renderers");
+      if (existsSync(renderersDir)) {
+        const files = readdirSync(renderersDir).filter(f => f.endsWith(".tsx"));
+        loaded.renderers = files.map(f => f.replace(".tsx", ""));
+        log.info({ name, renderers: loaded.renderers }, "PluginManager: discovered renderers");
+      }
+    }
+
+    this.plugins.set(name, loaded);
+    log.info({ name, tools: loaded.tools.length, prompts: loaded.prompts.length, pieces: loaded.pieces.length }, "PluginManager: loaded plugin");
+  }
+
+  private createToolHandler(config: any, pluginDir: string): (input: Record<string, unknown>) => Promise<unknown> {
+    return async (input) => {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(execFile);
+
+      const expand = (s: string) => s.replace(/^~/, process.env.HOME ?? "~");
+      const args = (config.args ?? []).map((arg: string) =>
+        expand(arg.replace(/\$\{(\w+)\}/g, (_: string, key: string) => expand(String(input[key] ?? ""))))
+      );
+
+      try {
+        const { stdout } = await execFileAsync(config.command, args, {
+          timeout: 30000,
+          maxBuffer: 1024 * 1024 * 10,
+          cwd: pluginDir,
+        });
+
+        if (stdout.startsWith("__TYPE__:error\n")) {
+          return { error: stdout.split("\n").slice(1).join("\n").trim() };
+        }
+        const text = stdout.startsWith("__TYPE__:text\n")
+          ? stdout.split("\n").slice(1).join("\n").trim()
+          : stdout.trim();
+        return { stdout: text };
+      } catch (err: any) {
+        return { error: err.message, exitCode: err.code };
+      }
+    };
+  }
+
+  // ─── Tools ────────────────────────────────────────────────
+
+  private async install(repo: string): Promise<{ ok: boolean; name?: string; error?: string }> {
+    try {
+      // Normalize repo URL
+      const repoUrl = repo.startsWith("http") ? repo : `https://${repo}`;
+      const name = repo.split("/").pop()?.replace(".git", "") ?? repo;
+      const pluginDir = join(PLUGINS_DIR, name);
+
+      if (existsSync(pluginDir)) {
+        return { ok: false, error: `Plugin ${name} already installed at ${pluginDir}` };
+      }
+
+      log.info({ repo: repoUrl, dir: pluginDir }, "PluginManager: cloning");
+      execSync(`git clone ${repoUrl} ${pluginDir}`, { timeout: 60000 });
+
+      // Update settings
+      const settings = loadSettings();
+      if (!settings.plugins) settings.plugins = {};
+      settings.plugins[name] = {
+        repo,
+        path: pluginDir,
+        enabled: true,
+        branch: "main",
+      };
+      saveSettings(settings);
+
+      // Load immediately
+      await this.loadPlugin(name, settings.plugins[name]);
+      this.updateHud();
+
+      const loaded = this.plugins.get(name);
+      return { ok: true, name, ...loaded ? { tools: loaded.tools.length, description: loaded.manifest.description } : {} };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  }
+
+  private async update(name: string): Promise<{ ok: boolean; error?: string }> {
+    const plugin = this.plugins.get(name);
+    if (!plugin) return { ok: false, error: `Plugin not found: ${name}` };
+
+    try {
+      execSync(`git -C ${plugin.settings.path} pull`, { timeout: 30000 });
+      // Reload
+      this.plugins.delete(name);
+      await this.loadPlugin(name, plugin.settings);
+      this.updateHud();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  }
+
+  private async remove(name: string): Promise<{ ok: boolean; error?: string }> {
+    // Stop plugin pieces first
+    const loaded = this.plugins.get(name);
+    if (loaded && this.pieceManager) {
+      for (const pieceId of loaded.pieces) {
+        await this.pieceManager.unregisterDynamic(pieceId);
+      }
+    }
+
+    const settings = loadSettings();
+    const ps = settings.plugins?.[name];
+
+    const dir = loaded?.settings.path ?? ps?.path;
+    if (dir && existsSync(dir)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    this.plugins.delete(name);
+    if (settings.plugins) {
+      delete settings.plugins[name];
+      saveSettings(settings);
+    }
+
+    this.updateHud();
+    return { ok: true };
+  }
+
+  private registerTools(): void {
+    this.registry.register({
+      name: "plugin_install",
+      description: "Install a JARVIS plugin from a GitHub repo. Clones to ~/.jarvis/plugins/ and loads tools/prompts.",
+      input_schema: {
+        type: "object",
+        properties: { repo: { type: "string", description: "GitHub repo (e.g. 'github.com/user/jarvis-plugin-test')" } },
+        required: ["repo"],
+      },
+      handler: async (input) => this.install(String(input.repo)),
+    });
+
+    this.registry.register({
+      name: "plugin_list",
+      description: "List all installed JARVIS plugins.",
+      input_schema: { type: "object", properties: {} },
+      handler: async () => {
+        const settings = loadSettings();
+        return {
+          installed: [...this.plugins.values()].map(p => ({
+            name: p.name,
+            description: p.manifest.description,
+            version: p.manifest.version,
+            tools: p.tools,
+            prompts: p.prompts.length,
+            enabled: p.settings.enabled,
+            path: p.settings.path,
+          })),
+          available: Object.entries(settings.plugins ?? {})
+            .filter(([n]) => !this.plugins.has(n))
+            .map(([n, ps]) => ({ name: n, enabled: ps.enabled, path: ps.path })),
+        };
+      },
+    });
+
+    this.registry.register({
+      name: "plugin_update",
+      description: "Update a plugin by pulling latest from git.",
+      input_schema: {
+        type: "object",
+        properties: { name: { type: "string", description: "Plugin name" } },
+        required: ["name"],
+      },
+      handler: async (input) => this.update(String(input.name)),
+    });
+
+    this.registry.register({
+      name: "plugin_enable",
+      description: "Enable a disabled plugin.",
+      input_schema: {
+        type: "object",
+        properties: { name: { type: "string", description: "Plugin name" } },
+        required: ["name"],
+      },
+      handler: async (input) => {
+        const name = String(input.name);
+        const settings = loadSettings();
+        if (!settings.plugins?.[name]) return { ok: false, error: `Plugin not found: ${name}` };
+        settings.plugins[name].enabled = true;
+        saveSettings(settings);
+        await this.loadPlugin(name, settings.plugins[name]);
+        this.updateHud();
+        return { ok: true };
+      },
+    });
+
+    this.registry.register({
+      name: "plugin_disable",
+      description: "Disable an installed plugin (keeps files, stops loading).",
+      input_schema: {
+        type: "object",
+        properties: { name: { type: "string", description: "Plugin name" } },
+        required: ["name"],
+      },
+      handler: async (input) => {
+        const name = String(input.name);
+        const settings = loadSettings();
+        if (!settings.plugins?.[name]) return { ok: false, error: `Plugin not found: ${name}` };
+
+        // Stop plugin pieces
+        const loaded = this.plugins.get(name);
+        if (loaded && this.pieceManager) {
+          for (const pieceId of loaded.pieces) {
+            await this.pieceManager.unregisterDynamic(pieceId);
+          }
+        }
+
+        settings.plugins[name].enabled = false;
+        saveSettings(settings);
+        this.plugins.delete(name);
+        this.updateHud();
+        return { ok: true };
+      },
+    });
+
+    this.registry.register({
+      name: "plugin_remove",
+      description: "Remove a plugin completely (deletes files and settings).",
+      input_schema: {
+        type: "object",
+        properties: { name: { type: "string", description: "Plugin name" } },
+        required: ["name"],
+      },
+      handler: async (input) => this.remove(String(input.name)),
+    });
+  }
+
+  // ─── HUD ──────────────────────────────────────────────────
+
+  private getData(): Record<string, unknown> {
+    return {
+      count: this.plugins.size,
+      plugins: [...this.plugins.values()].map(p => ({ name: p.name, tools: p.tools.length })),
+    };
+  }
+
+  private updateHud(): void {
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "update",
+      pieceId: this.id,
+      data: this.getData(),
+    });
+  }
+}

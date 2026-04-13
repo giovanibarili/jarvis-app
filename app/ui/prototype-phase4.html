@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>JARVIS HUD — Phase 4 Prototype</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a12; overflow: hidden; height: 100vh; width: 100vw; font-family: 'Courier New', monospace; }
+
+  .bracket { position: fixed; width: 60px; height: 60px; z-index: 10; transition: border-color 0.8s ease; }
+  .bracket--tl { top: 20px; left: 20px; border-top: 2px solid rgba(68,170,255,0.4); border-left: 2px solid rgba(68,170,255,0.4); }
+  .bracket--tr { top: 20px; right: 20px; border-top: 2px solid rgba(68,170,255,0.4); border-right: 2px solid rgba(68,170,255,0.4); }
+  .bracket--bl { bottom: 20px; left: 20px; border-bottom: 2px solid rgba(68,170,255,0.4); border-left: 2px solid rgba(68,170,255,0.4); }
+  .bracket--br { bottom: 20px; right: 20px; border-bottom: 2px solid rgba(68,170,255,0.4); border-right: 2px solid rgba(68,170,255,0.4); }
+
+  .status {
+    position: fixed; bottom: 50%; left: 50%;
+    transform: translate(-50%, 260px);
+    text-align: center; z-index: 10; pointer-events: none;
+  }
+  .status-name {
+    font-family: 'Orbitron', monospace; font-size: 18px; letter-spacing: 10px;
+    color: rgba(68,170,255,0.9); transition: color 0.8s ease;
+    text-shadow: 0 0 20px rgba(68,170,255,0.3);
+  }
+  .status-state {
+    font-family: 'Orbitron', monospace; font-size: 9px; letter-spacing: 3px;
+    color: rgba(68,170,255,0.5); margin-top: 6px; transition: color 0.8s ease;
+  }
+
+  .scanlines {
+    position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px);
+    animation: scanline-move 8s linear infinite;
+  }
+  @keyframes scanline-move {
+    0% { background-position: 0 0; }
+    100% { background-position: 0 200px; }
+  }
+
+  .hexgrid {
+    position: fixed; inset: 0; pointer-events: none; z-index: 1; opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'%3E%3Cg fill-rule='evenodd'%3E%3Cg fill='%234af' fill-opacity='1'%3E%3Cpath d='M13.99 9.25l13 7.5v15l-13 7.5L1 31.75v-15l12.99-7.5zM3 17.9v12.7l10.99 6.34 11-6.35V17.9l-11-6.34L3 17.9zM0 15l12.98-7.5V0h-2v6.35L0 12.69v2.3zm0 18.5L12.98 41v8h-2v-6.85L0 35.81v-2.3zM15 0v7.5L27.99 15H28v-2.31h-.01L17 6.35V0h-2zm0 49v-8l12.99-7.5H28v2.31h-.01L17 42.15V49h-2z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  }
+
+  /* Gauge panels */
+  .gauge-panel {
+    position: fixed; z-index: 10; pointer-events: none;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(68,170,255,0.6);
+  }
+  .gauge-panel-left { top: 100px; left: 30px; }
+  .gauge-panel-right { top: 100px; right: 30px; text-align: right; }
+  .gauge-row { margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .gauge-panel-right .gauge-row { justify-content: flex-end; }
+  .gauge-label { color: rgba(68,170,255,0.4); font-size: 8px; letter-spacing: 2px; text-transform: uppercase; font-family: 'Orbitron', monospace; }
+  .gauge-bar { width: 80px; height: 3px; background: rgba(68,170,255,0.1); border-radius: 1px; overflow: hidden; }
+  .gauge-fill { height: 100%; border-radius: 1px; transition: width 1s ease, background 0.8s ease; }
+  .gauge-value { min-width: 30px; font-size: 9px; }
+
+  /* Waveform */
+  .waveform-container {
+    position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+    z-index: 10; pointer-events: none;
+  }
+
+  /* Boot terminal */
+  .boot-terminal {
+    position: fixed; inset: 0; background: #0a0a12; z-index: 100; padding: 40px;
+    font-family: 'JetBrains Mono', monospace; font-size: 13px; overflow: hidden;
+    transition: opacity 1.2s ease;
+  }
+  .boot-terminal.fade-out { opacity: 0; pointer-events: none; }
+  .boot-line { margin-bottom: 2px; opacity: 0; animation: boot-appear 0.1s forwards; }
+  .boot-ok { color: #4a8; }
+  .boot-info { color: #4af; }
+  .boot-warn { color: #fa4; }
+  .boot-welcome { color: #4af; font-weight: bold; }
+  .boot-dim { color: #3a4a5a; }
+  .boot-cursor { display: inline-block; width: 8px; height: 14px; background: #4af; animation: blink 0.8s step-end infinite; margin-left: 4px; vertical-align: middle; }
+  @keyframes boot-appear { to { opacity: 1; } }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  canvas { display: block; position: fixed; inset: 0; z-index: 2; }
+</style>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="boot-terminal" id="bootTerminal"></div>
+
+<div class="bracket bracket--tl"></div>
+<div class="bracket bracket--tr"></div>
+<div class="bracket bracket--bl"></div>
+<div class="bracket bracket--br"></div>
+<div class="hexgrid"></div>
+<div class="scanlines"></div>
+
+<!-- Left gauges -->
+<div class="gauge-panel gauge-panel-left" id="gaugeLeft">
+  <div class="gauge-label">SYSTEM</div>
+  <div class="gauge-row"><span class="gauge-value" id="gCpu">47%</span><div class="gauge-bar"><div class="gauge-fill" id="gCpuBar" style="width:47%;background:#4af"></div></div><span style="color:rgba(68,170,255,0.3);font-size:8px">CPU</span></div>
+  <div class="gauge-row"><span class="gauge-value" id="gMem">62%</span><div class="gauge-bar"><div class="gauge-fill" id="gMemBar" style="width:62%;background:#4af"></div></div><span style="color:rgba(68,170,255,0.3);font-size:8px">MEM</span></div>
+  <div class="gauge-row"><span class="gauge-value" id="gNet">23ms</span><div class="gauge-bar"><div class="gauge-fill" id="gNetBar" style="width:23%;background:#4a8"></div></div><span style="color:rgba(68,170,255,0.3);font-size:8px">NET</span></div>
+  <div style="margin-top:12px"><div class="gauge-label">TOKENS</div></div>
+  <div class="gauge-row"><span class="gauge-value" id="gTokIn">47.4k</span><div class="gauge-bar"><div class="gauge-fill" id="gTokInBar" style="width:35%;background:#4af"></div></div><span style="color:rgba(68,170,255,0.3);font-size:8px">IN</span></div>
+  <div class="gauge-row"><span class="gauge-value" id="gTokOut">1.6k</span><div class="gauge-bar"><div class="gauge-fill" id="gTokOutBar" style="width:8%;background:#4a8"></div></div><span style="color:rgba(68,170,255,0.3);font-size:8px">OUT</span></div>
+</div>
+
+<!-- Right gauges -->
+<div class="gauge-panel gauge-panel-right" id="gaugeRight">
+  <div class="gauge-label">MCP SERVERS</div>
+  <div class="gauge-row"><span style="color:rgba(68,170,255,0.3);font-size:8px">ATLASSIAN</span><div class="gauge-bar"><div class="gauge-fill" style="width:100%;background:#4a8"></div></div><span class="gauge-value" style="color:#4a8">31</span></div>
+  <div class="gauge-row"><span style="color:rgba(68,170,255,0.3);font-size:8px">SLACK</span><div class="gauge-bar"><div class="gauge-fill" style="width:100%;background:#4a8"></div></div><span class="gauge-value" style="color:#4a8">13</span></div>
+  <div class="gauge-row"><span style="color:rgba(68,170,255,0.3);font-size:8px">NU-MCP</span><div class="gauge-bar"><div class="gauge-fill" style="width:100%;background:#4a8"></div></div><span class="gauge-value" style="color:#4a8">4</span></div>
+  <div class="gauge-row"><span style="color:rgba(68,170,255,0.3);font-size:8px">GLEAN</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:#f44"></div></div><span class="gauge-value" style="color:#f44">err</span></div>
+  <div style="margin-top:12px"><div class="gauge-label">TOOLS</div></div>
+  <div class="gauge-row"><span style="color:rgba(68,170,255,0.3);font-size:8px">BUILT-IN</span><div class="gauge-bar"><div class="gauge-fill" style="width:100%;background:#4af"></div></div><span class="gauge-value">7</span></div>
+  <div class="gauge-row"><span style="color:rgba(68,170,255,0.3);font-size:8px">TOTAL</span><div class="gauge-bar"><div class="gauge-fill" style="width:100%;background:#4af"></div></div><span class="gauge-value">58</span></div>
+</div>
+
+<!-- Waveform -->
+<canvas id="waveCanvas" class="waveform-container" width="300" height="40"></canvas>
+
+<div class="status">
+  <div class="status-name">J A R V I S</div>
+  <div class="status-state">O N L I N E</div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ===================== BOOT =====================
+const bootLines = [
+  { text: '> JARVIS SYSTEM BOOT v4.0.0', cls: 'boot-dim' },
+  { text: '> Initializing holographic subsystems...', cls: 'boot-dim' },
+  { text: '  [OK] EventBus — pub/sub core', cls: 'boot-ok' },
+  { text: '  [OK] AnthropicSession — claude-sonnet-4-6', cls: 'boot-ok' },
+  { text: '  [OK] ToolRegistry — 7 built-in tools', cls: 'boot-ok' },
+  { text: '> Connecting MCP servers...', cls: 'boot-dim' },
+  { text: '  [OK] atlassian — 31 tools', cls: 'boot-ok' },
+  { text: '  [OK] slack — 13 tools', cls: 'boot-ok' },
+  { text: '  [OK] nu-mcp — 4 tools', cls: 'boot-ok' },
+  { text: '  [..] glean — timeout', cls: 'boot-warn' },
+  { text: '> Holographic core — shader compilation', cls: 'boot-info' },
+  { text: '  [OK] Fresnel rim, scanlines, noise grain', cls: 'boot-ok' },
+  { text: '  [OK] Particle field — 6000 vertices', cls: 'boot-ok' },
+  { text: '  [OK] Ring system — 7 orbital planes', cls: 'boot-ok' },
+  { text: '  [OK] Audio waveform — 64 bands', cls: 'boot-ok' },
+  { text: '> System gauges calibrated', cls: 'boot-info' },
+  { text: '> Voice subsystem standby', cls: 'boot-info' },
+  { text: '', cls: 'boot-dim' },
+  { text: '  ╔══════════════════════════════════════════╗', cls: 'boot-welcome' },
+  { text: '  ║   J.A.R.V.I.S. — FULLY OPERATIONAL      ║', cls: 'boot-welcome' },
+  { text: '  ║   58 tools | Phase 4 | All systems go    ║', cls: 'boot-welcome' },
+  { text: '  ║   Good morning, Mr. Stark.               ║', cls: 'boot-welcome' },
+  { text: '  ╚══════════════════════════════════════════╝', cls: 'boot-welcome' },
+];
+const terminal = document.getElementById('bootTerminal');
+let bootIdx = 0;
+function addBootLine() {
+  if (bootIdx >= bootLines.length) {
+    setTimeout(() => { terminal.classList.add('fade-out'); setTimeout(() => terminal.style.display = 'none', 1200); }, 1000);
+    return;
+  }
+  const l = bootLines[bootIdx];
+  const d = document.createElement('div');
+  d.className = `boot-line ${l.cls}`; d.textContent = l.text;
+  terminal.appendChild(d); bootIdx++;
+  setTimeout(addBootLine, 70 + Math.random() * 50);
+}
+addBootLine();
+
+// ===================== WAVEFORM =====================
+const waveCanvas = document.getElementById('waveCanvas');
+const wCtx = waveCanvas.getContext('2d');
+const bands = 64;
+const bandValues = new Float32Array(bands);
+let waveColor = '68,170,255';
+
+function drawWaveform() {
+  requestAnimationFrame(drawWaveform);
+  const t = performance.now() / 1000;
+  const w = waveCanvas.width, h = waveCanvas.height;
+  wCtx.clearRect(0, 0, w, h);
+
+  for (let i = 0; i < bands; i++) {
+    // Simulated audio — two sine waves multiplied
+    const v = (Math.sin(t * 2 + i * 0.3) * Math.sin(t * 1.3 + i * 0.15) * 0.5 + 0.5);
+    bandValues[i] += (v - bandValues[i]) * 0.15; // smooth
+    const bw = w / bands;
+    const bh = bandValues[i] * h * 0.8;
+    const x = i * bw;
+    const y = (h - bh) / 2;
+
+    wCtx.fillStyle = `rgba(${waveColor},${0.3 + bandValues[i] * 0.5})`;
+    wCtx.fillRect(x + 1, y, bw - 2, bh);
+
+    // Glow
+    wCtx.fillStyle = `rgba(${waveColor},${bandValues[i] * 0.15})`;
+    wCtx.fillRect(x - 1, y - 2, bw + 2, bh + 4);
+  }
+}
+drawWaveform();
+
+// ===================== GAUGES ANIMATION =====================
+function animateGauges() {
+  const t = performance.now() / 1000;
+  const cpu = 35 + Math.sin(t * 0.7) * 15 + Math.random() * 5;
+  const mem = 55 + Math.sin(t * 0.3) * 10;
+  const net = 15 + Math.sin(t * 1.2) * 10 + Math.random() * 5;
+
+  document.getElementById('gCpu').textContent = Math.round(cpu) + '%';
+  document.getElementById('gCpuBar').style.width = cpu + '%';
+  document.getElementById('gCpuBar').style.background = cpu > 80 ? '#f44' : cpu > 60 ? '#fa4' : '#4af';
+
+  document.getElementById('gMem').textContent = Math.round(mem) + '%';
+  document.getElementById('gMemBar').style.width = mem + '%';
+
+  document.getElementById('gNet').textContent = Math.round(net) + 'ms';
+  document.getElementById('gNetBar').style.width = net + '%';
+  document.getElementById('gNetBar').style.background = net > 50 ? '#fa4' : '#4a8';
+
+  requestAnimationFrame(animateGauges);
+}
+animateGauges();
+
+// ===================== 3D SCENE =====================
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.z = 5;
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+// --- Holographic Core ---
+const holoVert = `
+  varying vec2 vUv; varying vec3 vNormal; varying vec3 vViewDir; varying vec3 vWorldPos;
+  void main() {
+    vUv = uv; vNormal = normalize(normalMatrix * normal);
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vViewDir = normalize(-mvPos.xyz);
+    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+const holoFrag = `
+  uniform float uTime; uniform vec3 uColor; uniform float uIntensity; uniform float uAudio;
+  varying vec2 vUv; varying vec3 vNormal; varying vec3 vViewDir; varying vec3 vWorldPos;
+  float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+  void main() {
+    float fresnel = pow(1.0 - abs(dot(vViewDir, vNormal)), 3.0);
+    float scanline = pow(sin(vWorldPos.y * 40.0 + uTime * 2.0) * 0.5 + 0.5, 8.0) * 0.4;
+    float wave = smoothstep(0.0, 0.1, abs(sin(uTime * 0.5) - vUv.y));
+    wave = 1.0 - (1.0 - wave) * 0.7;
+    float noise = hash(vUv * 200.0 + uTime * 10.0) * 0.08;
+    float audioReact = 1.0 + uAudio * 0.4;
+    float energy = (fresnel * 0.7 + scanline + noise) * wave * uIntensity * audioReact;
+    gl_FragColor = vec4(uColor * energy, energy * 0.85);
+  }
+`;
+
+const coreMat = new THREE.ShaderMaterial({
+  vertexShader: holoVert, fragmentShader: holoFrag,
+  uniforms: { uTime: {value:0}, uColor: {value: new THREE.Color(0.3,0.7,1.0)}, uIntensity: {value:1.5}, uAudio: {value:0} },
+  transparent: true, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const core = new THREE.Mesh(new THREE.SphereGeometry(0.9, 64, 64), coreMat);
+scene.add(core);
+
+// Inner energy
+const innerMat = new THREE.ShaderMaterial({
+  vertexShader: holoVert,
+  fragmentShader: `
+    uniform float uTime; uniform vec3 uColor; uniform float uAudio;
+    varying vec2 vUv; varying vec3 vNormal; varying vec3 vViewDir;
+    #define PI 3.14159265
+    void main() {
+      vec2 c = vUv - 0.5; float dist = length(c);
+      float rings = sin(dist * 12.0 * PI - uTime * 2.0); rings = pow(rings * 0.5 + 0.5, 4.0);
+      float center = 1.0 - smoothstep(0.0, 0.4, dist); center = pow(center, 2.0);
+      float fresnel = pow(1.0 - abs(dot(vViewDir, vNormal)), 2.0);
+      float audioScale = 1.0 + uAudio * 0.3;
+      float e = (center * 0.9 + rings * 0.3 + fresnel * 0.4) * audioScale;
+      gl_FragColor = vec4(uColor * e * 1.5, e * 0.9);
+    }
+  `,
+  uniforms: { uTime: {value:0}, uColor: {value: new THREE.Color(0.4,0.8,1.0)}, uAudio: {value:0} },
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const innerCore = new THREE.Mesh(new THREE.SphereGeometry(0.35, 32, 32), innerMat);
+scene.add(innerCore);
+
+// Glow layers
+function mkGlow(r, col, op) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 32),
+    new THREE.MeshBasicMaterial({color:col, transparent:true, opacity:op, side:THREE.BackSide, blending:THREE.AdditiveBlending, depthWrite:false}));
+  scene.add(m); return m;
+}
+const g1 = mkGlow(1.3, new THREE.Color(0.2,0.5,1.0), 0.07);
+const g2 = mkGlow(1.8, new THREE.Color(0.15,0.3,0.8), 0.03);
+const g3 = mkGlow(2.5, new THREE.Color(0.1,0.2,0.6), 0.015);
+
+// Rings
+const rings = [];
+for (let i = 0; i < 7; i++) {
+  const r = 1.1 + i * 0.12;
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color().setHSL(0.58+i*0.02, 0.7, 0.5),
+    transparent:true, opacity:0.25, blending:THREE.AdditiveBlending, depthWrite:false
+  });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.006, 16, 120), mat);
+  ring.add(new THREE.Mesh(new THREE.TorusGeometry(r, 0.025, 16, 120),
+    new THREE.MeshBasicMaterial({color:mat.color.clone(), transparent:true, opacity:0.04, blending:THREE.AdditiveBlending, depthWrite:false})));
+  ring.rotation.x = Math.PI/2 + (i-3)*0.12; ring.rotation.y = i*0.4;
+  ring.userData = { speed: (i%2===0?1:-1)*(0.2+i*0.08), baseX: ring.rotation.x };
+  rings.push(ring); scene.add(ring);
+}
+
+// Arc segments
+const arcGroup = new THREE.Group();
+for (let i = 0; i < 8; i++) {
+  const arc = new THREE.Mesh(new THREE.TorusGeometry(1.95, 0.012, 8, 20, Math.PI*0.15),
+    new THREE.MeshBasicMaterial({color:new THREE.Color(0.3,0.6,1.0), transparent:true, opacity:0.4, blending:THREE.AdditiveBlending, depthWrite:false}));
+  arc.rotation.z = (i/8)*Math.PI*2; arcGroup.add(arc);
+  const ag = new THREE.Mesh(new THREE.TorusGeometry(1.95, 0.04, 8, 20, Math.PI*0.15),
+    new THREE.MeshBasicMaterial({color:new THREE.Color(0.2,0.4,0.9), transparent:true, opacity:0.08, blending:THREE.AdditiveBlending, depthWrite:false}));
+  ag.rotation.z = (i/8)*Math.PI*2; arcGroup.add(ag);
+}
+arcGroup.rotation.x = Math.PI/2; scene.add(arcGroup);
+
+// Particles
+const pCount = 6000;
+const pGeo = new THREE.BufferGeometry();
+const pPos = new Float32Array(pCount*3), pCol = new Float32Array(pCount*3);
+for (let i = 0; i < pCount; i++) {
+  const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 2.2+(Math.random()-0.5)*0.8;
+  pPos[i*3]=r*Math.sin(ph)*Math.cos(th); pPos[i*3+1]=r*Math.sin(ph)*Math.sin(th); pPos[i*3+2]=r*Math.cos(ph);
+  const t=Math.random(); pCol[i*3]=0.2+t*0.15; pCol[i*3+1]=0.4+t*0.3; pCol[i*3+2]=0.7+t*0.3;
+}
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+pGeo.setAttribute('color', new THREE.BufferAttribute(pCol, 3));
+const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
+  size:0.01, vertexColors:true, transparent:true, opacity:0.5, blending:THREE.AdditiveBlending, depthWrite:false
+}));
+scene.add(particles);
+
+// ===================== ANIMATION =====================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // Simulated audio level
+  const audio = (Math.sin(t*2)*Math.sin(t*1.3)*0.5+0.5);
+  coreMat.uniforms.uTime.value = t;
+  coreMat.uniforms.uAudio.value = audio;
+  innerMat.uniforms.uTime.value = t;
+  innerMat.uniforms.uAudio.value = audio;
+
+  // Audio-reactive core scale
+  const scale = 1.0 + audio * 0.08;
+  core.scale.setScalar(scale);
+  innerCore.scale.setScalar(scale * 0.95);
+  innerCore.rotation.y = -t * 0.3;
+  core.rotation.y = t * 0.15;
+
+  g1.scale.setScalar(1.0 + Math.sin(t*1.5)*0.04 + audio*0.05);
+  g2.scale.setScalar(1.0 + Math.sin(t*0.9)*0.03);
+
+  // Audio-reactive ring speed
+  rings.forEach(r => {
+    const audioBoost = 1.0 + audio * 0.5;
+    r.rotation.z += r.userData.speed * 0.008 * audioBoost;
+    r.rotation.x = r.userData.baseX + Math.sin(t*0.5 + r.userData.speed)*0.05;
+  });
+
+  particles.rotation.y = t * 0.04;
+  particles.rotation.x = Math.sin(t*0.2)*0.08;
+  arcGroup.rotation.z = t * 0.15;
+  arcGroup.rotation.x = Math.PI/2 + Math.sin(t*0.3)*0.05;
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== STATE CYCLING =====================
+const states = [
+  { name:'O N L I N E', color:[0.3,0.7,1.0], lbl:'rgba(68,170,255,0.9)', wave:'68,170,255', bracket:'rgba(68,170,255,0.4)' },
+  { name:'P R O C E S S I N G', color:[1.0,0.6,0.2], lbl:'rgba(255,170,68,0.9)', wave:'255,170,68', bracket:'rgba(255,170,68,0.4)' },
+  { name:'W A I T I N G   T O O L S', color:[0.65,0.4,1.0], lbl:'rgba(170,102,255,0.9)', wave:'170,102,255', bracket:'rgba(170,102,255,0.4)' },
+  { name:'S P E A K I N G', color:[0.2,0.9,0.7], lbl:'rgba(50,230,180,0.9)', wave:'50,230,180', bracket:'rgba(50,230,180,0.4)' },
+  { name:'L I S T E N I N G', color:[0.3,0.9,0.4], lbl:'rgba(80,230,100,0.9)', wave:'80,230,100', bracket:'rgba(80,230,100,0.4)' },
+  { name:'E R R O R', color:[1.0,0.25,0.25], lbl:'rgba(255,68,68,0.9)', wave:'255,68,68', bracket:'rgba(255,68,68,0.4)' },
+];
+let si = 0;
+document.addEventListener('click', () => {
+  si = (si+1) % states.length;
+  const s = states[si];
+  coreMat.uniforms.uColor.value.setRGB(s.color[0], s.color[1], s.color[2]);
+  innerMat.uniforms.uColor.value.setRGB(s.color[0]*1.2, s.color[1]*1.2, s.color[2]*1.2);
+  g1.material.color.setRGB(s.color[0]*0.6, s.color[1]*0.6, s.color[2]*0.6);
+  g2.material.color.setRGB(s.color[0]*0.4, s.color[1]*0.4, s.color[2]*0.4);
+  g3.material.color.setRGB(s.color[0]*0.3, s.color[1]*0.3, s.color[2]*0.3);
+  rings.forEach(r => r.material.color.setRGB(s.color[0]*0.7, s.color[1]*0.7, s.color[2]*0.7));
+  arcGroup.children.forEach(c => c.material.color.setRGB(s.color[0]*0.6, s.color[1]*0.6, s.color[2]*0.6));
+  document.querySelector('.status-state').textContent = s.name;
+  document.querySelector('.status-state').style.color = s.lbl;
+  document.querySelector('.status-name').style.color = s.lbl;
+  document.querySelector('.status-name').style.textShadow = `0 0 20px ${s.lbl.replace('0.9','0.3')}`;
+  waveColor = s.wave;
+  document.querySelectorAll('.bracket').forEach(b => {
+    b.style.borderColor = s.bracket;
+  });
+});
+</script>
+</body>
+</html>

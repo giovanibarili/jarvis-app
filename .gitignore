@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.js.map
+.env
+.env.local
+.jarvis/*
+!.jarvis/settings.json
+app/jarvis.md
+app/mcp.user.json
