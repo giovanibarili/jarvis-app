@@ -1,8 +1,5 @@
 import { Rnd } from 'react-rnd'
-import { useRef, useState, useEffect, useCallback, type ReactNode } from 'react'
-
-/** Global z-index counter — incremented on every panel click so the last-clicked panel is on top */
-let globalZIndex = 10
+import { useRef, useEffect, useCallback, type ReactNode } from 'react'
 
 type Props = {
   id: string
@@ -73,6 +70,13 @@ export function DraggablePanel({
     observer.observe(innerRef.current)
     return () => observer.disconnect()
   }, [autoGrowBottom, syncHeight])
+
+  // Sync position/size when props change (e.g. from hud_layout tool)
+  useEffect(() => {
+    if (!rndRef.current) return
+    rndRef.current.updatePosition({ x: defaultX, y: defaultY })
+    rndRef.current.updateSize({ width: defaultWidth, height: defaultHeight })
+  }, [defaultX, defaultY, defaultWidth, defaultHeight])
 
   return (
     <Rnd

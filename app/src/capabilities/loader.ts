@@ -123,10 +123,33 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
   private parseOutput(stdout: string, stderr: string): unknown {
     const output = stdout;
     if (output.startsWith("__TYPE__:image\n")) {
-      const lines = output.split("\n");
+      const lines = output.split("\n").filter(l => l.trim());
       const mimeLine = lines.find(l => l.startsWith("__MIME__:"));
       const mime = mimeLine?.replace("__MIME__:", "") ?? "image/png";
-      const base64Data = lines.slice(lines.findIndex(l => l.startsWith("__MIME__:")) + 1).join("\n").trim();
+
+      // Check if next line is a file path (starts with /)
+      const dataLine = lines.find(l => !l.startsWith("__TYPE__:") && !l.startsWith("__MIME__:"));
+      let base64Data: string;
+
+      if (dataLine && dataLine.startsWith("/")) {
+        // It's a file path — read and encode (readFileSync imported at top)
+        try {
+          const buf = readFileSync(dataLine.trim());
+          base64Data = buf.toString("base64");
+          // Detect mime from extension
+          const ext = dataLine.trim().split(".").pop()?.toLowerCase();
+          const mimeMap: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+          const detectedMime = mimeMap[ext ?? ""] ?? mime;
+          return [
+            { type: "image" as const, source: { type: "base64" as const, media_type: detectedMime, data: base64Data } },
+          ];
+        } catch (err: any) {
+          return { error: `Failed to read image file: ${err.message}` };
+        }
+      }
+
+      // Otherwise it's inline base64
+      base64Data = lines.slice(lines.findIndex(l => l.startsWith("__MIME__:")) + 1).join("\n").trim();
       return [
         { type: "image" as const, source: { type: "base64" as const, media_type: mime, data: base64Data } },
       ];

@@ -47,11 +47,12 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     ctx.lineWidth = 10
     ctx.stroke()
 
-    // Segments
+    // Segments — proportional to total context used (contextPct), split by relative weight
+    const usedSweep = contextPct * Math.PI * 2
     let angle = -Math.PI / 2
     if (total > 0) {
       segments.forEach(seg => {
-        const sweep = (seg.value / maxContext) * Math.PI * 2
+        const sweep = (seg.value / total) * usedSweep
         if (sweep > 0.01) {
           ctx.beginPath()
           ctx.arc(cx, cy, outerR, angle, angle + sweep)
