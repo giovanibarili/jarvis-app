@@ -44,6 +44,7 @@ interface LoadedPlugin {
   prompts: string[];
   pieces: string[];      // piece IDs loaded from this plugin
   renderers: string[];   // renderer file names (without .tsx)
+  context: string;       // system prompt context from context.md
 }
 
 export class PluginManager implements Piece {
@@ -78,7 +79,14 @@ export class PluginManager implements Piece {
     const list = [...this.plugins.values()]
       .map(p => `${p.name}: ${p.manifest.description} (${p.tools.length} tools, ${p.pieces.length} pieces)`)
       .join("\n");
-    return `## Plugins\n${list}\nTools: plugin_install, plugin_list, plugin_update, plugin_enable, plugin_disable, plugin_remove`;
+    const header = `## Plugins\n${list}\nTools: plugin_install, plugin_list, plugin_update, plugin_enable, plugin_disable, plugin_remove`;
+
+    // Collect context.md from each plugin
+    const contexts = [...this.plugins.values()]
+      .map(p => p.context)
+      .filter(Boolean);
+
+    return [header, ...contexts].join("\n\n");
   }
 
   async start(bus: EventBus): Promise<void> {
@@ -139,7 +147,12 @@ export class PluginManager implements Piece {
     }
 
     const manifest: PluginManifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    const loaded: LoadedPlugin = { name, manifest, settings: ps, tools: [], prompts: [], pieces: [], renderers: [] };
+
+    // Load context.md — static system prompt instructions from plugin
+    const contextPath = join(pluginDir, "context.md");
+    const context = existsSync(contextPath) ? readFileSync(contextPath, "utf-8").trim() : "";
+
+    const loaded: LoadedPlugin = { name, manifest, settings: ps, tools: [], prompts: [], pieces: [], renderers: [], context };
 
     // Load tools
     const toolsDir = join(pluginDir, "tools");
