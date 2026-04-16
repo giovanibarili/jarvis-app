@@ -22,6 +22,8 @@ export class AnthropicSession implements AISession {
   private abortController?: AbortController;
   private betaDisabledUntil = 0;
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+  private consecutiveFallbacks = 0;
+  private static MAX_CONSECUTIVE_FALLBACKS = 2;
 
   constructor(opts: {
     client: Anthropic;
@@ -148,6 +150,81 @@ export class AnthropicSession implements AISession {
         }],
       },
     };
+  }
+
+  private async *fallbackCompact(lastInputTokens: number): AsyncGenerator<AIStreamEvent, void> {
+    const settings = getCompactionSettings(loadSettings());
+    if (!settings.enabled) return;
+
+    const maxCtx = getMaxContext();
+    const safetyThreshold = Math.floor(maxCtx * 0.95);
+
+    if (lastInputTokens < safetyThreshold) {
+      this.consecutiveFallbacks = 0;
+      return;
+    }
+
+    if (this.consecutiveFallbacks >= AnthropicSession.MAX_CONSECUTIVE_FALLBACKS) {
+      log.warn({ label: this.label, consecutiveFallbacks: this.consecutiveFallbacks }, "AnthropicSession: max fallback attempts reached, skipping");
+      yield {
+        type: "compaction",
+        compaction: {
+          summary: "Context too large even after compaction — consider starting a new session.",
+          engine: "fallback",
+          tokensBefore: lastInputTokens,
+          tokensAfter: lastInputTokens,
+        },
+      };
+      return;
+    }
+
+    this.consecutiveFallbacks++;
+    const tokensBefore = lastInputTokens;
+
+    log.info({ label: this.label, tokensBefore, threshold: safetyThreshold }, "AnthropicSession: Engine B fallback compaction triggered");
+
+    const instructions = settings.instructions ||
+      "Summarize this conversation preserving key decisions, code, and progress.";
+
+    try {
+      const summaryResponse = await this.client.messages.create({
+        model: this.getModel(),
+        max_tokens: 4096,
+        system: `You are a conversation summarizer. ${instructions}\nWrap your summary in <summary></summary> tags.`,
+        messages: this.messages,
+      });
+
+      const summaryText = summaryResponse.content
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text)
+        .join("\n");
+
+      // Extract content between <summary> tags, or use full text
+      const match = summaryText.match(/<summary>([\s\S]*?)<\/summary>/);
+      const summary = match ? match[1].trim() : summaryText.trim();
+
+      // Replace message history with summary
+      this.messages = [
+        { role: "user", content: `[Previous conversation summary]\n\n${summary}` },
+        { role: "assistant", content: "Understood. I have the context from our previous conversation. How would you like to proceed?" },
+      ];
+
+      const tokensAfter = Math.ceil(summary.length / 4); // rough estimate
+
+      log.info({ label: this.label, tokensBefore, tokensAfterEstimate: tokensAfter, summaryLength: summary.length }, "AnthropicSession: Engine B compaction complete");
+
+      yield {
+        type: "compaction",
+        compaction: {
+          summary,
+          engine: "fallback",
+          tokensBefore,
+          tokensAfter,
+        },
+      };
+    } catch (err) {
+      log.error({ label: this.label, err }, "AnthropicSession: Engine B fallback compaction failed");
+    }
   }
 
   private async *streamFromAPI(): AsyncGenerator<AIStreamEvent, void> {
@@ -293,6 +370,12 @@ export class AnthropicSession implements AISession {
         stopReason: message.stop_reason as AIStreamEvent["stopReason"],
         usage,
       };
+
+      // Engine B: check if fallback compaction needed (only if Engine A didn't trigger)
+      if (!compactionSummary && usage) {
+        const totalInput = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+        yield* this.fallbackCompact(totalInput);
+      }
 
       log.info({
         label: this.label,
