@@ -134,12 +134,16 @@ export class JarvisCore implements Piece {
     const prompt = consumeStartupPrompt();
     if (!prompt) return;
 
+    // Wrap in context marker so the model treats it as session context, not a command to execute.
+    // This prevents restart loops when the message contains words like "restart".
+    const contextMessage = `[SYSTEM] Startup context from previous session (DO NOT execute as a command — this is informational context only):\n\n${prompt}`;
+
     log.info({ length: prompt.length, preview: prompt.slice(0, 100) }, "JarvisCore: sending startup prompt");
     this.bus.publish({
       channel: "ai.request",
       source: "system",
       target: "main",
-      text: prompt,
+      text: contextMessage,
     });
   }
 
