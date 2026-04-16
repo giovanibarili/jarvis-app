@@ -81,6 +81,23 @@ export function ChatOutput() {
             return ''
           })
           break
+        case 'compaction':
+          setIsThinking(false)
+          setIsStreaming(false)
+          setStreamingText(prev => {
+            if (prev) {
+              setEntries(msgs => [...msgs, { kind: 'message', role: 'assistant', text: prev, source: data.source, session: data.session }])
+            }
+            return ''
+          })
+          setEntries(prev => [...prev, {
+            kind: 'compaction',
+            engine: data.engine ?? 'api',
+            tokensBefore: data.tokensBefore ?? 0,
+            tokensAfter: data.tokensAfter ?? 0,
+            summary: data.summary ?? '',
+          }])
+          break
         case 'session_cleared':
           setEntries([])
           setStreamingText('')
@@ -94,9 +111,12 @@ export function ChatOutput() {
   }, [])
 
   const toggleExpand = useCallback((index: number) => {
-    setEntries(prev => prev.map((e, j) =>
-      j === index && e.kind === 'capability' ? { ...e, expanded: !e.expanded } : e
-    ))
+    setEntries(prev => prev.map((e, j) => {
+      if (j !== index) return e
+      if (e.kind === 'capability') return { ...e, expanded: !e.expanded }
+      if (e.kind === 'compaction') return { ...e, expanded: !e.expanded }
+      return e
+    }))
   }, [])
 
   const userLabel = (source?: string) => {

@@ -5,8 +5,9 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const data = state.data as any
 
-  const inputTokens = data?.inputTokens ?? 0
-  const outputTokens = data?.outputTokens ?? 0
+  const sessionInputTokens = data?.sessionInputTokens ?? data?.inputTokens ?? 0
+  const sessionOutputTokens = data?.sessionOutputTokens ?? data?.outputTokens ?? 0
+  const contextTokens = data?.contextTokens ?? 0
   const cachePct = data?.cachePct ?? 0
   const contextPct = data?.contextPct ?? 0
   const maxContext = data?.maxContext ?? 200000
@@ -15,6 +16,10 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const systemTokens = data?.systemTokens ?? 0
   const toolsTokens = data?.toolsTokens ?? 0
   const messagesTokens = data?.messagesTokens ?? 0
+  const streaming = data?.streaming ?? false
+  const streamingVerb = data?.streamingVerb ?? ''
+  const streamingElapsedMs = data?.streamingElapsedMs ?? 0
+  const streamingOutputChars = data?.streamingOutputChars ?? 0
 
   useEffect(() => {
     const c = canvasRef.current
@@ -23,7 +28,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     if (!ctx) return
 
     const w = c.width, h = c.height
-    const cx = w / 2, cy = h / 2 - 15
+    const cx = w / 2, cy = h / 2 - 25
     ctx.clearRect(0, 0, w, h)
 
     const outerR = 70
@@ -102,7 +107,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     }
 
     // ─── Inner ring: output ───
-    const outputPct = maxContext > 0 ? outputTokens / (maxContext / 10) : 0
+    const outputPct = maxContext > 0 ? sessionOutputTokens / (maxContext / 10) : 0
     ctx.beginPath()
     ctx.arc(cx, cy, innerR, 0, Math.PI * 2)
     ctx.strokeStyle = 'rgba(42,58,74,0.15)'
@@ -120,12 +125,12 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     // ─── Center text ───
     const ctxColor = contextPct > 0.8 ? '#f44' : contextPct > 0.5 ? '#fa4' : '#fff'
     ctx.fillStyle = ctxColor
-    ctx.font = '500 16px "JetBrains Mono", monospace'
+    ctx.font = '500 14px "JetBrains Mono", monospace'
     ctx.textAlign = 'center'
-    ctx.fillText((contextPct * 100).toFixed(0) + '%', cx, cy - 2)
+    ctx.fillText(`${fmt(contextTokens)} / ${fmt(maxContext)}`, cx, cy - 4)
     ctx.fillStyle = '#5a6a7a'
     ctx.font = '500 8px "Orbitron", monospace'
-    ctx.fillText('CONTEXT', cx, cy + 10)
+    ctx.fillText(`CONTEXT ${(contextPct * 100).toFixed(1)}%`, cx, cy + 10)
 
     // ─── Legend below ring ───
     const ly = cy + outerR + 16
@@ -145,23 +150,39 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       ctx.fillText(item.label, lx - 4, ly + 5)
     })
 
-    // ─── Stats row ───
+    // ─── Stats row (session accumulated totals) ───
     const sy = ly + 16
+    ctx.fillStyle = '#4a5a6a'
+    ctx.font = '7px "Orbitron", monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText('SESSION', cx, sy)
     ctx.fillStyle = '#5a6a7a'
     ctx.font = '8px "JetBrains Mono", monospace'
-    ctx.textAlign = 'center'
-    ctx.fillText(`IN ${fmt(inputTokens)}  OUT ${fmt(outputTokens)}  REQ ${requestCount}`, cx, sy)
+    ctx.fillText(`IN ${fmt(sessionInputTokens)}  OUT ${fmt(sessionOutputTokens)}  REQ ${requestCount}`, cx, sy + 12)
 
-    // ─── Model ───
-    ctx.fillStyle = '#4af'
-    ctx.font = '7px "Orbitron", monospace'
-    ctx.fillText(model, cx, sy + 14)
+    // ─── Streaming status or Model ───
+    if (streaming) {
+      const elapsedSec = Math.floor(streamingElapsedMs / 1000)
+      const estOutputTokens = Math.round(streamingOutputChars / 4) // rough char→token estimate
+      const statusText = `${streamingVerb}… ${elapsedSec}s · ↑ ${fmt(estOutputTokens)} tok`
+      // Pulsing effect
+      const pulseAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 400)
+      ctx.globalAlpha = pulseAlpha
+      ctx.fillStyle = '#f1fa8c'
+      ctx.font = '500 8px "JetBrains Mono", monospace'
+      ctx.fillText(statusText, cx, sy + 24)
+      ctx.globalAlpha = 1
+    } else {
+      ctx.fillStyle = '#4af'
+      ctx.font = '7px "Orbitron", monospace'
+      ctx.fillText(model, cx, sy + 24)
+    }
 
-  }, [inputTokens, outputTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens])
+  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, streamingElapsedMs, streamingOutputChars])
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-      <canvas ref={canvasRef} width={260} height={230} />
+      <canvas ref={canvasRef} width={260} height={265} />
     </div>
   )
 }

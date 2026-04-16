@@ -10,6 +10,7 @@ interface ChatImage {
 export type ChatEntry =
   | { kind: 'message'; role: 'user' | 'assistant'; text: string; images?: ChatImage[]; source?: string; session?: string; aborted?: boolean }
   | { kind: 'capability'; name: string; id: string; args?: string; status: 'running' | 'done' | 'cancelled'; ms?: number; output?: string; expanded?: boolean }
+  | { kind: 'compaction'; engine: 'api' | 'fallback'; tokensBefore: number; tokensAfter: number; summary: string; expanded?: boolean }
 
 interface Props {
   entries: ChatEntry[]
@@ -157,6 +158,48 @@ export function ChatTimeline({
                   onClick={() => onToggleExpand(i)}
                 >
                   {visibleLines.join('\n')}
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        if (entry.kind === 'compaction') {
+          const beforeK = Math.round(entry.tokensBefore / 1000)
+          const afterK = Math.round(entry.tokensAfter / 1000)
+          const badge = entry.engine === 'fallback' ? ' (fallback)' : ''
+          return (
+            <div key={i} style={{ marginBottom: '2px' }}>
+              <div
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: entry.expanded ? '4px 4px 0 0' : '4px',
+                  fontSize: '10px',
+                  borderLeft: '3px solid #8be9fd',
+                  background: '#1a1e2e',
+                  color: '#8be9fd',
+                  cursor: 'pointer',
+                }}
+                onClick={() => onToggleExpand(i)}
+              >
+                Context compacted — {beforeK}K → {afterK}K tokens{badge}
+                <span style={{ marginLeft: '4px', opacity: 0.5 }}>{entry.expanded ? '▾' : '▸'}</span>
+              </div>
+              {entry.expanded && (
+                <div style={{
+                  padding: '4px 8px 4px 14px',
+                  background: '#111420',
+                  borderLeft: '3px solid #333',
+                  borderRadius: '0 0 4px 4px',
+                  fontSize: '9px',
+                  color: '#888',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                  lineHeight: '1.4',
+                }}>
+                  {entry.summary}
                 </div>
               )}
             </div>

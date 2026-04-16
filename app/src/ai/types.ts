@@ -1,10 +1,10 @@
 // src/ai/types.ts
 
 export interface AIStreamEvent {
-  type: 'text_delta' | 'tool_use' | 'message_complete' | 'error';
+  type: 'text_delta' | 'tool_use' | 'message_complete' | 'error' | 'compaction';
   text?: string;
   toolUse?: { id: string; name: string; input: Record<string, unknown> };
-  stopReason?: 'end_turn' | 'tool_use' | 'max_tokens';
+  stopReason?: 'end_turn' | 'tool_use' | 'max_tokens' | 'compaction';
   usage?: {
     input_tokens: number;
     output_tokens: number;
@@ -12,6 +12,12 @@ export interface AIStreamEvent {
     cache_read_input_tokens: number;
   };
   error?: string;
+  compaction?: {
+    summary: string;
+    engine: 'api' | 'fallback';
+    tokensBefore: number;
+    tokensAfter: number;
+  };
 }
 
 export type ToolResultContent =

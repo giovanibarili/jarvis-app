@@ -26,11 +26,19 @@ export interface ProviderSettings {
   baseUrl?: string;
 }
 
+export interface CompactionSettings {
+  enabled: boolean;
+  thresholdPercent: number;
+  instructions: string;
+  pauseAfterCompaction: boolean;
+}
+
 export interface Settings {
   pieces: Record<string, PieceSettings & { config?: PieceConfig }>;
   plugins?: Record<string, PluginSettings>;
   providers?: Record<string, ProviderSettings>;
   model?: string;
+  compaction?: CompactionSettings;
 }
 
 const SETTINGS_DIR = join(process.cwd(), ".jarvis");
@@ -57,12 +65,22 @@ function loadFile(path: string): Settings {
   }
 }
 
+const DEFAULT_COMPACTION: CompactionSettings = {
+  enabled: true,
+  thresholdPercent: 83.5,
+  instructions: "Preserve capability names, tool call results, actor pool state, code snippets, and design decisions. Summarize verbose tool outputs and intermediate reasoning. Keep track of what the user asked for and current progress.",
+  pauseAfterCompaction: true,
+};
+
 function deepMerge(base: Settings, override: Settings): Settings {
   return {
     pieces: { ...base.pieces, ...override.pieces },
     plugins: { ...base.plugins, ...override.plugins },
     providers: { ...base.providers, ...override.providers },
     model: override.model ?? base.model,
+    compaction: override.compaction
+      ? { ...DEFAULT_COMPACTION, ...base.compaction, ...override.compaction }
+      : base.compaction,
   };
 }
 
@@ -90,6 +108,10 @@ export function save(settings: Settings): void {
   } catch (err) {
     log.error({ err }, "Settings: failed to save");
   }
+}
+
+export function getCompactionSettings(settings: Settings): CompactionSettings {
+  return { ...DEFAULT_COMPACTION, ...settings.compaction };
 }
 
 export function getPieceSettings(settings: Settings, pieceId: string): PieceSettings {

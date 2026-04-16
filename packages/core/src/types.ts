@@ -34,7 +34,7 @@ export interface AIRequestMessage extends BusMessage {
 // ai.stream — tokens coming from any AI session
 export interface AIStreamMessage extends BusMessage {
   channel: "ai.stream";
-  event: "delta" | "complete" | "error" | "tool_start" | "tool_done" | "tool_cancelled" | "aborted";
+  event: "delta" | "complete" | "error" | "tool_start" | "tool_done" | "tool_cancelled" | "aborted" | "compaction";
   text?: string;
   usage?: { input_tokens: number; output_tokens: number };
   error?: string;
@@ -43,6 +43,12 @@ export interface AIStreamMessage extends BusMessage {
   toolMs?: number;
   toolArgs?: string;
   toolOutput?: string;
+  compaction?: {
+    summary: string;
+    engine: 'api' | 'fallback';
+    tokensBefore: number;
+    tokensAfter: number;
+  };
 }
 
 // capability.request — AI session wants to execute capabilities

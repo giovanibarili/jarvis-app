@@ -61,3 +61,10 @@ export function getValidModels(): string[] {
 export function getCurrentProvider(): string {
   return getProviderForModel(config.model);
 }
+
+export function getMaxContext(model?: string): number {
+  const m = model ?? config.model;
+  if (m.includes("opus")) return 1_000_000;
+  if (m.includes("haiku")) return 200_000;
+  return 200_000; // sonnet and others
+}
