@@ -111,30 +111,27 @@ export class AnthropicSessionFactory implements AISessionFactory {
   buildSystemBlocks(): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base prompt (jarvis-system.md) — always cached (static, never changes)
-    blocks.push({ type: "text", text: this.basePrompt, cache_control: { type: "ephemeral" } });
+    // Block 0: base prompt + core contexts + instructions — single static cache breakpoint (BP1)
+    // These never change during a session, so merging them saves cache overhead.
+    const parts: string[] = [this.basePrompt];
 
-    // Block 1: core piece contexts — BP2
     const coreContexts = this.getCoreContext().filter(Boolean);
     if (coreContexts.length > 0) {
-      blocks.push({
-        type: "text",
-        text: coreContexts.join("\n\n---\n\n"),
-        cache_control: { type: "ephemeral" },
-      });
+      parts.push(coreContexts.join("\n\n---\n\n"));
     }
 
-    // Block 2: user instructions (jarvis.md) — BP3, cached with <system-reminder>
     const instructions = this.getInstructions();
     if (instructions) {
-      blocks.push({
-        type: "text",
-        text: `<system-reminder>\n${instructions}\n</system-reminder>`,
-        cache_control: { type: "ephemeral" },
-      });
+      parts.push(`<system-reminder>\n${instructions}\n</system-reminder>`);
     }
 
-    // Block 3: plugin contexts — BP4
+    blocks.push({
+      type: "text",
+      text: parts.join("\n\n---\n\n"),
+      cache_control: { type: "ephemeral" },
+    });
+
+    // Block 1: plugin contexts — BP2 (may change when plugins are added/removed)
     const pluginContexts = this.getPluginContext().filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
