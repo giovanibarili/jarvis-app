@@ -1,10 +1,17 @@
 // src/ai/anthropic/metrics-hud.ts
 import type { EventBus } from "../../core/bus.js";
-import type { SystemEventMessage } from "../../core/types.js";
+import type { AIStreamMessage, SystemEventMessage } from "../../core/types.js";
 import type { Piece } from "../../core/piece.js";
 import { config, getMaxContext } from "../../config/index.js";
 import type { AnthropicSessionFactory } from "./factory.js";
 import { log } from "../../logger/index.js";
+
+const STREAMING_VERBS = [
+  "Analyzing", "Bloviating", "Cogitating", "Deliberating", "Elaborating",
+  "Formulating", "Generating", "Hypothesizing", "Inferring", "Juggling",
+  "Kernelizing", "Lucubrating", "Musing", "Noodling", "Orchestrating",
+  "Pontificating", "Quantifying", "Reasoning", "Synthesizing", "Transmuting",
+];
 
 export class AnthropicMetricsHud implements Piece {
   readonly id = "token-counter";
@@ -23,6 +30,13 @@ export class AnthropicMetricsHud implements Piece {
   private compactionCount = 0;
   private lastCompactionEngine: string | null = null;
   private factory: AnthropicSessionFactory;
+
+  // Streaming state
+  private streamingActive = false;
+  private streamingStartMs = 0;
+  private streamingVerb = "";
+  private streamingOutputChars = 0;
+  private streamingTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(factory: AnthropicSessionFactory) {
     this.factory = factory;
@@ -50,14 +64,7 @@ export class AnthropicMetricsHud implements Piece {
         cacheNew: d.cache_creation_input_tokens, cacheHit: d.cache_read_input_tokens,
       }, "AnthropicMetrics: recorded");
 
-      this.bus.publish({
-        channel: "hud.update",
-        source: this.id,
-        action: "update",
-        pieceId: this.id,
-        data: this.getData(),
-        status: "running",
-      });
+      this.pushHudUpdate();
     }));
 
     this.unsubs.push(this.bus.subscribe<SystemEventMessage>("system.event", (msg) => {
@@ -65,15 +72,44 @@ export class AnthropicMetricsHud implements Piece {
       this.compactionCount++;
       this.lastCompactionEngine = (msg.data.engine as string) ?? null;
       log.info({ count: this.compactionCount, engine: this.lastCompactionEngine }, "AnthropicMetrics: compaction recorded");
+      this.pushHudUpdate();
+    }));
 
-      this.bus.publish({
-        channel: "hud.update",
-        source: this.id,
-        action: "update",
-        pieceId: this.id,
-        data: this.getData(),
-        status: "running",
-      });
+    // Track streaming state from ai.stream events (main session only)
+    this.unsubs.push(this.bus.subscribe<AIStreamMessage>("ai.stream", (msg) => {
+      if (msg.target !== "main") return;
+
+      switch (msg.event) {
+        case "delta":
+          if (!this.streamingActive) {
+            this.streamingActive = true;
+            this.streamingStartMs = Date.now();
+            this.streamingOutputChars = 0;
+            this.streamingVerb = STREAMING_VERBS[Math.floor(Math.random() * STREAMING_VERBS.length)];
+            this.startStreamingTimer();
+          }
+          this.streamingOutputChars += (msg.text ?? "").length;
+          break;
+
+        case "tool_start":
+          // Tools starting — pause streaming display, keep timer for elapsed
+          if (!this.streamingActive) {
+            this.streamingActive = true;
+            this.streamingStartMs = Date.now();
+            this.streamingOutputChars = 0;
+            this.streamingVerb = "Executing";
+            this.startStreamingTimer();
+          }
+          break;
+
+        case "complete":
+        case "error":
+        case "aborted":
+          this.streamingActive = false;
+          this.stopStreamingTimer();
+          this.pushHudUpdate();
+          break;
+      }
     }));
 
     this.bus.publish({
@@ -88,7 +124,7 @@ export class AnthropicMetricsHud implements Piece {
         status: "running",
         data: this.getData(),
         position: { x: 1660, y: 100 },
-        size: { width: 280, height: 260 },
+        size: { width: 280, height: 280 },
       },
     });
 
@@ -96,6 +132,7 @@ export class AnthropicMetricsHud implements Piece {
   }
 
   async stop(): Promise<void> {
+    this.stopStreamingTimer();
     for (const unsub of this.unsubs) unsub();
     this.unsubs = [];
     this.bus.publish({
@@ -107,6 +144,31 @@ export class AnthropicMetricsHud implements Piece {
     log.info("AnthropicMetricsHud: stopped");
   }
 
+  private startStreamingTimer(): void {
+    if (this.streamingTimer) return;
+    this.streamingTimer = setInterval(() => {
+      this.pushHudUpdate();
+    }, 1000);
+  }
+
+  private stopStreamingTimer(): void {
+    if (this.streamingTimer) {
+      clearInterval(this.streamingTimer);
+      this.streamingTimer = null;
+    }
+  }
+
+  private pushHudUpdate(): void {
+    this.bus.publish({
+      channel: "hud.update",
+      source: this.id,
+      action: "update",
+      pieceId: this.id,
+      data: this.getData(),
+      status: "running",
+    });
+  }
+
   getData(): Record<string, unknown> {
     const maxContext = getMaxContext();
     const cachePct = this.lastRequestTokens > 0 ? this.lastCacheRead / this.lastRequestTokens : 0;
@@ -115,11 +177,16 @@ export class AnthropicMetricsHud implements Piece {
     const messagesEstimate = Math.max(0, this.lastRequestTokens - breakdown.systemTokens - breakdown.toolsTokens);
     return {
       model: config.model,
+      // Session accumulated totals
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
+      sessionInputTokens: this.inputTokens,
+      sessionOutputTokens: this.outputTokens,
       cacheCreation: this.cacheCreation,
       cacheRead: this.cacheRead,
       cachePct,
+      // Context snapshot (current window usage from last request)
+      contextTokens: this.lastRequestTokens,
       contextPct,
       maxContext,
       requestCount: this.requestCount,
@@ -128,6 +195,11 @@ export class AnthropicMetricsHud implements Piece {
       messagesTokens: messagesEstimate,
       compactionCount: this.compactionCount,
       lastCompactionEngine: this.lastCompactionEngine,
+      // Streaming state
+      streaming: this.streamingActive,
+      streamingVerb: this.streamingVerb,
+      streamingElapsedMs: this.streamingActive ? Date.now() - this.streamingStartMs : 0,
+      streamingOutputChars: this.streamingOutputChars,
     };
   }
 }
