@@ -15,11 +15,14 @@ import { PluginManager } from "./core/plugin-manager.js";
 import { CronPiece } from "./core/cron-piece.js";
 import type { Piece } from "./core/piece.js";
 import { log } from "./logger/index.js";
+import { clearAllConversations } from "./core/conversation-store.js";
 import { launchHud } from "./transport/hud/electron.js";
 import { config, setModel, getValidModels, getCurrentProvider } from "./config/index.js";
 import { ProviderRouter } from "./ai/provider.js";
 import { createAnthropicProvider } from "./ai/anthropic/provider.js";
 import { createOpenAIProvider } from "./ai/openai/provider.js";
+import { AnthropicSessionFactory } from "./ai/anthropic/factory.js";
+import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.js";
 
 async function main() {
   const bus = new EventBus();
@@ -98,10 +101,24 @@ async function main() {
   sessions.startAutoSave();
   pluginManager.setFactory(providerRouter.getFactory());
 
+  // Register session inspector tools (Anthropic-only — exposes session, history, system prompt, tools)
+  const activeFactory = providerRouter.getFactory();
+  if (activeFactory instanceof AnthropicSessionFactory) {
+    registerSessionInspectorTools(capabilityRegistry, sessions, activeFactory);
+  }
+
   const pieceManager = new PieceManager(pieces, bus, capabilityRegistry);
   pluginManager.setPieceManager(pieceManager);
 
   const server = new HttpServer(50052, chatPiece, () => hudState.getState(), () => jarvisCore.abortSession("main"), () => capabilityRegistry.getSlashCommands());
+  server.setOnClearSession(() => {
+    log.info("ClearSession: clearing conversation and resetting session");
+    jarvisCore.abortSession("main");
+    sessions.closeAll();
+    clearAllConversations();
+    // Broadcast to chat UI so it clears the timeline
+    chatPiece.broadcastEvent({ type: "session_cleared" });
+  });
   pluginManager.setHttpServer(server);
 
   await pieceManager.startAll();
