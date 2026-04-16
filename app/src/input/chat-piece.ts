@@ -49,6 +49,17 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
         case "aborted":
           this.broadcast({ type: "aborted", source, session: msg.target });
           break;
+        case "compaction":
+          this.broadcast({
+            type: "compaction",
+            engine: (msg as any).compaction?.engine,
+            tokensBefore: (msg as any).compaction?.tokensBefore,
+            tokensAfter: (msg as any).compaction?.tokensAfter,
+            summary: (msg as any).compaction?.summary,
+            source,
+            session: msg.target,
+          });
+          break;
       }
     });
 
