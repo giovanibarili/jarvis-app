@@ -48,9 +48,21 @@ export class SessionManager {
     }
   }
 
+  /** Check if a session is managed by SessionManager */
+  private isOwnedSession(sessionId: string): boolean {
+    return sessionId === "main" || sessionId.startsWith("grpc-");
+  }
+
   get(sessionId: string): ManagedSession {
     let managed = this.sessions.get(sessionId);
     if (!managed) {
+      if (!this.isOwnedSession(sessionId)) {
+        log.warn({ sessionId }, "SessionManager: refusing to create session — not owned (actor sessions are managed by actor-runner)");
+        // Return a stub to avoid crashes, but don't persist it
+        const session = this.factory.create({ label: sessionId });
+        return { session, state: "idle", createdAt: Date.now() };
+      }
+
       // Try to load saved conversation for restore
       const saved = loadConversation(sessionId, this.currentProvider);
       const restoreMessages = saved && saved.messages.length > 0 ? saved.messages : undefined;
