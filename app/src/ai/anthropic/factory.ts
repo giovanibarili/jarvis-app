@@ -38,10 +38,11 @@ export class AnthropicSessionFactory implements AISessionFactory {
   private buildActorSystemBlocks(actorPrompt: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base system prompt + actor role prompt — BP1
+    // Block 0: base system prompt + actor role prompt — BP1, always cached
     blocks.push({
       type: "text",
       text: this.basePrompt + "\n\n---\n\n" + actorPrompt,
+      cache_control: { type: "ephemeral" },
     });
 
     // Block 1: core piece contexts — BP2
@@ -52,8 +53,6 @@ export class AnthropicSessionFactory implements AISessionFactory {
         text: coreContexts.join("\n\n---\n\n"),
         cache_control: { type: "ephemeral" },
       });
-    } else {
-      blocks[0].cache_control = { type: "ephemeral" };
     }
 
     // Block 2: user instructions (jarvis.md) — BP3
@@ -112,8 +111,8 @@ export class AnthropicSessionFactory implements AISessionFactory {
   buildSystemBlocks(): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base prompt (jarvis-system.md) — always present
-    blocks.push({ type: "text", text: this.basePrompt });
+    // Block 0: base prompt (jarvis-system.md) — always cached (static, never changes)
+    blocks.push({ type: "text", text: this.basePrompt, cache_control: { type: "ephemeral" } });
 
     // Block 1: core piece contexts — BP2
     const coreContexts = this.getCoreContext().filter(Boolean);
@@ -123,8 +122,6 @@ export class AnthropicSessionFactory implements AISessionFactory {
         text: coreContexts.join("\n\n---\n\n"),
         cache_control: { type: "ephemeral" },
       });
-    } else {
-      blocks[0].cache_control = { type: "ephemeral" };
     }
 
     // Block 2: user instructions (jarvis.md) — BP3, cached with <system-reminder>
