@@ -2,7 +2,7 @@
 import type { EventBus } from "../../core/bus.js";
 import type { SystemEventMessage } from "../../core/types.js";
 import type { Piece } from "../../core/piece.js";
-import { config } from "../../config/index.js";
+import { config, getMaxContext } from "../../config/index.js";
 import type { AnthropicSessionFactory } from "./factory.js";
 import { log } from "../../logger/index.js";
 
@@ -24,13 +24,6 @@ export class AnthropicMetricsHud implements Piece {
 
   constructor(factory: AnthropicSessionFactory) {
     this.factory = factory;
-  }
-
-  private getMaxContext(): number {
-    const model = config.model;
-    if (model.includes("opus")) return 1000000;
-    if (model.includes("haiku")) return 200000;
-    return 200000;
   }
 
   async start(bus: EventBus): Promise<void> {
@@ -96,7 +89,7 @@ export class AnthropicMetricsHud implements Piece {
   }
 
   getData(): Record<string, unknown> {
-    const maxContext = this.getMaxContext();
+    const maxContext = getMaxContext();
     const cachePct = this.lastRequestTokens > 0 ? this.lastCacheRead / this.lastRequestTokens : 0;
     const contextPct = this.lastRequestTokens / maxContext;
     const breakdown = this.factory.getTokenBreakdown();
