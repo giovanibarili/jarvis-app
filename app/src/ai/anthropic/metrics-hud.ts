@@ -11,7 +11,7 @@ export class AnthropicMetricsHud implements Piece {
   readonly name = "Anthropic Usage";
 
   private bus!: EventBus;
-  private unsub?: () => void;
+  private unsubs: Array<() => void> = [];
   private inputTokens = 0;
   private outputTokens = 0;
   private cacheCreation = 0;
@@ -20,6 +20,8 @@ export class AnthropicMetricsHud implements Piece {
   private lastRequestTokens = 0;
   private lastCacheRead = 0;
   private lastCacheCreate = 0;
+  private compactionCount = 0;
+  private lastCompactionEngine: string | null = null;
   private factory: AnthropicSessionFactory;
 
   constructor(factory: AnthropicSessionFactory) {
@@ -29,7 +31,7 @@ export class AnthropicMetricsHud implements Piece {
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
 
-    this.unsub = this.bus.subscribe<SystemEventMessage>("system.event", (msg) => {
+    this.unsubs.push(this.bus.subscribe<SystemEventMessage>("system.event", (msg) => {
       if (msg.event !== "api.usage") return;
       const d = msg.data;
       const reqInput = (d.input_tokens as number) ?? 0;
@@ -56,7 +58,23 @@ export class AnthropicMetricsHud implements Piece {
         data: this.getData(),
         status: "running",
       });
-    });
+    }));
+
+    this.unsubs.push(this.bus.subscribe<SystemEventMessage>("system.event", (msg) => {
+      if (msg.event !== "compaction") return;
+      this.compactionCount++;
+      this.lastCompactionEngine = (msg.data.engine as string) ?? null;
+      log.info({ count: this.compactionCount, engine: this.lastCompactionEngine }, "AnthropicMetrics: compaction recorded");
+
+      this.bus.publish({
+        channel: "hud.update",
+        source: this.id,
+        action: "update",
+        pieceId: this.id,
+        data: this.getData(),
+        status: "running",
+      });
+    }));
 
     this.bus.publish({
       channel: "hud.update",
@@ -78,7 +96,8 @@ export class AnthropicMetricsHud implements Piece {
   }
 
   async stop(): Promise<void> {
-    if (this.unsub) this.unsub();
+    for (const unsub of this.unsubs) unsub();
+    this.unsubs = [];
     this.bus.publish({
       channel: "hud.update",
       source: this.id,
@@ -107,6 +126,8 @@ export class AnthropicMetricsHud implements Piece {
       systemTokens: breakdown.systemTokens,
       toolsTokens: breakdown.toolsTokens,
       messagesTokens: messagesEstimate,
+      compactionCount: this.compactionCount,
+      lastCompactionEngine: this.lastCompactionEngine,
     };
   }
 }
