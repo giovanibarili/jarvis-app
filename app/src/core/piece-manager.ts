@@ -141,6 +141,32 @@ export class PieceManager {
     return { ok: true };
   }
 
+  setLayout(pieceId: string, x: number, y: number, width: number, height: number): { ok: boolean; error?: string } {
+    // Update settings
+    this.settings = load();
+    if (!this.settings.pieces[pieceId]) {
+      this.settings.pieces[pieceId] = { enabled: true, visible: true };
+    }
+    this.settings.pieces[pieceId].config = {
+      ...this.settings.pieces[pieceId].config,
+      layout: { x, y, width, height },
+    };
+    save(this.settings);
+
+    // Push to HUD live
+    this.bus.publish({
+      channel: "hud.update",
+      source: "piece-manager",
+      action: "update",
+      pieceId,
+      data: {},
+      layout: { x, y, width, height },
+    });
+
+    log.info({ pieceId, x, y, width, height }, "PieceManager: layout updated");
+    return { ok: true };
+  }
+
   private setVisible(pieceId: string, visible: boolean): void {
     this.bus.publish({
       channel: "hud.update",
@@ -212,6 +238,27 @@ export class PieceManager {
         required: ["piece_id"],
       },
       handler: async (input) => this.hide(String(input.piece_id)),
+    });
+
+    this.registry.register({
+      name: "hud_layout",
+      description: "Set position and size of a HUD panel. Persists to settings so it survives restarts.",
+      input_schema: {
+        type: "object",
+        properties: {
+          piece_id: { type: "string", description: "The piece/panel ID to reposition" },
+          x: { type: "number", description: "X position in pixels" },
+          y: { type: "number", description: "Y position in pixels" },
+          width: { type: "number", description: "Width in pixels" },
+          height: { type: "number", description: "Height in pixels" },
+        },
+        required: ["piece_id", "x", "y", "width", "height"],
+      },
+      handler: async (input) => this.setLayout(
+        String(input.piece_id),
+        Number(input.x), Number(input.y),
+        Number(input.width), Number(input.height),
+      ),
     });
   }
 }

@@ -66,6 +66,7 @@ export interface HudUpdateMessage extends BusMessage {
   data?: Record<string, unknown>;
   status?: string;
   visible?: boolean;
+  layout?: { x: number; y: number; width: number; height: number };
 }
 
 // system.event — everything else (health, MCP, api usage, etc.)

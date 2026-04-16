@@ -29,6 +29,10 @@ export class HudState {
             existing.data = { ...existing.data, ...msg.data };
             if (msg.status) existing.status = msg.status;
             if (msg.visible !== undefined) existing.visible = msg.visible;
+            if (msg.layout) {
+              existing.position = { x: msg.layout.x, y: msg.layout.y };
+              existing.size = { width: msg.layout.width, height: msg.layout.height };
+            }
             log.debug({ pieceId: msg.pieceId }, "HudState: updated");
           }
           break;
