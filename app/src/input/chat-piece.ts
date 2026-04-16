@@ -177,6 +177,11 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
     _req.on("close", () => { this.streamClients.delete(res); });
   }
 
+  /** Broadcast a system event to all connected SSE clients */
+  broadcastEvent(data: Record<string, unknown>): void {
+    this.broadcast(data);
+  }
+
   private broadcast(data: Record<string, unknown>): void {
     const msg = `data: ${JSON.stringify(data)}\n\n`;
     for (const client of this.streamClients) {

@@ -45,6 +45,7 @@ export function ChatInput() {
   const send = (overrideText?: string) => {
     const prompt = (overrideText ?? input).trim()
     if (!prompt && images.length === 0) return
+
     const text = prompt || (images.length > 0 ? images.map(i => i.label).join(', ') : '')
     const payload: Record<string, unknown> = { prompt: text }
     if (images.length > 0) {
@@ -62,12 +63,19 @@ export function ChatInput() {
   }
 
   const handleSlashSelect = useCallback((name: string) => {
-    // Send as: "use /capability_name" — JARVIS interprets as system command request
-    const prompt = `use /${name}`
     setSlashActive(false)
     setSlashQuery('')
     setInput('')
-    send(prompt)
+
+    // System commands — bypass AI, call backend directly
+    if (name === 'clear_session') {
+      fetch('/chat/clear-session', { method: 'POST' }).catch(() => {})
+      textareaRef.current?.focus()
+      return
+    }
+
+    // Regular capabilities — send as "use /capability_name" for JARVIS to interpret
+    send(`use /${name}`)
   }, [images])
 
   const handleSlashClose = useCallback(() => {

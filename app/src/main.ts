@@ -85,6 +85,32 @@ async function main() {
     }),
   });
 
+  // Runtime eval — full access to JARVIS internals
+  capabilityRegistry.register({
+    name: "jarvis_eval",
+    description: "Execute JavaScript code inside the running JARVIS process. Has access to: bus, capabilityRegistry, sessions, providerRouter, config, pieces, jarvisCore, chatPiece, and all runtime objects. Use for introspection, debugging, testing, or calling any internal function. Returns the expression result (or last statement). Async code supported.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "JavaScript code to execute in the JARVIS runtime context" },
+      },
+      required: ["code"],
+    },
+    handler: async (input) => {
+      const code = input.code as string;
+      const context = { bus, capabilityRegistry, sessions, providerRouter, config, pieces, jarvisCore, chatPiece, log, setModel, getCurrentProvider, getValidModels };
+      try {
+        const keys = Object.keys(context);
+        const values = Object.values(context);
+        const asyncFn = new Function(...keys, `return (async () => { ${code} })()`);
+        const result = await asyncFn(...values);
+        return { result: result !== undefined ? String(result) : "undefined" };
+      } catch (err: any) {
+        return { error: err.message, stack: err.stack };
+      }
+    },
+  });
+
   // Cron scheduler
   pieces.push(new CronPiece(capabilityRegistry));
 

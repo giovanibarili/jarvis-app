@@ -37,12 +37,18 @@ export function SlashMenu({ query, onSelect, onClose, visible }: Props) {
   const [selectedIndex, setSelectedIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
 
-  // Fetch capabilities once when menu becomes visible
+  // Fetch capabilities once when menu becomes visible, plus built-in system commands
   useEffect(() => {
     if (!visible) return
     fetch('/capabilities')
       .then(r => r.json())
-      .then((data: SlashItem[]) => setItems(data))
+      .then((data: SlashItem[]) => {
+        // Add built-in system commands that bypass AI
+        const builtins: SlashItem[] = [
+          { name: 'clear_session', description: 'Clear conversation history and start fresh (no restart needed)', category: 'system' },
+        ]
+        setItems([...builtins, ...data])
+      })
       .catch(() => setItems([]))
   }, [visible])
 

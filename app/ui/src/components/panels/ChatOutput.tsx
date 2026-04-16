@@ -81,6 +81,12 @@ export function ChatOutput() {
             return ''
           })
           break
+        case 'session_cleared':
+          setEntries([])
+          setStreamingText('')
+          setIsStreaming(false)
+          setIsThinking(false)
+          break
       }
     }
 
