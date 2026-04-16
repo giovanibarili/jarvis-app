@@ -1,6 +1,6 @@
 // src/ai/openai/factory.ts
 import OpenAI from "openai";
-import type { AISession, AISessionFactory } from "../types.js";
+import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../types.js";
 import { OpenAISession } from "./session.js";
 import { config } from "../../config/index.js";
 import { log } from "../../logger/index.js";
@@ -28,10 +28,21 @@ export class OpenAISessionFactory implements AISessionFactory {
     log.info({ model: config.model, baseURL: clientOptions?.baseURL ?? "default" }, "OpenAISessionFactory: initialized");
   }
 
-  /** Create a session with a custom system prompt (for actors) */
-  createWithPrompt(systemPrompt: string, options?: { label?: string }): AISession {
-    const label = options?.label ?? `openai-${this.sessionCounter++}`;
-    const fullPrompt = this.getSystemPrompt() + "\n\n---\n\n" + systemPrompt;
+  /** Create a session with optional overrides (for actors) */
+  createWithPrompt(options: CreateWithPromptOptions): AISession {
+    const { label, basePromptOverride, roleContext } = options;
+    const basePrompt = this.getSystemPrompt();
+
+    // Build full prompt: base + identity override + role context
+    const parts: string[] = [basePrompt];
+    if (basePromptOverride) {
+      parts.push(`<IMPORTANT>\n${basePromptOverride}\n</IMPORTANT>`);
+    }
+    if (roleContext) {
+      parts.push(roleContext);
+    }
+    const fullPrompt = parts.join("\n\n---\n\n");
+
     return new OpenAISession({
       client: this.client,
       model: () => config.model,

@@ -15,11 +15,14 @@ import { PluginManager } from "./core/plugin-manager.js";
 import { CronPiece } from "./core/cron-piece.js";
 import type { Piece } from "./core/piece.js";
 import { log } from "./logger/index.js";
+import { clearAllConversations } from "./core/conversation-store.js";
 import { launchHud } from "./transport/hud/electron.js";
 import { config, setModel, getValidModels, getCurrentProvider } from "./config/index.js";
 import { ProviderRouter } from "./ai/provider.js";
 import { createAnthropicProvider } from "./ai/anthropic/provider.js";
 import { createOpenAIProvider } from "./ai/openai/provider.js";
+import { AnthropicSessionFactory } from "./ai/anthropic/factory.js";
+import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.js";
 
 async function main() {
   const bus = new EventBus();
@@ -82,6 +85,32 @@ async function main() {
     }),
   });
 
+  // Runtime eval — full access to JARVIS internals
+  capabilityRegistry.register({
+    name: "jarvis_eval",
+    description: "Execute JavaScript code inside the running JARVIS process. Has access to: bus, capabilityRegistry, sessions, providerRouter, config, pieces, jarvisCore, chatPiece, and all runtime objects. Use for introspection, debugging, testing, or calling any internal function. Returns the expression result (or last statement). Async code supported.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "JavaScript code to execute in the JARVIS runtime context" },
+      },
+      required: ["code"],
+    },
+    handler: async (input) => {
+      const code = input.code as string;
+      const context = { bus, capabilityRegistry, sessions, providerRouter, config, pieces, jarvisCore, chatPiece, log, setModel, getCurrentProvider, getValidModels };
+      try {
+        const keys = Object.keys(context);
+        const values = Object.values(context);
+        const asyncFn = new Function(...keys, `return (async () => { ${code} })()`);
+        const result = await asyncFn(...values);
+        return { result: result !== undefined ? String(result) : "undefined" };
+      } catch (err: any) {
+        return { error: err.message, stack: err.stack };
+      }
+    },
+  });
+
   // Cron scheduler
   pieces.push(new CronPiece(capabilityRegistry));
 
@@ -98,10 +127,24 @@ async function main() {
   sessions.startAutoSave();
   pluginManager.setFactory(providerRouter.getFactory());
 
+  // Register session inspector tools (Anthropic-only — exposes session, history, system prompt, tools)
+  const activeFactory = providerRouter.getFactory();
+  if (activeFactory instanceof AnthropicSessionFactory) {
+    registerSessionInspectorTools(capabilityRegistry, sessions, activeFactory);
+  }
+
   const pieceManager = new PieceManager(pieces, bus, capabilityRegistry);
   pluginManager.setPieceManager(pieceManager);
 
   const server = new HttpServer(50052, chatPiece, () => hudState.getState(), () => jarvisCore.abortSession("main"), () => capabilityRegistry.getSlashCommands());
+  server.setOnClearSession(() => {
+    log.info("ClearSession: clearing conversation and resetting session");
+    jarvisCore.abortSession("main");
+    sessions.closeAll();
+    clearAllConversations();
+    // Broadcast to chat UI so it clears the timeline
+    chatPiece.broadcastEvent({ type: "session_cleared" });
+  });
   pluginManager.setHttpServer(server);
 
   await pieceManager.startAll();

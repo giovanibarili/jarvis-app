@@ -31,6 +31,7 @@ export class HttpServer {
   private rendererCache = new Map<string, { js: string; mtime: number }>();
   private pluginRoutes = new Map<string, RouteHandler>();
   private onAbort?: () => void;
+  private onClearSession?: () => void;
 
   constructor(port: number, chatPiece: ChatPiece, getHudState: HudStateProvider, onAbort?: () => void, getCapabilities?: CapabilitiesProvider) {
     this.port = port;
@@ -40,6 +41,10 @@ export class HttpServer {
     this.onAbort = onAbort;
     this.server = createServer(this.handle.bind(this));
     this.server.listen(port, () => log.info({ port }, "HttpServer: listening"));
+  }
+
+  setOnClearSession(handler: () => void): void {
+    this.onClearSession = handler;
   }
 
   registerRoute(method: string, path: string, handler: RouteHandler): void {
@@ -69,6 +74,13 @@ export class HttpServer {
 
     if (req.url === "/chat/abort" && req.method === "POST") {
       if (this.onAbort) this.onAbort();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (req.url === "/chat/clear-session" && req.method === "POST") {
+      if (this.onClearSession) this.onClearSession();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
       return;

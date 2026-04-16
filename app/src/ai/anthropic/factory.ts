@@ -2,7 +2,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import type { TextBlockParam } from "@anthropic-ai/sdk/resources/messages";
-import type { AISession, AISessionFactory } from "../types.js";
+import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../types.js";
 import { AnthropicSession } from "./session.js";
 import { config } from "../../config/index.js";
 import { log } from "../../logger/index.js";
@@ -34,39 +34,43 @@ export class AnthropicSessionFactory implements AISessionFactory {
     log.info({ model: config.model, basePromptLength: this.basePrompt.length }, "AnthropicSessionFactory: initialized");
   }
 
-  /** Build system blocks for actor sessions — same structure as main, with actor prompt prepended */
-  private buildActorSystemBlocks(actorPrompt: string): TextBlockParam[] {
+  /**
+   * Build system blocks for actor sessions.
+   * Same structure as main (buildSystemBlocks), but with:
+   * - basePromptOverride wrapped in <IMPORTANT> after jarvis-system.md
+   * - roleContext appended inside <system-reminder> after CLAUDE.md instructions
+   * Consolidates into max 2 system blocks (BP2 + BP3) to stay within Anthropic's 4 cache_control limit.
+   */
+  private buildActorSystemBlocks(basePromptOverride?: string, roleContext?: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base system prompt + actor role prompt — BP1
-    blocks.push({
-      type: "text",
-      text: this.basePrompt + "\n\n---\n\n" + actorPrompt,
-    });
+    // Block 0 (BP2): base prompt + identity override + core contexts + instructions + role
+    const parts: string[] = [this.basePrompt];
 
-    // Block 1: core piece contexts — BP2
+    if (basePromptOverride) {
+      parts.push(`<IMPORTANT>\n${basePromptOverride}\n</IMPORTANT>`);
+    }
+
     const coreContexts = this.getCoreContext().filter(Boolean);
     if (coreContexts.length > 0) {
-      blocks.push({
-        type: "text",
-        text: coreContexts.join("\n\n---\n\n"),
-        cache_control: { type: "ephemeral" },
-      });
-    } else {
-      blocks[0].cache_control = { type: "ephemeral" };
+      parts.push(coreContexts.join("\n\n---\n\n"));
     }
 
-    // Block 2: user instructions (jarvis.md) — BP3
     const instructions = this.getInstructions();
-    if (instructions) {
-      blocks.push({
-        type: "text",
-        text: `<system-reminder>\n${instructions}\n</system-reminder>`,
-        cache_control: { type: "ephemeral" },
-      });
+    if (instructions || roleContext) {
+      const reminderParts: string[] = [];
+      if (instructions) reminderParts.push(instructions);
+      if (roleContext) reminderParts.push(roleContext);
+      parts.push(`<system-reminder>\n${reminderParts.join("\n\n")}\n</system-reminder>`);
     }
 
-    // Block 3: plugin contexts — BP4
+    blocks.push({
+      type: "text",
+      text: parts.join("\n\n---\n\n"),
+      cache_control: { type: "ephemeral" },
+    });
+
+    // Block 1 (BP3): plugin contexts
     const pluginContexts = this.getPluginContext().filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
@@ -79,12 +83,11 @@ export class AnthropicSessionFactory implements AISessionFactory {
     return blocks;
   }
 
-  /** Create a session with a custom system prompt (for actors — with prompt caching) */
-  createWithPrompt(systemPrompt: string, options?: { label?: string }): AISession {
-    const label = options?.label ?? `session-${this.sessionCounter++}`;
-    const blockBuilder = () => this.buildActorSystemBlocks(systemPrompt);
-    const estimatedLength = this.basePrompt.length + systemPrompt.length;
-    log.debug({ label, estimatedPromptLength: estimatedLength }, "AnthropicSessionFactory: creating actor session with cache");
+  /** Create a session with optional overrides (for actors — with prompt caching) */
+  createWithPrompt(options: CreateWithPromptOptions): AISession {
+    const { label, basePromptOverride, roleContext } = options;
+    const blockBuilder = () => this.buildActorSystemBlocks(basePromptOverride, roleContext);
+    log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext }, "AnthropicSessionFactory: creating actor session with cache");
     return new AnthropicSession({
       client: this.client,
       model: () => config.model,
@@ -112,32 +115,27 @@ export class AnthropicSessionFactory implements AISessionFactory {
   buildSystemBlocks(): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base prompt (jarvis-system.md) — always present
-    blocks.push({ type: "text", text: this.basePrompt });
+    // Block 0: base prompt + core contexts + instructions — single static cache breakpoint (BP1)
+    // These never change during a session, so merging them saves cache overhead.
+    const parts: string[] = [this.basePrompt];
 
-    // Block 1: core piece contexts — BP2
     const coreContexts = this.getCoreContext().filter(Boolean);
     if (coreContexts.length > 0) {
-      blocks.push({
-        type: "text",
-        text: coreContexts.join("\n\n---\n\n"),
-        cache_control: { type: "ephemeral" },
-      });
-    } else {
-      blocks[0].cache_control = { type: "ephemeral" };
+      parts.push(coreContexts.join("\n\n---\n\n"));
     }
 
-    // Block 2: user instructions (jarvis.md) — BP3, cached with <system-reminder>
     const instructions = this.getInstructions();
     if (instructions) {
-      blocks.push({
-        type: "text",
-        text: `<system-reminder>\n${instructions}\n</system-reminder>`,
-        cache_control: { type: "ephemeral" },
-      });
+      parts.push(`<system-reminder>\n${instructions}\n</system-reminder>`);
     }
 
-    // Block 3: plugin contexts — BP4
+    blocks.push({
+      type: "text",
+      text: parts.join("\n\n---\n\n"),
+      cache_control: { type: "ephemeral" },
+    });
+
+    // Block 1: plugin contexts — BP2 (may change when plugins are added/removed)
     const pluginContexts = this.getPluginContext().filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
