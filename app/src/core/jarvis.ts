@@ -317,6 +317,37 @@ export class JarvisCore implements Piece {
         case "message_complete":
           usage = event.usage;
           break;
+        case "compaction":
+          if (event.compaction) {
+            this.bus.publish({
+              channel: "ai.stream",
+              source: "jarvis-core",
+              target: sessionId,
+              event: "compaction",
+              compaction: event.compaction,
+            } as any);
+
+            this.bus.publish({
+              channel: "system.event",
+              source: "jarvis-core",
+              event: "compaction",
+              data: {
+                sessionId,
+                engine: event.compaction.engine,
+                tokensBefore: event.compaction.tokensBefore,
+                tokensAfter: event.compaction.tokensAfter,
+                summaryLength: event.compaction.summary.length,
+              },
+            });
+
+            log.info({
+              sessionId,
+              engine: event.compaction.engine,
+              tokensBefore: event.compaction.tokensBefore,
+              tokensAfter: event.compaction.tokensAfter,
+            }, "JarvisCore: context compacted");
+          }
+          break;
         case "error":
           if (event.error !== "aborted") {
             log.error({ sessionId, error: event.error }, "JarvisCore: stream error");
