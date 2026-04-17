@@ -15,6 +15,9 @@ type Props = {
   onClose?: () => void
   /** Watch children height changes and grow/shrink the panel from the top */
   autoGrowBottom?: boolean
+  /** Whether to persist layout changes to settings.user.json (default: true).
+   *  Set to false for ephemeral panels like actor chats. */
+  persistLayout?: boolean
 }
 
 function saveLayout(pieceId: string, x: number, y: number, width: number, height: number) {
@@ -38,6 +41,7 @@ export function DraggablePanel({
   borderColor,
   onClose,
   autoGrowBottom = false,
+  persistLayout = true,
 }: Props) {
   const rndRef = useRef<Rnd>(null)
   const innerRef = useRef<HTMLDivElement>(null)
@@ -112,9 +116,14 @@ export function DraggablePanel({
         },
       }}
       onDragStop={(_e, d) => {
-        saveLayout(pieceId, d.x, d.y, defaultWidth, defaultHeight)
+        if (!persistLayout) return
+        const el = rndRef.current?.getSelfElement()
+        const w = el?.offsetWidth ?? defaultWidth
+        const h = el?.offsetHeight ?? defaultHeight
+        saveLayout(pieceId, d.x, d.y, w, h)
       }}
       onResizeStop={(_e, _dir, ref, _delta, pos) => {
+        if (!persistLayout) return
         saveLayout(pieceId, pos.x, pos.y, parseInt(ref.style.width), parseInt(ref.style.height))
       }}
     >

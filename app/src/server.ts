@@ -102,6 +102,12 @@ export class HttpServer {
       req.on("end", () => {
         try {
           const { pieceId } = JSON.parse(body);
+          // Skip ephemeral panels (actor chats) — they don't persist
+          if (pieceId.startsWith("actor-chat-")) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, skipped: true }));
+            return;
+          }
           const settings = loadSettings();
           if (!settings.pieces[pieceId]) settings.pieces[pieceId] = { enabled: true, visible: true };
           settings.pieces[pieceId].visible = false;
@@ -121,6 +127,12 @@ export class HttpServer {
       req.on("end", () => {
         try {
           const { pieceId, x, y, width, height } = JSON.parse(body);
+          // Skip ephemeral panels (actor chats) — they don't persist
+          if (pieceId.startsWith("actor-chat-")) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, skipped: true }));
+            return;
+          }
           const settings = loadSettings();
           if (!settings.pieces[pieceId]) settings.pieces[pieceId] = { enabled: true, visible: true };
           settings.pieces[pieceId].config = {

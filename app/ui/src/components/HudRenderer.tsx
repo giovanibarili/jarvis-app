@@ -213,6 +213,7 @@ export function HudRenderer({ state }: { state: HudState }) {
             minWidth={300}
             minHeight={200}
             onClose={() => closeActorChat(name)}
+            persistLayout={false}
           >
             <ChatPanel
               streamUrl={`http://localhost:50052/plugins/actors/${name}/stream`}
