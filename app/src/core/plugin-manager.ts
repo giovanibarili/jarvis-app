@@ -93,7 +93,7 @@ export class PluginManager implements Piece {
   }
 
   /** Plugin dynamic context: systemContext() from plugin pieces (changes every turn) */
-  pluginPieceContext(): string {
+  pluginPieceContext(sessionId?: string): string {
     if (!this.pieceManager) return "";
 
     const pieceContexts: string[] = [];
@@ -101,7 +101,7 @@ export class PluginManager implements Piece {
       for (const pieceId of plugin.pieces) {
         const piece = this.pieceManager.pieces.get(pieceId);
         if (piece?.systemContext) {
-          const ctx = piece.systemContext();
+          const ctx = piece.systemContext(sessionId);
           if (ctx) pieceContexts.push(ctx);
         }
       }

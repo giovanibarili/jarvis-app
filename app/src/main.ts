@@ -51,9 +51,9 @@ async function main() {
       const pm = getPluginManager();
       return pm?.systemContext ? [pm.systemContext()] : [];
     },
-    getPluginContext: () => {
+    getPluginContext: (sessionId?: string) => {
       const pm = getPluginManager();
-      return pm?.pluginPieceContext ? [pm.pluginPieceContext()] : [];
+      return pm?.pluginPieceContext ? [pm.pluginPieceContext(sessionId)] : [];
     },
     getInstructions: () => jarvisCore.getJarvisMd(),
   });

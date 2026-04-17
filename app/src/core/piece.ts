@@ -13,6 +13,7 @@ export interface Piece {
   readonly name: string;
   start(bus: EventBus): Promise<void>;
   stop(): Promise<void>;
-  /** Optional context this piece contributes to the system prompt */
-  systemContext?(): string;
+  /** Optional context this piece contributes to the system prompt.
+   *  @param sessionId — identifies which session is requesting context (for per-session state) */
+  systemContext?(sessionId?: string): string;
 }

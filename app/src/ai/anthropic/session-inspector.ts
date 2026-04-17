@@ -113,7 +113,7 @@ export function registerSessionInspectorTools(
     },
     handler: async (input) => {
       const raw = (input.raw as boolean | undefined) ?? false;
-      const blocks = factory.buildSystemBlocks();
+      const blocks = factory.buildSystemBlocks("main");
 
       log.debug({ blockCount: blocks.length, raw }, "session_get_system: called");
 

@@ -16,7 +16,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
   private getTools: CapabilityProvider;
   private getCoreContext: () => string[];
   private getPluginInstructions: () => string[];
-  private getPluginContext: () => string[];
+  private getPluginContext: (sessionId?: string) => string[];
   private getInstructions: () => string;
   private sessionCounter = 0;
 
@@ -24,7 +24,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
     getTools: CapabilityProvider,
     getCoreContext?: () => string[],
     getPluginInstructions?: () => string[],
-    getPluginContext?: () => string[],
+    getPluginContext?: (sessionId?: string) => string[],
     getInstructions?: () => string,
   ) {
     this.client = new Anthropic();
@@ -44,7 +44,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
    * - roleContext appended inside <system-reminder> after CLAUDE.md instructions
    * Consolidates into max 2 system blocks (BP2 + BP3) to stay within Anthropic's 4 cache_control limit.
    */
-  private buildActorSystemBlocks(basePromptOverride?: string, roleContext?: string): TextBlockParam[] {
+  private buildActorSystemBlocks(basePromptOverride?: string, roleContext?: string, sessionId?: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
     // Block 0: base prompt + identity override + core contexts + instructions + plugin instructions + role
@@ -78,8 +78,8 @@ export class AnthropicSessionFactory implements AISessionFactory {
       cache_control: { type: "ephemeral" },
     });
 
-    // Block 1: plugin dynamic context
-    const pluginContexts = this.getPluginContext().filter(Boolean);
+    // Block 1: plugin dynamic context (per-session)
+    const pluginContexts = this.getPluginContext(sessionId).filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
         type: "text",
@@ -94,7 +94,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
   /** Create a session with optional overrides (for actors — with prompt caching) */
   createWithPrompt(options: CreateWithPromptOptions): AISession {
     const { label, basePromptOverride, roleContext } = options;
-    const blockBuilder = () => this.buildActorSystemBlocks(basePromptOverride, roleContext);
+    const blockBuilder = () => this.buildActorSystemBlocks(basePromptOverride, roleContext, label);
     log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext }, "AnthropicSessionFactory: creating actor session with cache");
     return new AnthropicSession({
       client: this.client,
@@ -120,7 +120,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
   }
 
   /** Build system prompt as TextBlockParam[] with cache breakpoints for main sessions */
-  buildSystemBlocks(): TextBlockParam[] {
+  buildSystemBlocks(sessionId?: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
     // Block 0 (BP1): base prompt + core contexts + instructions + plugin instructions
@@ -150,7 +150,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
     });
 
     // Block 1 (BP2): plugin dynamic context — changes every turn (active skills, actor state)
-    const pluginContexts = this.getPluginContext().filter(Boolean);
+    const pluginContexts = this.getPluginContext(sessionId).filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
         type: "text",
@@ -169,7 +169,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
     const session = new AnthropicSession({
       client: this.client,
       model: () => config.model,
-      systemPrompt: () => this.buildSystemBlocks(),
+      systemPrompt: () => this.buildSystemBlocks(label),
       getTools: this.getTools,
       label,
     });

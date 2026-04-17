@@ -11,7 +11,7 @@ export interface Provider {
 }
 
 type CapabilityDefProvider = () => Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
-type ContextProvider = () => string[];
+type ContextProvider = (sessionId?: string) => string[];
 type InstructionsProvider = () => string;
 
 export interface ProviderConfig {
