@@ -224,11 +224,13 @@ export function HudRenderer({ state }: { state: HudState }) {
               userLabel={(source) => {
                 if (source === 'jarvis') return 'JARVIS'
                 if (source === 'grpc') return 'GRPC'
+                if (source?.startsWith('actor:')) return source.replace('actor:', '').toUpperCase()
                 return 'YOU'
               }}
               userLabelColor={(source) => {
                 if (source === 'jarvis') return '#4af'
                 if (source === 'grpc') return '#fa4'
+                if (source?.startsWith('actor:')) return '#f8a'
                 return 'var(--chat-user-label)'
               }}
             />
