@@ -29,3 +29,13 @@ Persistent AI actor pool for autonomous task delegation. Create named actors wit
 **Provides:** ActorPoolPiece (lifecycle/tools/HUD), ActorRunnerPiece (task execution), ActorChatPiece (HTTP routes/SSE), 4 tools (actor_dispatch, actor_list, actor_kill, bus_publish)
 
 **Requires:** Nothing — uses JARVIS AI sessions via PluginContext
+
+### Skill System
+
+Claude Code-style `SKILL.md` files with per-session isolation, context forking, and token budgets. Create skills as markdown files in `~/.jarvis/skills/` — the plugin discovers them, shows a catalog in the system prompt, and loads full instructions only when invoked. Three invocation paths: AI auto-invoke (trigger matching), slash commands (`/skill-name`), or direct tool call. Skills with `context: fork` dispatch to isolated actors instead of injecting into the current session.
+
+**Repo:** [github.com/giovanibarili/jarvis-plugin-skills](https://github.com/giovanibarili/jarvis-plugin-skills)
+
+**Provides:** SkillManagerPiece (discovery/activation/hot-reload), 3 tools (skill_invoke, skill_deactivate, skill_list), slash commands per skill
+
+**Requires:** Nothing — reads `~/.jarvis/skills/` directory
