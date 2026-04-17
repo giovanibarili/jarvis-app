@@ -8,6 +8,7 @@ export function createAnthropicProvider(config: ProviderConfig): Provider {
   const factory = new AnthropicSessionFactory(
     config.getTools,
     config.getCoreContext,
+    config.getPluginInstructions,
     config.getPluginContext,
     config.getInstructions,
   );

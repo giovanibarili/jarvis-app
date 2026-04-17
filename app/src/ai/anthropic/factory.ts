@@ -15,6 +15,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
   private basePrompt: string;
   private getTools: CapabilityProvider;
   private getCoreContext: () => string[];
+  private getPluginInstructions: () => string[];
   private getPluginContext: () => string[];
   private getInstructions: () => string;
   private sessionCounter = 0;
@@ -22,6 +23,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
   constructor(
     getTools: CapabilityProvider,
     getCoreContext?: () => string[],
+    getPluginInstructions?: () => string[],
     getPluginContext?: () => string[],
     getInstructions?: () => string,
   ) {
@@ -29,6 +31,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
     this.basePrompt = this.loadBasePrompt();
     this.getTools = getTools;
     this.getCoreContext = getCoreContext ?? (() => []);
+    this.getPluginInstructions = getPluginInstructions ?? (() => []);
     this.getPluginContext = getPluginContext ?? (() => []);
     this.getInstructions = getInstructions ?? (() => "");
     log.info({ model: config.model, basePromptLength: this.basePrompt.length }, "AnthropicSessionFactory: initialized");
@@ -44,7 +47,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
   private buildActorSystemBlocks(basePromptOverride?: string, roleContext?: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0 (BP2): base prompt + identity override + core contexts + instructions + role
+    // Block 0: base prompt + identity override + core contexts + instructions + plugin instructions + role
     const parts: string[] = [this.basePrompt];
 
     if (basePromptOverride) {
@@ -64,18 +67,23 @@ export class AnthropicSessionFactory implements AISessionFactory {
       parts.push(`<system-reminder>\n${reminderParts.join("\n\n")}\n</system-reminder>`);
     }
 
+    const pluginInstructions = this.getPluginInstructions().filter(Boolean);
+    if (pluginInstructions.length > 0) {
+      parts.push(pluginInstructions.join("\n\n"));
+    }
+
     blocks.push({
       type: "text",
       text: parts.join("\n\n---\n\n"),
       cache_control: { type: "ephemeral" },
     });
 
-    // Block 1 (BP3): plugin contexts
+    // Block 1: plugin dynamic context
     const pluginContexts = this.getPluginContext().filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
         type: "text",
-        text: pluginContexts.join("\n\n---\n\n"),
+        text: pluginContexts.join("\n\n"),
         cache_control: { type: "ephemeral" },
       });
     }
@@ -115,8 +123,8 @@ export class AnthropicSessionFactory implements AISessionFactory {
   buildSystemBlocks(): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base prompt + core contexts + instructions — single static cache breakpoint (BP1)
-    // These never change during a session, so merging them saves cache overhead.
+    // Block 0 (BP1): base prompt + core contexts + instructions + plugin instructions
+    // These rarely change during a session — one stable cache breakpoint.
     const parts: string[] = [this.basePrompt];
 
     const coreContexts = this.getCoreContext().filter(Boolean);
@@ -129,18 +137,24 @@ export class AnthropicSessionFactory implements AISessionFactory {
       parts.push(`<system-reminder>\n${instructions}\n</system-reminder>`);
     }
 
+    // Plugin instructions (registry + context.md) — static, changes only when plugins are added/removed
+    const pluginInstructions = this.getPluginInstructions().filter(Boolean);
+    if (pluginInstructions.length > 0) {
+      parts.push(pluginInstructions.join("\n\n"));
+    }
+
     blocks.push({
       type: "text",
       text: parts.join("\n\n---\n\n"),
       cache_control: { type: "ephemeral" },
     });
 
-    // Block 1: plugin contexts — BP2 (may change when plugins are added/removed)
+    // Block 1 (BP2): plugin dynamic context — changes every turn (active skills, actor state)
     const pluginContexts = this.getPluginContext().filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
         type: "text",
-        text: pluginContexts.join("\n\n---\n\n"),
+        text: pluginContexts.join("\n\n"),
         cache_control: { type: "ephemeral" },
       });
     }
@@ -171,8 +185,9 @@ export class AnthropicSessionFactory implements AISessionFactory {
   /** String version for token estimation */
   private buildSystemString(): string {
     const core = this.getCoreContext().filter(Boolean);
-    const plugins = this.getPluginContext().filter(Boolean);
-    const all = [...core, ...plugins];
+    const pluginInstr = this.getPluginInstructions().filter(Boolean);
+    const pluginCtx = this.getPluginContext().filter(Boolean);
+    const all = [...core, ...pluginInstr, ...pluginCtx];
     if (all.length === 0) return this.basePrompt;
     return this.basePrompt + "\n\n---\n\n" + all.join("\n\n---\n\n");
   }

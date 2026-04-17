@@ -8,9 +8,10 @@ export function createOpenAIProvider(config: ProviderConfig): Provider {
     config.getTools,
     () => {
       const core = config.getCoreContext().filter(Boolean);
-      const plugins = config.getPluginContext().filter(Boolean);
+      const pluginInstr = config.getPluginInstructions().filter(Boolean);
+      const pluginCtx = config.getPluginContext().filter(Boolean);
       const instructions = config.getInstructions();
-      const parts = [core.join("\n\n---\n\n"), plugins.join("\n\n---\n\n")];
+      const parts = [core.join("\n\n---\n\n"), pluginInstr.join("\n\n"), pluginCtx.join("\n\n")];
       if (instructions) parts.push(instructions);
       return parts.filter(Boolean).join("\n\n---\n\n");
     },

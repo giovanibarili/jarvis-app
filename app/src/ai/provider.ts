@@ -17,6 +17,7 @@ type InstructionsProvider = () => string;
 export interface ProviderConfig {
   getTools: CapabilityDefProvider;
   getCoreContext: ContextProvider;
+  getPluginInstructions: ContextProvider;
   getPluginContext: ContextProvider;
   getInstructions: InstructionsProvider;
 }

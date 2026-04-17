@@ -42,10 +42,19 @@ async function main() {
   ];
 
   // Provider router — manages active AI provider + metrics HUD
+  // Find the plugin manager piece lazily (it's in the pieces array)
+  const getPluginManager = () => pieces.find(p => p.id === "plugin-manager") as any;
   const providerRouter = new ProviderRouter({
     getTools: () => capabilityRegistry.getDefinitions(),
     getCoreContext: () => pieces.filter(p => p.id !== "plugin-manager" && p.systemContext).map(p => p.systemContext!()),
-    getPluginContext: () => pieces.filter(p => p.id === "plugin-manager" && p.systemContext).map(p => p.systemContext!()),
+    getPluginInstructions: () => {
+      const pm = getPluginManager();
+      return pm?.systemContext ? [pm.systemContext()] : [];
+    },
+    getPluginContext: () => {
+      const pm = getPluginManager();
+      return pm?.pluginPieceContext ? [pm.pluginPieceContext()] : [];
+    },
     getInstructions: () => jarvisCore.getJarvisMd(),
   });
   providerRouter.registerProviderFactory("anthropic", createAnthropicProvider);

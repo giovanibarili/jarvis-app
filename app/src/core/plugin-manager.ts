@@ -74,35 +74,40 @@ export class PluginManager implements Piece {
     this.httpServer = server;
   }
 
+  /** Plugin instructions: registry + context.md (static, rarely changes) */
   systemContext(): string {
     if (this.plugins.size === 0) return "";
 
-    // Section 1: Plugin registry (static)
+    // Plugin registry
     const list = [...this.plugins.values()]
       .map(p => `${p.name}: ${p.manifest.description} (${p.tools.length} tools, ${p.pieces.length} pieces)`)
       .join("\n");
     const header = `## Plugins\n${list}\nTools: plugin_install, plugin_list, plugin_update, plugin_enable, plugin_disable, plugin_remove`;
 
-    // Section 2: Static context.md from each plugin
+    // Static context.md from each plugin
     const contexts = [...this.plugins.values()]
       .map(p => p.context)
       .filter(Boolean);
 
-    // Section 3: Dynamic systemContext() from plugin pieces (e.g. skill-manager, actor-pool)
+    return [header, ...contexts].join("\n\n");
+  }
+
+  /** Plugin dynamic context: systemContext() from plugin pieces (changes every turn) */
+  pluginPieceContext(): string {
+    if (!this.pieceManager) return "";
+
     const pieceContexts: string[] = [];
-    if (this.pieceManager) {
-      for (const plugin of this.plugins.values()) {
-        for (const pieceId of plugin.pieces) {
-          const piece = this.pieceManager.pieces.get(pieceId);
-          if (piece?.systemContext) {
-            const ctx = piece.systemContext();
-            if (ctx) pieceContexts.push(ctx);
-          }
+    for (const plugin of this.plugins.values()) {
+      for (const pieceId of plugin.pieces) {
+        const piece = this.pieceManager.pieces.get(pieceId);
+        if (piece?.systemContext) {
+          const ctx = piece.systemContext();
+          if (ctx) pieceContexts.push(ctx);
         }
       }
     }
 
-    return [header, ...contexts, ...pieceContexts].join("\n\n---\n\n");
+    return pieceContexts.join("\n\n");
   }
 
   async start(bus: EventBus): Promise<void> {
