@@ -73,6 +73,8 @@ export function ChatPanel({
   const [images, setImages] = useState<PendingImage[]>([])
   const [slashActive, setSlashActive] = useState(false)
   const [slashQuery, setSlashQuery] = useState('')
+  const [panelFocused, setPanelFocused] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toolStartTimes = useRef(new Map<string, number>())
 
@@ -222,18 +224,34 @@ export function ChatPanel({
     return () => source.close()
   }, [streamUrl, features.compaction])
 
-  // Esc to abort
+  // Track focus on this chat panel
+  useEffect(() => {
+    const panel = panelRef.current
+    if (!panel) return
+    const onFocusIn = () => setPanelFocused(true)
+    const onFocusOut = (e: FocusEvent) => {
+      if (!panel.contains(e.relatedTarget as Node)) setPanelFocused(false)
+    }
+    panel.addEventListener('focusin', onFocusIn)
+    panel.addEventListener('focusout', onFocusOut)
+    return () => {
+      panel.removeEventListener('focusin', onFocusIn)
+      panel.removeEventListener('focusout', onFocusOut)
+    }
+  }, [])
+
+  // Esc to abort — only when THIS panel has focus
   useEffect(() => {
     if (!features.abort || !abortUrl) return
     const handleEsc = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape' && !slashActive && (isStreaming || isThinking)) {
+      if (e.key === 'Escape' && panelFocused && !slashActive && (isStreaming || isThinking)) {
         e.preventDefault()
         fetch(abortUrl, { method: 'POST' }).catch(() => {})
       }
     }
     window.addEventListener('keydown', handleEsc)
     return () => window.removeEventListener('keydown', handleEsc)
-  }, [features.abort, abortUrl, isStreaming, isThinking, slashActive])
+  }, [features.abort, abortUrl, isStreaming, isThinking, slashActive, panelFocused])
 
   const send = (overrideText?: string) => {
     const prompt = (overrideText ?? input).trim()
@@ -332,7 +350,7 @@ export function ChatPanel({
   }, [])
 
   return (
-    <div className="chatDocked">
+    <div className="chatDocked" ref={panelRef}>
       <div className="chatDockedOutput">
         <ChatTimeline
           entries={entries}

@@ -97,7 +97,8 @@ export class AnthropicSession implements AISession {
   abort(): void {
     if (this.abortController) {
       this.abortController.abort();
-      this.abortController = undefined;
+      // Don't clear abortController here — streamFromAPI catch needs to check .signal.aborted
+      // It gets cleared at the end of streamFromAPI after successful completion
       log.info({ label: this.label }, "AnthropicSession: aborted");
     }
   }
@@ -274,7 +275,8 @@ export class AnthropicSession implements AISession {
         } catch (betaErr: any) {
           const status = betaErr?.status ?? betaErr?.response?.status;
           const errMsg = String(betaErr?.message ?? betaErr ?? "");
-          const isBetaError = status === 400 || /beta|compact/i.test(errMsg);
+          const isNetworkError = /terminated|socket|ECONNRESET|ETIMEDOUT|other side closed/i.test(errMsg);
+          const isBetaError = status === 400 || /beta|compact/i.test(errMsg) || isNetworkError;
           if (isBetaError) {
             log.warn({ label: this.label, status, err: errMsg }, "AnthropicSession: beta compaction failed, falling back to standard API");
             this.betaDisabledUntil = Date.now() + AnthropicSession.BETA_COOLDOWN_MS;
