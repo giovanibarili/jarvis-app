@@ -20,7 +20,7 @@
 
   /* Content */
   --content-padding: 8px 12px;
-  --content-size: 10px;
+  --content-size: 11px;
 
   /* Row */
   --row-gap: 6px;
@@ -213,7 +213,7 @@ body {
   border: none;
   outline: none;
   color: var(--chat-user);
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--font-mono);
   cursor: text;
 }

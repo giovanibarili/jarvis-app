@@ -125,11 +125,11 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     // ─── Center text ───
     const ctxColor = contextPct > 0.8 ? '#f44' : contextPct > 0.5 ? '#fa4' : '#fff'
     ctx.fillStyle = ctxColor
-    ctx.font = '500 14px "JetBrains Mono", monospace'
+    ctx.font = '500 16px "JetBrains Mono", monospace'
     ctx.textAlign = 'center'
     ctx.fillText(`${fmt(contextTokens)} / ${fmt(maxContext)}`, cx, cy - 4)
     ctx.fillStyle = '#5a6a7a'
-    ctx.font = '500 8px "Orbitron", monospace'
+    ctx.font = '500 10px "Orbitron", monospace'
     ctx.fillText(`CONTEXT ${(contextPct * 100).toFixed(1)}%`, cx, cy + 10)
 
     // ─── Legend below ring ───
@@ -145,7 +145,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       ctx.fillStyle = item.color
       ctx.fillRect(lx - 12, ly, 6, 6)
       ctx.fillStyle = '#7a8a9a'
-      ctx.font = '7px "JetBrains Mono", monospace'
+      ctx.font = '9px "JetBrains Mono", monospace'
       ctx.textAlign = 'left'
       ctx.fillText(item.label, lx - 4, ly + 5)
     })
@@ -153,11 +153,11 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     // ─── Stats row (session accumulated totals) ───
     const sy = ly + 16
     ctx.fillStyle = '#4a5a6a'
-    ctx.font = '7px "Orbitron", monospace'
+    ctx.font = '9px "Orbitron", monospace'
     ctx.textAlign = 'center'
     ctx.fillText('SESSION', cx, sy)
     ctx.fillStyle = '#5a6a7a'
-    ctx.font = '8px "JetBrains Mono", monospace'
+    ctx.font = '10px "JetBrains Mono", monospace'
     ctx.fillText(`IN ${fmt(sessionInputTokens)}  OUT ${fmt(sessionOutputTokens)}  REQ ${requestCount}`, cx, sy + 12)
 
     // ─── Streaming status or Model ───
@@ -169,12 +169,12 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       const pulseAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 400)
       ctx.globalAlpha = pulseAlpha
       ctx.fillStyle = '#f1fa8c'
-      ctx.font = '500 8px "JetBrains Mono", monospace'
+      ctx.font = '500 10px "JetBrains Mono", monospace'
       ctx.fillText(statusText, cx, sy + 24)
       ctx.globalAlpha = 1
     } else {
       ctx.fillStyle = '#4af'
-      ctx.font = '7px "Orbitron", monospace'
+      ctx.font = '9px "Orbitron", monospace'
       ctx.fillText(model, cx, sy + 24)
     }
 
