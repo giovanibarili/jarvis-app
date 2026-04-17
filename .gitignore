@@ -8,3 +8,7 @@ dist/
 app/jarvis.md
 app/mcp.user.json
 docs/superpowers/
+app/.jarvis/logs/
+app/.jarvis/sessions/
+app/.jarvis/oauth/
+app/.jarvis/settings.user.json
