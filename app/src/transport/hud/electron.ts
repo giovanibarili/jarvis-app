@@ -92,6 +92,10 @@ app.whenReady().then(() => {
         res.writeHead(500);
         res.end(String(err));
       }
+    } else if (req.url === '/reload' && win) {
+      win.webContents.reload();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
     } else {
       res.writeHead(404);
       res.end();
