@@ -13,14 +13,16 @@ export class HudState {
       switch (msg.action) {
         case "add": {
           const piece = msg.piece!;
-          // Override with saved layout from settings
-          const saved = loadSettings().pieces?.[piece.pieceId]?.config?.layout as any;
-          if (saved) {
-            piece.position = { x: saved.x, y: saved.y };
-            piece.size = { width: saved.width, height: saved.height };
+          // Override with saved layout from settings (skip ephemeral panels)
+          if (!piece.ephemeral) {
+            const saved = loadSettings().pieces?.[piece.pieceId]?.config?.layout as any;
+            if (saved) {
+              piece.position = { x: saved.x, y: saved.y };
+              piece.size = { width: saved.width, height: saved.height };
+            }
           }
           this.pieces.set(piece.pieceId, piece);
-          log.debug({ pieceId: piece.pieceId, type: piece.type, savedLayout: !!saved }, "HudState: added");
+          log.debug({ pieceId: piece.pieceId, type: piece.type, ephemeral: !!piece.ephemeral }, "HudState: added");
           break;
         }
         case "update": {
@@ -52,6 +54,7 @@ export class HudState {
       name: p.name,
       status: p.status,
       visible: p.visible !== false,
+      ephemeral: p.ephemeral ?? false,
       hudConfig: { type: p.type, draggable: true, resizable: true },
       position: p.position ?? { x: 0, y: 0 },
       size: p.size ?? { width: 200, height: 100 },

@@ -19,5 +19,8 @@ export interface HudPieceData {
   position?: { x: number; y: number };
   size?: { width: number; height: number };
   visible?: boolean;
+  /** If true, layout/visibility changes are NOT persisted to settings.
+   *  Use for transient panels (e.g. actor chats) that shouldn't pollute the config. */
+  ephemeral?: boolean;
   renderer?: { plugin: string; file: string };
 }

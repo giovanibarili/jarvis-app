@@ -9,6 +9,8 @@ export type HudComponentState = {
   name: string;
   status: string;
   visible?: boolean;
+  /** Ephemeral panels don't persist layout/visibility to settings */
+  ephemeral?: boolean;
   hudConfig: HudComponentConfig;
   position: { x: number; y: number };
   size: { width: number; height: number };

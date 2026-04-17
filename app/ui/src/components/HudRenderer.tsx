@@ -131,6 +131,7 @@ export function HudRenderer({ state }: { state: HudState }) {
                 minWidth={100}
                 minHeight={60}
                 onClose={() => hidePanel(comp.id)}
+                persistLayout={!comp.ephemeral}
               >
                 <BuiltinRenderer state={comp} />
               </DraggablePanel>
@@ -152,6 +153,7 @@ export function HudRenderer({ state }: { state: HudState }) {
                 minWidth={100}
                 minHeight={60}
                 onClose={() => hidePanel(comp.id)}
+                persistLayout={!comp.ephemeral}
               >
                 <Suspense fallback={<GenericRenderer state={comp} />}>
                   <PluginRenderer state={comp} />
@@ -174,6 +176,7 @@ export function HudRenderer({ state }: { state: HudState }) {
                 minWidth={100}
                 minHeight={60}
                 onClose={() => hidePanel(comp.id)}
+                persistLayout={!comp.ephemeral}
               >
                 <GenericRenderer state={comp} />
               </DraggablePanel>
@@ -213,7 +216,7 @@ export function HudRenderer({ state }: { state: HudState }) {
             minWidth={300}
             minHeight={200}
             onClose={() => closeActorChat(name)}
-            persistLayout={false}
+            persistLayout={false}  // actor chats are always ephemeral
           >
             <ChatPanel
               streamUrl={`http://localhost:50052/plugins/actors/${name}/stream`}

@@ -12,6 +12,7 @@ export class PieceManager {
   private bus: EventBus;
   private registry: CapabilityRegistry;
   private settings: Settings;
+  private ephemeralPieces = new Set<string>();
 
   constructor(pieces: Piece[], bus: EventBus, registry: CapabilityRegistry) {
     this.pieces = new Map(pieces.map(p => [p.id, p]));
@@ -19,6 +20,20 @@ export class PieceManager {
     this.registry = registry;
     this.settings = load();
     this.registerTools();
+
+    // Track ephemeral panels — when a piece registers as ephemeral via hud.update,
+    // we skip persisting its layout/visibility to settings.
+    bus.subscribe<import("./types.js").HudUpdateMessage>("hud.update", (msg) => {
+      if (msg.action === "add" && msg.piece?.ephemeral) {
+        this.ephemeralPieces.add(msg.piece.pieceId);
+      } else if (msg.action === "remove") {
+        this.ephemeralPieces.delete(msg.pieceId);
+      }
+    });
+  }
+
+  private isEphemeral(pieceId: string): boolean {
+    return this.ephemeralPieces.has(pieceId);
   }
 
   async startAll(): Promise<void> {
@@ -129,20 +144,40 @@ export class PieceManager {
 
   show(pieceId: string): { ok: boolean; error?: string } {
     this.setVisible(pieceId, true);
-    this.settings = setPieceSettings(this.settings, pieceId, { visible: true });
-    save(this.settings);
+    if (!this.isEphemeral(pieceId)) {
+      this.settings = setPieceSettings(this.settings, pieceId, { visible: true });
+      save(this.settings);
+    }
     return { ok: true };
   }
 
   hide(pieceId: string): { ok: boolean; error?: string } {
     this.setVisible(pieceId, false);
-    this.settings = setPieceSettings(this.settings, pieceId, { visible: false });
-    save(this.settings);
+    if (!this.isEphemeral(pieceId)) {
+      this.settings = setPieceSettings(this.settings, pieceId, { visible: false });
+      save(this.settings);
+    }
     return { ok: true };
   }
 
   setLayout(pieceId: string, x: number, y: number, width: number, height: number): { ok: boolean; error?: string } {
-    // Update settings
+    // Push to HUD live (always — even ephemeral panels move on screen)
+    this.bus.publish({
+      channel: "hud.update",
+      source: "piece-manager",
+      action: "update",
+      pieceId,
+      data: {},
+      layout: { x, y, width, height },
+    });
+
+    // Skip persistence for ephemeral panels
+    if (this.isEphemeral(pieceId)) {
+      log.info({ pieceId, x, y, width, height }, "PieceManager: layout updated (ephemeral, not persisted)");
+      return { ok: true };
+    }
+
+    // Persist to settings
     this.settings = load();
     if (!this.settings.pieces[pieceId]) {
       this.settings.pieces[pieceId] = { enabled: true, visible: true };
@@ -152,16 +187,6 @@ export class PieceManager {
       layout: { x, y, width, height },
     };
     save(this.settings);
-
-    // Push to HUD live
-    this.bus.publish({
-      channel: "hud.update",
-      source: "piece-manager",
-      action: "update",
-      pieceId,
-      data: {},
-      layout: { x, y, width, height },
-    });
 
     log.info({ pieceId, x, y, width, height }, "PieceManager: layout updated");
     return { ok: true };
