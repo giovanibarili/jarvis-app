@@ -1,10 +1,13 @@
 // src/server.ts
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
+import { homedir } from "node:os";
 import type { ChatPiece } from "./input/chat-piece.js";
 import { load as loadSettings, save as saveSettings } from "./core/settings.js";
 import { log, getLogBuffer, onLogEntry } from "./logger/index.js";
+
+const THEMES_DIR = join(homedir(), ".jarvis", "themes");
 
 const UI_DIST = join(process.cwd(), "ui", "dist");
 
@@ -130,6 +133,78 @@ export class HttpServer {
           saveSettings(settings);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400); res.end();
+        }
+      });
+      return;
+    }
+
+    // ── Theme API ─────────────────────────────────────────────────────────────
+
+    // GET /theme/active — returns active theme CSS vars as JSON
+    if (req.url === "/theme/active" && req.method === "GET") {
+      const settings = loadSettings();
+      const themeName = settings.theme;
+      if (!themeName) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ theme: null, vars: {} }));
+        return;
+      }
+      const themePath = join(THEMES_DIR, themeName, "theme.json");
+      if (!existsSync(themePath)) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ theme: themeName, vars: {}, error: "theme file not found" }));
+        return;
+      }
+      try {
+        const theme = JSON.parse(readFileSync(themePath, "utf-8"));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ theme: themeName, vars: theme.vars ?? {} }));
+      } catch {
+        res.writeHead(500); res.end();
+      }
+      return;
+    }
+
+    // GET /theme/list — list all installed themes
+    if (req.url === "/theme/list" && req.method === "GET") {
+      const themes: Array<{ name: string; displayName?: string; description?: string; author?: string }> = [];
+      if (existsSync(THEMES_DIR)) {
+        for (const entry of readdirSync(THEMES_DIR, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const themePath = join(THEMES_DIR, entry.name, "theme.json");
+          if (!existsSync(themePath)) continue;
+          try {
+            const theme = JSON.parse(readFileSync(themePath, "utf-8"));
+            themes.push({
+              name: entry.name,
+              displayName: theme.name ?? entry.name,
+              description: theme.description,
+              author: theme.author,
+            });
+          } catch {
+            themes.push({ name: entry.name });
+          }
+        }
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ themes }));
+      return;
+    }
+
+    // POST /theme/set — { name: string } — set active theme
+    if (req.url === "/theme/set" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { name } = JSON.parse(body);
+          const settings = loadSettings();
+          settings.theme = name ?? null;
+          saveSettings(settings);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, theme: name }));
         } catch {
           res.writeHead(400); res.end();
         }
