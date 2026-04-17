@@ -39,6 +39,7 @@ export interface Settings {
   providers?: Record<string, ProviderSettings>;
   model?: string;
   compaction?: CompactionSettings;
+  theme?: string; // active theme name (maps to ~/.jarvis/themes/<name>/theme.json)
 }
 
 const SETTINGS_DIR = join(process.cwd(), ".jarvis");
@@ -81,6 +82,7 @@ function deepMerge(base: Settings, override: Settings): Settings {
     compaction: override.compaction
       ? { ...DEFAULT_COMPACTION, ...base.compaction, ...override.compaction }
       : base.compaction,
+    theme: override.theme ?? base.theme,
   };
 }
 
