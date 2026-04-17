@@ -28,6 +28,8 @@ export interface PluginContext {
   sessionFactory: AISessionFactory;
   registerRoute: (method: string, path: string, handler: RouteHandler) => void;
   saveConfig: (config: Record<string, unknown>) => void;
+  registerSlashCommand: (cmd: import("./tools.js").SlashCommand) => void;
+  unregisterSlashCommand: (name: string) => void;
 }
 
 export interface JarvisPlugin {

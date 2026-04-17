@@ -23,10 +23,30 @@ export interface CapabilityResult {
   is_error?: boolean;
 }
 
+export interface SlashCommand {
+  name: string;
+  description: string;
+  hint?: string;
+  source: string;
+  handler: (args: string) => Promise<SlashCommandResult>;
+}
+
+export interface SlashCommandResult {
+  /** Text to inject into system prompt (active skill body) */
+  inject?: string;
+  /** Message to show in chat */
+  message?: string;
+  /** Dispatch to actor (context: fork) */
+  dispatch?: { role: string; task: string };
+}
+
 export interface CapabilityRegistry {
   register(def: CapabilityDefinition): void;
   getDefinitions(): Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
   execute(calls: CapabilityCall[]): Promise<CapabilityResult[]>;
+  registerSlashCommand(cmd: SlashCommand): void;
+  unregisterSlashCommand(name: string): void;
+  getSlashCommands(): Array<{ name: string; description: string; category: string; hint?: string }>;
   readonly names: string[];
   readonly size: number;
 }

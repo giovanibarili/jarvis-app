@@ -4,6 +4,7 @@ interface SlashItem {
   name: string
   description: string
   category: string
+  hint?: string
 }
 
 interface Props {
@@ -14,11 +15,12 @@ interface Props {
 }
 
 const CATEGORY_ORDER = [
-  'filesystem', 'web', 'model', 'system', 'pieces', 'actors',
+  'skills', 'filesystem', 'web', 'model', 'system', 'pieces', 'actors',
   'cron', 'plugins', 'grpc', 'mcp', 'general',
 ]
 
 const CATEGORY_COLORS: Record<string, string> = {
+  skills: '#50fa7b',
   filesystem: '#50fa7b',
   web: '#8be9fd',
   model: '#f1fa8c',
@@ -154,7 +156,7 @@ export function SlashMenu({ query, onSelect, onClose, visible }: Props) {
             [{item.category}]
           </span>
           <span style={{ color: '#f8f8f2', fontWeight: 500 }}>
-            /{item.name}
+            /{item.name}{item.hint ? ` ${item.hint}` : ''}
           </span>
           <span style={{
             color: '#6272a4',

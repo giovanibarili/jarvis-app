@@ -13,8 +13,23 @@ export interface CapabilityDefinition {
 
 export type CapabilityExecutionListener = (toolName: string, isError: boolean, timeMs: number) => void;
 
+export interface SlashCommand {
+  name: string;
+  description: string;
+  hint?: string;
+  source: string;
+  handler: (args: string) => Promise<SlashCommandResult>;
+}
+
+export interface SlashCommandResult {
+  inject?: string;
+  message?: string;
+  dispatch?: { role: string; task: string };
+}
+
 export class CapabilityRegistry {
   private tools = new Map<string, CapabilityDefinition>();
+  private slashCommands = new Map<string, SlashCommand>();
   private listeners: CapabilityExecutionListener[] = [];
 
   onExecution(listener: CapabilityExecutionListener): void {
@@ -62,9 +77,33 @@ export class CapabilityRegistry {
     );
   }
 
-  /** Get slash-command metadata for the UI (name, description, category) */
-  getSlashCommands(): Array<{ name: string; description: string; category: string }> {
-    return [...this.tools.values()].map(({ name, description }) => {
+  registerSlashCommand(cmd: SlashCommand): void {
+    this.slashCommands.set(cmd.name, cmd);
+    log.info({ name: cmd.name, source: cmd.source }, "CapabilityRegistry: slash command registered");
+  }
+
+  unregisterSlashCommand(name: string): void {
+    if (this.slashCommands.delete(name)) {
+      log.info({ name }, "CapabilityRegistry: slash command unregistered");
+    }
+  }
+
+  getSlashCommand(name: string): SlashCommand | undefined {
+    return this.slashCommands.get(name);
+  }
+
+  /** Get slash-command metadata for the UI (name, description, category, hint) */
+  getSlashCommands(): Array<{ name: string; description: string; category: string; hint?: string }> {
+    // Plugin-registered slash commands (skills, etc.)
+    const pluginCommands = [...this.slashCommands.values()].map(cmd => ({
+      name: cmd.name,
+      description: cmd.description,
+      category: cmd.source,
+      hint: cmd.hint,
+    }));
+
+    // Capability-derived commands (existing behavior)
+    const capCommands = [...this.tools.values()].map(({ name, description }) => {
       let category = "general";
       if (name.startsWith("mcp__")) category = "mcp";
       else if (["bash", "read_file", "write_file", "edit_file", "glob", "grep", "list_dir"].includes(name)) category = "filesystem";
@@ -79,6 +118,8 @@ export class CapabilityRegistry {
       else if (["conversation_clear", "jarvis_reset"].includes(name)) category = "system";
       return { name, description, category };
     });
+
+    return [...pluginCommands, ...capCommands];
   }
 
   get names(): string[] {

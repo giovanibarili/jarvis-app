@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { EventBus } from "../core/bus.js";
 import type { Piece } from "../core/piece.js";
 import type { AIRequestMessage, AIStreamMessage, HudUpdateMessage } from "../core/types.js";
+import type { CapabilityRegistry } from "../capabilities/registry.js";
 import { log } from "../logger/index.js";
 
 const DEFAULT_SESSION = "main";
@@ -12,7 +13,12 @@ export class ChatPiece implements Piece {
   readonly name = "Chat";
 
   private bus!: EventBus;
+  private registry?: CapabilityRegistry;
   private streamClients = new Set<ServerResponse>();
+
+  setRegistry(registry: CapabilityRegistry): void {
+    this.registry = registry;
+  }
 
   systemContext(): string {
     return `## Chat Piece
@@ -113,7 +119,34 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
       const body = Buffer.concat(chunks).toString("utf-8");
       try {
         const { prompt, images } = JSON.parse(body);
-        // Broadcast to chat output — include image thumbnails for display
+
+        // Intercept slash commands (e.g. /skill-name args)
+        if (this.registry && typeof prompt === "string" && prompt.startsWith("/")) {
+          const match = prompt.match(/^\/(\S+)\s*(.*)?$/);
+          if (match) {
+            const [, cmdName, cmdArgs] = match;
+            const slashCmd = this.registry.getSlashCommand(cmdName);
+            if (slashCmd) {
+              this.broadcast({ type: "user", text: prompt, source: "chat" });
+              slashCmd.handler(cmdArgs?.trim() ?? "").then((result) => {
+                if (result.message) {
+                  this.broadcast({ type: "done", fullText: result.message, source: "system" });
+                }
+                if (result.inject) {
+                  // Inject triggers systemContext() rebuild on next AI request — no action needed here
+                  log.info({ cmd: cmdName, injectLength: result.inject.length }, "ChatPiece: slash command injected content");
+                }
+              }).catch((err) => {
+                this.broadcast({ type: "error", error: `Slash command error: ${err}`, source: "system" });
+              });
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: true }));
+              return;
+            }
+          }
+        }
+
+        // Normal message — broadcast and send to AI
         this.broadcast({ type: "user", text: prompt, images, source: "chat" });
         this.bus.publish({
           channel: "ai.request",

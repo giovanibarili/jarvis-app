@@ -29,6 +29,7 @@ async function main() {
   const capabilityRegistry = new CapabilityRegistry();
 
   const chatPiece = new ChatPiece();
+  chatPiece.setRegistry(capabilityRegistry);
   const jarvisCore = new JarvisCore();
 
   const pieces: Piece[] = [

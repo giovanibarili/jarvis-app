@@ -218,6 +218,12 @@ export class PluginManager implements Piece {
                 settings.pieces[configKey].config = config;
                 saveSettings(settings);
               },
+              registerSlashCommand: (cmd: any) => {
+                this.registry.registerSlashCommand(cmd);
+              },
+              unregisterSlashCommand: (name: string) => {
+                this.registry.unregisterSlashCommand(name);
+              },
             };
             const pieces = mod.createPieces(ctx);
             for (const piece of pieces) {
