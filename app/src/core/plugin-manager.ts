@@ -76,17 +76,19 @@ export class PluginManager implements Piece {
 
   systemContext(): string {
     if (this.plugins.size === 0) return "";
+
+    // Section 1: Plugin registry (static)
     const list = [...this.plugins.values()]
       .map(p => `${p.name}: ${p.manifest.description} (${p.tools.length} tools, ${p.pieces.length} pieces)`)
       .join("\n");
     const header = `## Plugins\n${list}\nTools: plugin_install, plugin_list, plugin_update, plugin_enable, plugin_disable, plugin_remove`;
 
-    // Collect context.md from each plugin
+    // Section 2: Static context.md from each plugin
     const contexts = [...this.plugins.values()]
       .map(p => p.context)
       .filter(Boolean);
 
-    // Collect systemContext() from dynamic plugin pieces (e.g. skill-manager)
+    // Section 3: Dynamic systemContext() from plugin pieces (e.g. skill-manager, actor-pool)
     const pieceContexts: string[] = [];
     if (this.pieceManager) {
       for (const plugin of this.plugins.values()) {
@@ -100,7 +102,7 @@ export class PluginManager implements Piece {
       }
     }
 
-    return [header, ...contexts, ...pieceContexts].join("\n\n");
+    return [header, ...contexts, ...pieceContexts].join("\n\n---\n\n");
   }
 
   async start(bus: EventBus): Promise<void> {
