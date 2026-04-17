@@ -53,6 +53,7 @@ export class JarvisCore implements Piece {
   private lastResponseMs = 0;
   private state: "loading" | "online" | "processing" | "waiting_tools" = "loading";
   private pendingPrompts = new Map<string, AIRequestMessage[]>();
+  private pendingReplyTo = new Map<string, string>(); // sessionId → replyTo (actor source)
   private jarvisMdPath = join(process.cwd(), "jarvis.md");
 
   systemContext(): string {
@@ -204,11 +205,18 @@ export class JarvisCore implements Piece {
       this.pendingPrompts.delete(sessionId);
     }
 
+    // Track replyTo so we can route the response back to the calling actor
+    if (msg.replyTo) {
+      this.pendingReplyTo.set(sessionId, msg.replyTo);
+    } else {
+      this.pendingReplyTo.delete(sessionId);
+    }
+
     this.sessions.setState(sessionId, "processing");
     this.state = "processing";
     this.updateHud();
     const t0 = Date.now();
-    log.info({ sessionId, prompt: text.slice(0, 80), images: msg.images?.length ?? 0 }, "JarvisCore: processing");
+    log.info({ sessionId, prompt: text.slice(0, 80), images: msg.images?.length ?? 0, replyTo: msg.replyTo }, "JarvisCore: processing");
 
     try {
       const images = msg.images?.map(i => ({ label: i.label, base64: i.base64, mediaType: i.mediaType }));
@@ -410,6 +418,19 @@ export class JarvisCore implements Piece {
         text: fullText,
         usage: usage ?? { input_tokens: 0, output_tokens: 0 },
       });
+
+      // Route response back to the calling actor if replyTo is set
+      const replyTo = this.pendingReplyTo.get(sessionId);
+      if (replyTo && fullText) {
+        this.pendingReplyTo.delete(sessionId);
+        log.info({ sessionId, replyTo, textLength: fullText.length }, "JarvisCore: routing response back to actor");
+        this.bus.publish({
+          channel: "ai.request",
+          source: "jarvis-core",
+          target: replyTo,
+          text: `[JARVIS] ${fullText}`,
+        } as Parameters<EventBus["publish"]>[0]);
+      }
 
       // Drain queued prompts for this session
       this.drainQueue(sessionId);
