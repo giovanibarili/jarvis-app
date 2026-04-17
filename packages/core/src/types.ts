@@ -29,6 +29,8 @@ export interface AIRequestMessage extends BusMessage {
   text: string;
   images?: ImageAttachment[];
   replyTo?: string;
+  /** Optional payload for dispatch metadata (e.g. actor role, context) */
+  data?: Record<string, unknown>;
 }
 
 // ai.stream — tokens coming from any AI session

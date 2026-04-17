@@ -4,9 +4,7 @@ import { DraggablePanel } from './DraggablePanel'
 import { renderers } from './renderers/index'
 import { ReactorCore } from './ReactorCore'
 import { ActorPoolRenderer } from './renderers/ActorPoolRenderer'
-import { ActorChat } from './panels/ActorChat'
-import { ChatOutput } from './panels/ChatOutput'
-import { ChatInput } from './panels/ChatInput'
+import { ChatPanel } from './panels/ChatPanel'
 
 // Cache for lazily loaded plugin renderers
 const pluginRendererCache: Record<string, React.LazyExoticComponent<React.ComponentType<{ state: any }>>> = {}
@@ -93,7 +91,7 @@ export function HudRenderer({ state }: { state: HudState }) {
           </div>
         )}
 
-        {/* Chat — docked panel: draggable + resizable, output fills space, input grows */}
+        {/* Chat — unified ChatPanel for main session */}
         {(chatOutputComp || chatInputComp) && (
           <DraggablePanel
             key="chat-docked"
@@ -106,18 +104,12 @@ export function HudRenderer({ state }: { state: HudState }) {
             minWidth={300}
             minHeight={120}
           >
-            <div className="chatDocked">
-              {chatOutputComp && chatOutputComp.visible !== false && (
-                <div className="chatDockedOutput">
-                  <ChatOutput />
-                </div>
-              )}
-              {chatInputComp && chatInputComp.visible !== false && (
-                <div className="chatDockedInput">
-                  <ChatInput />
-                </div>
-              )}
-            </div>
+            <ChatPanel
+              streamUrl="/chat-stream"
+              sendUrl="/chat/send"
+              abortUrl="/chat/abort"
+              assistantLabel="JARVIS"
+            />
           </DraggablePanel>
         )}
 
@@ -208,7 +200,7 @@ export function HudRenderer({ state }: { state: HudState }) {
           </DraggablePanel>
         )}
 
-        {/* Actor chat panels */}
+        {/* Actor chat panels — same ChatPanel, different URLs */}
         {openChats.map((name, i) => (
           <DraggablePanel
             key={`actor-chat-${name}`}
@@ -222,7 +214,24 @@ export function HudRenderer({ state }: { state: HudState }) {
             minHeight={200}
             onClose={() => closeActorChat(name)}
           >
-            <ActorChat actorName={name} />
+            <ChatPanel
+              streamUrl={`http://localhost:50052/plugins/actors/${name}/stream`}
+              sendUrl={`http://localhost:50052/plugins/actors/${name}/send`}
+              abortUrl={`http://localhost:50052/plugins/actors/${name}/abort`}
+              historyUrl={`http://localhost:50052/plugins/actors/${name}/history`}
+              assistantLabel={name.toUpperCase()}
+              features={{ slashMenu: true, images: false, abort: true, compaction: false }}
+              userLabel={(source) => {
+                if (source === 'jarvis') return 'JARVIS'
+                if (source === 'grpc') return 'GRPC'
+                return 'YOU'
+              }}
+              userLabelColor={(source) => {
+                if (source === 'jarvis') return '#4af'
+                if (source === 'grpc') return '#fa4'
+                return 'var(--chat-user-label)'
+              }}
+            />
           </DraggablePanel>
         ))}
       </div>
