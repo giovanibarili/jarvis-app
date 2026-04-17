@@ -86,7 +86,21 @@ export class PluginManager implements Piece {
       .map(p => p.context)
       .filter(Boolean);
 
-    return [header, ...contexts].join("\n\n");
+    // Collect systemContext() from dynamic plugin pieces (e.g. skill-manager)
+    const pieceContexts: string[] = [];
+    if (this.pieceManager) {
+      for (const plugin of this.plugins.values()) {
+        for (const pieceId of plugin.pieces) {
+          const piece = this.pieceManager.pieces.get(pieceId);
+          if (piece?.systemContext) {
+            const ctx = piece.systemContext();
+            if (ctx) pieceContexts.push(ctx);
+          }
+        }
+      }
+    }
+
+    return [header, ...contexts, ...pieceContexts].join("\n\n");
   }
 
   async start(bus: EventBus): Promise<void> {

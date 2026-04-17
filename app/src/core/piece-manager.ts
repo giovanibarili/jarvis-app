@@ -7,7 +7,7 @@ import { load, save, getPieceSettings, setPieceSettings, isProtected, type Setti
 import { log } from "../logger/index.js";
 
 export class PieceManager {
-  private pieces: Map<string, Piece>;
+  readonly pieces: Map<string, Piece>;
   private running = new Set<string>();
   private bus: EventBus;
   private registry: CapabilityRegistry;
