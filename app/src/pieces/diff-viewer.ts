@@ -116,6 +116,7 @@ export class DiffViewerPiece implements Piece {
   private registry: CapabilityRegistry;
   private history: DiffViewerData[] = [];
   private currentData: DiffViewerData | null = null;
+  private addedToHud = false;
 
   constructor(registry: CapabilityRegistry) {
     this.registry = registry;
@@ -148,10 +149,13 @@ export class DiffViewerPiece implements Piece {
       this.history = this.history.slice(-50);
     }
 
+    const action = this.addedToHud ? "update" : "add";
+    this.addedToHud = true;
+
     this.bus.publish({
       channel: "hud.update",
       source: this.id,
-      action: this.history.length === 1 ? "add" : "update",
+      action,
       pieceId: this.id,
       piece: {
         pieceId: this.id,
