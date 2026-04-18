@@ -352,7 +352,18 @@ export class PluginManager implements Piece {
     if (!plugin) return { ok: false, error: `Plugin not found: ${name}` };
 
     try {
-      execSync(`git -C ${plugin.settings.path} pull`, { timeout: 30000 });
+      const dir = plugin.settings.path;
+      execSync(`git -C "${dir}" pull`, { timeout: 30000 });
+
+      // Rebuild: run npm install if package.json exists (picks up new/changed deps)
+      const pkgPath = join(dir, "package.json");
+      if (existsSync(pkgPath)) {
+        const npmrcPath = join(dir, ".npmrc");
+        const npmrcFlag = existsSync(npmrcPath) ? ` --userconfig "${npmrcPath}"` : "";
+        log.info({ name }, "PluginManager: running npm install after update");
+        execSync(`npm install${npmrcFlag}`, { cwd: dir, timeout: 60000 });
+      }
+
       // Reload
       this.plugins.delete(name);
       await this.loadPlugin(name, plugin.settings);
