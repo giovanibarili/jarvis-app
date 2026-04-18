@@ -62,11 +62,11 @@ interface ViewerTab {
 
 // ─── Send ai.request to the backend ───
 
-function sendAiRequest(text: string) {
+function sendAiRequest(prompt: string) {
   fetch('/chat/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ prompt }),
   }).catch(() => {})
 }
 
