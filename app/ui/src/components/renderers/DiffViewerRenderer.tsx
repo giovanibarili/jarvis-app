@@ -47,6 +47,7 @@ interface DiffViewerData {
   viewMode: 'inline' | 'side-by-side'
   activeTab: number
   title?: string
+  interactive?: boolean
   diffs?: DiffEntry[]
   file?: FileEntry
   historyCount: number
@@ -57,7 +58,7 @@ interface ViewerTab {
   id: string
   title: string
   data: DiffViewerData
-  status: 'pending' | 'accepted' | 'rejected'
+  interactive: boolean
 }
 
 // ─── Send ai.request to the backend ───
@@ -67,6 +68,14 @@ function sendAiRequest(prompt: string) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt }),
+  }).catch(() => {})
+}
+
+function hideHudPanel(pieceId: string) {
+  fetch('/hud/hide', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pieceId }),
   }).catch(() => {})
 }
 
@@ -427,7 +436,7 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
       id: `tab-${++tabIdCounter}`,
       title,
       data,
-      status: 'pending',
+      interactive: data.interactive ?? false,
     }
 
     setTabs(prev => {
@@ -448,28 +457,27 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
     const tab = tabs[idx]
     if (!tab) return
 
-    // Build context about what was closed
-    const paths = tab.data.diffs?.map(d => d.path).join(', ')
-      ?? tab.data.file?.path
-      ?? tab.title
-    sendAiRequest(`[SYSTEM] User closed diff viewer tab "${tab.title}" (${paths}). Status was: ${tab.status}.`)
+    // Only notify AI when an interactive tab is dismissed without decision
+    if (tab.interactive) {
+      const paths = tab.data.diffs?.map(d => d.path).join(', ')
+        ?? tab.data.file?.path
+        ?? tab.title
+      sendAiRequest(`[SYSTEM] User dismissed diff viewer tab "${tab.title}" (${paths}) without accepting or rejecting.`)
+    }
 
-    setTabs(prev => {
-      const next = prev.filter((_, i) => i !== idx)
-      return next
-    })
-    setActiveTabIdx(prev => {
-      if (prev >= tabs.length - 1) return Math.max(0, tabs.length - 2)
-      if (prev > idx) return prev - 1
-      return prev
-    })
-  }, [tabs])
+    removeTab(idx)
+  }, [tabs, removeTab])
 
   const removeTab = useCallback((idx: number) => {
+    const newLen = tabs.length - 1
+    if (newLen === 0) {
+      // Last tab — hide the HUD panel
+      setTabs([])
+      hideHudPanel('diff-viewer')
+      return
+    }
     setTabs(prev => prev.filter((_, i) => i !== idx))
     setActiveTabIdx(prev => {
-      const newLen = tabs.length - 1
-      if (newLen === 0) return 0
       if (prev >= newLen) return newLen - 1
       if (prev > idx) return prev - 1
       return prev
@@ -478,7 +486,7 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
 
   const acceptTab = useCallback((idx: number) => {
     const tab = tabs[idx]
-    if (!tab || tab.status !== 'pending') return
+    if (!tab || !tab.interactive) return
 
     const paths = tab.data.diffs?.map(d => d.path).join(', ')
       ?? tab.data.file?.path
@@ -493,7 +501,7 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
 
   const rejectTab = useCallback((idx: number) => {
     const tab = tabs[idx]
-    if (!tab || tab.status !== 'pending') return
+    if (!tab || !tab.interactive) return
 
     const paths = tab.data.diffs?.map(d => d.path).join(', ')
       ?? tab.data.file?.path
@@ -531,14 +539,13 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
       {/* Tab bar — always visible when there are tabs */}
       <div style={styles.tabBar}>
         {tabs.map((tab, i) => {
-          const statusIcon = tab.status === 'accepted' ? '✓ ' : tab.status === 'rejected' ? '✗ ' : ''
           return (
             <div
               key={tab.id}
-              style={styles.tab(i === activeTabIdx, tab.status)}
+              style={styles.tab(i === activeTabIdx, 'pending')}
               onClick={() => setActiveTabIdx(i)}
             >
-              <span>{statusIcon}{tab.title}</span>
+              <span>{tab.title}</span>
               <span
                 style={styles.tabClose}
                 onClick={(e) => { e.stopPropagation(); closeTab(i) }}
@@ -585,9 +592,9 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
           )
         })()}
 
-        {/* Accept/Reject buttons — closes tab on action */}
+        {/* Accept/Reject buttons — only when interactive */}
         <span style={{ flex: 1 }} />
-        {isDiff && (
+        {activeTab.interactive && isDiff && (
           <>
             <button
               style={styles.actionBtn('reject')}

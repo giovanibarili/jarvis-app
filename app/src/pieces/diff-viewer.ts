@@ -98,6 +98,8 @@ export interface DiffViewerData {
   viewMode: "inline" | "side-by-side";
   activeTab: number;
   title?: string;
+  /** When true, show Accept/Reject buttons. Default: false (view-only). */
+  interactive?: boolean;
   // diff mode
   diffs?: DiffEntry[];
   // file mode
@@ -227,11 +229,12 @@ export class DiffViewerPiece implements Piece {
     // hud_show_diff — show diff data in HUD
     this.registry.register({
       name: "hud_show_diff",
-      description: "Present code changes to the user for review and approval. Shows a visual before/after diff in the HUD where the user can Accept (✓) or Reject (✗). Use this to propose edits, show refactoring results, or present any changes that need user confirmation. When the user acts, you receive a [SYSTEM] message with their decision. Each call opens a new tab; multiple proposals can be pending simultaneously. Supports line annotations to explain specific changes.",
+      description: "Show a before/after diff to the user in the HUD. Each call opens a new tab. Set interactive=true to add Accept/Reject buttons when you want user feedback — you'll receive a [SYSTEM] message with their decision. Without interactive, it's view-only (user can still close the tab). Use for showing changes, code reviews, proposals, or any comparison.",
       input_schema: {
         type: "object",
         properties: {
           title: { type: "string", description: "Title for the diff viewer panel" },
+          interactive: { type: "boolean", description: "Show Accept/Reject buttons for user feedback (default: false — view-only)" },
           diffs: {
             type: "array",
             description: "Array of file diffs to display",
@@ -277,6 +280,7 @@ export class DiffViewerPiece implements Piece {
           viewMode: (input.view_mode as "inline" | "side-by-side") ?? "side-by-side",
           activeTab: 0,
           title: input.title as string,
+          interactive: input.interactive as boolean | undefined,
           diffs,
           historyCount: this.history.length + 1,
         };
@@ -352,13 +356,14 @@ export class DiffViewerPiece implements Piece {
     // hud_compare_files — compare two files side by side
     this.registry.register({
       name: "hud_compare_files",
-      description: "Compare two files side by side for the user to review. Shows visual diff with syntax highlighting and Accept/Reject buttons. Use when the user needs to see differences between two existing files. When the user acts, you receive a [SYSTEM] message with their decision.",
+      description: "Compare two files side by side in the HUD. Set interactive=true to add Accept/Reject buttons for user feedback. Without it, view-only.",
       input_schema: {
         type: "object",
         properties: {
           path_a: { type: "string", description: "Path to the first file (shown as 'before')" },
           path_b: { type: "string", description: "Path to the second file (shown as 'after')" },
           title: { type: "string", description: "Optional title for the comparison" },
+          interactive: { type: "boolean", description: "Show Accept/Reject buttons for user feedback (default: false)" },
         },
         required: ["path_a", "path_b"],
       },
@@ -385,6 +390,7 @@ export class DiffViewerPiece implements Piece {
           viewMode: "side-by-side",
           activeTab: 0,
           title: (input.title as string) ?? `${basename(pathA)} vs ${basename(pathB)}`,
+          interactive: input.interactive as boolean | undefined,
           diffs: [diff],
           historyCount: this.history.length + 1,
         };
