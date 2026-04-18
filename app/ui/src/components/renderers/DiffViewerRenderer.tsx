@@ -449,6 +449,20 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
     setViewMode(prev => prev === 'inline' ? 'side-by-side' : 'inline')
   }, [])
 
+  const removeTab = useCallback((idx: number) => {
+    setTabs(prev => {
+      const next = prev.filter((_, i) => i !== idx)
+      return next
+    })
+    setActiveTabIdx(prev => {
+      const newLen = tabs.length - 1
+      if (newLen <= 0) return 0
+      if (prev >= newLen) return newLen - 1
+      if (prev > idx) return prev - 1
+      return prev
+    })
+  }, [tabs])
+
   const closeTab = useCallback((idx: number) => {
     const tab = tabs[idx]
     if (!tab) return
@@ -463,20 +477,6 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
 
     removeTab(idx)
   }, [tabs, removeTab])
-
-  const removeTab = useCallback((idx: number) => {
-    setTabs(prev => {
-      const next = prev.filter((_, i) => i !== idx)
-      return next
-    })
-    setActiveTabIdx(prev => {
-      const newLen = tabs.length - 1
-      if (newLen <= 0) return 0
-      if (prev >= newLen) return newLen - 1
-      if (prev > idx) return prev - 1
-      return prev
-    })
-  }, [tabs])
 
   const acceptTab = useCallback((idx: number) => {
     const tab = tabs[idx]
