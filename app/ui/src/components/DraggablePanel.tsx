@@ -1,6 +1,12 @@
 import { Rnd } from 'react-rnd'
 import { useRef, useEffect, useCallback, type ReactNode } from 'react'
 
+// ── Global z-index manager: clicked panel comes to front ──
+let globalZCounter = 10
+function getNextZ(): number {
+  return ++globalZCounter
+}
+
 type Props = {
   id: string
   pieceId: string
@@ -48,6 +54,16 @@ export function DraggablePanel({
   const rndRef = useRef<Rnd>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   const lastAutoH = useRef(0)
+  const zRef = useRef(getNextZ())
+
+  // Bring to front on any mousedown inside the panel
+  const bringToFront = useCallback(() => {
+    const el = rndRef.current?.getSelfElement()
+    if (!el) return
+    const newZ = getNextZ()
+    zRef.current = newZ
+    el.style.zIndex = String(newZ)
+  }, [])
 
   const syncHeight = useCallback(() => {
     if (!autoGrowBottom || !rndRef.current || !innerRef.current) return
@@ -96,8 +112,9 @@ export function DraggablePanel({
       minWidth={minWidth}
       minHeight={minHeight}
       bounds="parent"
-      style={borderColor ? { borderColor } : undefined}
+      style={{ zIndex: zRef.current, ...(borderColor ? { borderColor } : {}) }}
       dragHandleClassName="drag-handle"
+      onMouseDown={bringToFront}
       enableResizing={{
         top: false,
         right: true,
