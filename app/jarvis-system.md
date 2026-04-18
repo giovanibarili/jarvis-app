@@ -49,9 +49,140 @@ Core piece contexts come from each running piece's `systemContext()`. Plugin ins
 
 ### Plugins
 
-Plugins live at `~/.jarvis/plugins/`. Each is a git repo with a manifest (`jarvis-plugin.json`), optional `context.md` (behavioral instructions injected into the system prompt), and pieces that register on the bus.
+Plugins live at `~/.jarvis/plugins/`. Each is a git repo with a manifest, optional context, pieces, renderers, and tools. They extend JARVIS with new capabilities, HUD panels, and behavioral instructions.
 
 Manage with `plugin_install`, `plugin_list`, `plugin_enable`, `plugin_disable`, `plugin_remove`, `plugin_update`.
+
+#### Plugin Structure
+
+```
+~/.jarvis/plugins/jarvis-plugin-<name>/
+├── plugin.json          ← manifest (required)
+├── context.md           ← system prompt instructions (optional, injected into BP2)
+├── package.json         ← npm dependencies
+├── pieces/
+│   ├── index.ts         ← entry point: export createPieces(ctx: PluginContext) → Piece[]
+│   ├── my-piece.ts      ← backend piece (registers capabilities, publishes to HUD)
+│   └── ...
+├── renderers/
+│   └── MyRenderer.tsx   ← frontend component (loaded dynamically by HUD via esbuild)
+├── tools/               ← JSON capability definitions (exec-based, no code)
+└── prompts/             ← static prompt files injected into context
+```
+
+#### plugin.json (Manifest)
+
+```json
+{
+  "name": "jarvis-plugin-<name>",
+  "version": "1.0.0",
+  "description": "What the plugin does",
+  "author": "username",
+  "entry": "pieces/index.ts",
+  "capabilities": {
+    "pieces": true,
+    "renderers": true
+  }
+}
+```
+
+The `capabilities` object declares what the plugin provides. The `entry` field points to the pieces entrypoint.
+
+#### Entry Point — `pieces/index.ts`
+
+```typescript
+import type { PluginContext } from "@jarvis/core";
+
+export function createPieces(ctx: PluginContext) {
+  return [
+    new MyPiece(ctx),
+  ];
+}
+```
+
+#### PluginContext — What Plugins Receive
+
+```typescript
+interface PluginContext {
+  bus: EventBus;                    // Publish/subscribe to typed channels
+  capabilityRegistry: CapabilityRegistry; // Register AI-callable tools
+  config: Record<string, unknown>;  // Plugin-specific saved config
+  pluginDir: string;                // Absolute path to plugin root
+  sessionFactory: AISessionFactory; // Create AI sessions (for actor-like plugins)
+  registerRoute(method, path, handler); // Add HTTP routes to the server
+  saveConfig(config);               // Persist plugin config to settings
+  registerSlashCommand(cmd);        // Add / commands to chat
+  unregisterSlashCommand(name);     // Remove / commands
+}
+```
+
+#### Backend Pieces
+
+A piece implements the `Piece` interface: `id`, `name`, `start(bus)`, `stop()`, optional `systemContext(sessionId?)`.
+
+Pieces register capabilities (tools the AI can call) via `ctx.capabilityRegistry.register()` and publish HUD panels via `hud.update` channel. The `renderer` field on `HudPieceData` links a panel to a plugin renderer file.
+
+```typescript
+// Publishing a panel with a custom renderer
+this.bus.publish({
+  channel: "hud.update",
+  action: "add",
+  pieceId: this.id,
+  piece: {
+    pieceId: this.id,
+    type: "panel",
+    name: "My Panel",
+    status: "running",
+    data: { /* passed to renderer as state.data */ },
+    position: { x: 50, y: 50 },
+    size: { width: 800, height: 500 },
+    ephemeral: true,  // true = don't persist layout to settings
+    renderer: { plugin: "jarvis-plugin-<name>", file: "MyRenderer" },
+  },
+});
+```
+
+#### Frontend Renderers — `renderers/*.tsx`
+
+Plugin renderers are `.tsx` files bundled on-the-fly by esbuild and loaded lazily in the HUD. They receive the component state as props.
+
+React is provided via `window.__JARVIS_REACT` (createElement, Fragment, hooks). Do NOT import React — it's injected by the build banner. Use JSX normally.
+
+```tsx
+// renderers/MyRenderer.tsx
+export default function MyRenderer({ state }: { state: any }) {
+  const data = state.data;
+  return <div>{data.message}</div>;
+}
+```
+
+The renderer filename (minus `.tsx`) must match the `renderer.file` field in the HUD piece data. The HUD loads it from `/plugins/<plugin>/renderers/<file>.js`.
+
+#### HTTP Routes
+
+Plugins can register custom HTTP endpoints via `ctx.registerRoute()`:
+
+```typescript
+ctx.registerRoute("POST", "/plugins/my-plugin/action", (req, res) => {
+  // Handle request — available from frontend fetch()
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true }));
+});
+```
+
+#### context.md — System Prompt Instructions
+
+If present, `context.md` content is injected into the system prompt alongside the plugin registry. Use it for behavioral instructions that the AI should always follow when the plugin is active.
+
+#### Patterns & Conventions
+
+1. **Piece IDs** must be globally unique across all plugins.
+2. **Ephemeral panels** (`ephemeral: true`) don't persist layout to settings — use for transient UI.
+3. **hud.update flow**: first publish uses `action: "add"`, subsequent updates use `action: "update"`. Track state with a boolean flag (not array length).
+4. **Plugin renderer dependencies**: external npm packages must be bundled — esbuild runs per-file. Use `window.__JARVIS_REACT` for React.
+5. **Communication**: pieces talk via EventBus channels only — never import other pieces directly.
+6. **Frontend → Backend**: use `fetch('/plugins/<name>/route')` from renderer to custom HTTP routes.
+7. **Backend → Frontend**: publish on `hud.update` channel with updated `data` — the HUD polls `/hud` every 2s and re-renders.
 
 ### MCP
 
