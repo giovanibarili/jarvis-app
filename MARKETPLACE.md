@@ -54,7 +54,7 @@ Persistent semantic memory powered by MemPalace + ChromaDB. Memories are organiz
 
 Visual canvas with two tab types: Mermaid diagrams and freehand drawing. The AI can create diagrams programmatically (flowchart, sequence, class, state, ER, gantt, pie, etc.) and draw SVG elements. The user can freehand draw with perfect-freehand strokes, add text labels, erase, pan/zoom on an infinite canvas, and send drawings back to the AI as PNG images for visual collaboration. Dark theme, tab-based UI.
 
-**Repo:** local — `~/.jarvis/plugins/jarvis-plugin-canvas/`
+**Repo:** [github.com/giovanibarili/jarvis-plugin-canvas](https://github.com/giovanibarili/jarvis-plugin-canvas)
 
 **Provides:** CanvasPiece (backend + HTTP route for send), CanvasRenderer (HUD panel), 4 tools (canvas_mermaid, canvas_draw, canvas_add, canvas_clear)
 
