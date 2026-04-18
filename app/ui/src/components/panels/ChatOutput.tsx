@@ -50,6 +50,7 @@ export function ChatOutput() {
           })
           toolStartTimes.current.set(data.id, Date.now())
           setEntries(prev => [...prev, { kind: 'capability', name: data.name, id: data.id, args: data.args, status: 'running' }])
+          setIsThinking(true)
           break
         case 'tool_done': {
           const startTime = toolStartTimes.current.get(data.id)

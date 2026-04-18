@@ -3,7 +3,6 @@ import type { HudState } from '../types/hud'
 import { DraggablePanel } from './DraggablePanel'
 import { renderers } from './renderers/index'
 import { CoreNodeOverlay } from './CoreNodeOverlay'
-import { ActorPoolRenderer } from './renderers/ActorPoolRenderer'
 import { ChatPanel } from './panels/ChatPanel'
 
 // Cache for lazily loaded plugin renderers
@@ -30,13 +29,14 @@ function GenericRenderer({ state }: { state: any }) {
   )
 }
 
+const ACTOR_BASE = 'http://localhost:50052/plugins/actors'
+
 export function HudRenderer({ state }: { state: HudState }) {
   const coreComp = state.components.find(c => c.id === 'jarvis-core')
   const coreNodeComp = state.components.find(c => c.id === 'hud-core-node')
   const chatOutputComp = state.components.find(c => c.id === 'chat-output')
   const chatInputComp = state.components.find(c => c.id === 'chat-input')
-  const otherComps = state.components.filter(c => c.id !== 'jarvis-core' && c.id !== 'actor-pool' && c.id !== 'chat-output' && c.id !== 'chat-input' && c.id !== 'hud-core-node' && c.visible !== false)
-  const actorPoolComp = state.components.find(c => c.id === 'actor-pool')
+  const otherComps = state.components.filter(c => c.id !== 'jarvis-core' && c.id !== 'chat-output' && c.id !== 'chat-input' && c.id !== 'hud-core-node' && c.visible !== false)
 
   const [openChats, setOpenChats] = useState<string[]>([])
   const [hiddenPanels, setHiddenPanels] = useState<Set<string>>(new Set())
@@ -101,26 +101,32 @@ export function HudRenderer({ state }: { state: HudState }) {
     return () => window.removeEventListener('panel-reattach', handler)
   }, [])
 
+  // Listen for actor events from plugin renderer (CustomEvents)
+  useEffect(() => {
+    const openHandler = (e: Event) => {
+      const name = (e as CustomEvent).detail?.name
+      if (name) setOpenChats(prev => prev.includes(name) ? prev : [...prev, name])
+    }
+    const killHandler = (e: Event) => {
+      const name = (e as CustomEvent).detail?.name
+      if (name) {
+        fetch(`${ACTOR_BASE}/${name}/kill`, { method: 'POST' }).catch(() => {})
+        setOpenChats(prev => prev.filter(n => n !== name))
+      }
+    }
+    window.addEventListener('actor-open-chat', openHandler)
+    window.addEventListener('actor-kill', killHandler)
+    return () => {
+      window.removeEventListener('actor-open-chat', openHandler)
+      window.removeEventListener('actor-kill', killHandler)
+    }
+  }, [])
+
   const statusColor = state.reactor.status === 'online' ? '#4af'
     : state.reactor.status === 'processing' ? '#fa4'
     : state.reactor.status === 'waiting_tools' ? '#a6f'
     : state.reactor.status === 'loading' ? '#a6f'
     : '#f44'
-
-  const openActorChat = useCallback((name: string) => {
-    setOpenChats(prev => prev.includes(name) ? prev : [...prev, name])
-  }, [])
-
-  const closeActorChat = useCallback((name: string) => {
-    setOpenChats(prev => prev.filter(n => n !== name))
-  }, [])
-
-  const killActor = useCallback((name: string) => {
-    fetch(`http://localhost:50052/plugins/actors/${name}/kill`, {
-      method: 'POST',
-    }).catch(() => {})
-    setOpenChats(prev => prev.filter(n => n !== name))
-  }, [])
 
   return (
     <div className="hudRoot">
@@ -166,7 +172,7 @@ export function HudRenderer({ state }: { state: HudState }) {
           </DraggablePanel>
         )}
 
-        {/* Regular panels */}
+        {/* Regular panels (including plugin panels like actor-pool) */}
         {otherComps.filter(c => !hiddenPanels.has(c.id) && !detachedPanels.has(c.id)).map(comp => {
           // 1. Try built-in renderer
           const BuiltinRenderer = renderers[comp.id]
@@ -242,24 +248,7 @@ export function HudRenderer({ state }: { state: HudState }) {
           return null
         })}
 
-        {/* Actor Pool — special: passes click handler */}
-        {actorPoolComp && actorPoolComp.visible !== false && !detachedPanels.has(actorPoolComp.id) && (
-          <DraggablePanel
-            key={actorPoolComp.id}
-            id={actorPoolComp.name.toUpperCase()}
-            pieceId={actorPoolComp.id}
-            defaultX={actorPoolComp.position.x}
-            defaultY={actorPoolComp.position.y}
-            defaultWidth={actorPoolComp.size.width}
-            defaultHeight={actorPoolComp.size.height}
-            minWidth={100}
-            minHeight={60}
-          >
-            <ActorPoolRenderer state={actorPoolComp} onActorClick={openActorChat} onActorKill={killActor} />
-          </DraggablePanel>
-        )}
-
-        {/* Actor chat panels — same ChatPanel, different URLs */}
+        {/* Actor chat panels — opened via CustomEvent from plugin renderer */}
         {openChats.map((name, i) => (
           <DraggablePanel
             key={`actor-chat-${name}`}
@@ -271,14 +260,14 @@ export function HudRenderer({ state }: { state: HudState }) {
             defaultHeight={350}
             minWidth={300}
             minHeight={200}
-            onClose={() => closeActorChat(name)}
-            persistLayout={false}  // actor chats are always ephemeral
+            onClose={() => setOpenChats(prev => prev.filter(n => n !== name))}
+            persistLayout={false}
           >
             <ChatPanel
-              streamUrl={`http://localhost:50052/plugins/actors/${name}/stream`}
-              sendUrl={`http://localhost:50052/plugins/actors/${name}/send`}
-              abortUrl={`http://localhost:50052/plugins/actors/${name}/abort`}
-              historyUrl={`http://localhost:50052/plugins/actors/${name}/history`}
+              streamUrl={`${ACTOR_BASE}/${name}/stream`}
+              sendUrl={`${ACTOR_BASE}/${name}/send`}
+              abortUrl={`${ACTOR_BASE}/${name}/abort`}
+              historyUrl={`${ACTOR_BASE}/${name}/history`}
               assistantLabel={name.toUpperCase()}
               features={{ slashMenu: true, images: false, abort: true, compaction: false }}
               userLabel={(source) => {

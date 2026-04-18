@@ -6,7 +6,6 @@
 import { lazy, Suspense, useCallback } from 'react'
 import type { HudState, HudComponentState } from '../types/hud'
 import { renderers } from './renderers/index'
-import { ActorPoolRenderer } from './renderers/ActorPoolRenderer'
 import { ChatPanel } from './panels/ChatPanel'
 
 const pluginRendererCache: Record<string, React.LazyExoticComponent<React.ComponentType<{ state: any }>>> = {}
@@ -43,11 +42,6 @@ function renderPanel(comp: HudComponentState) {
         assistantLabel="JARVIS"
       />
     )
-  }
-
-  // Actor pool
-  if (comp.id === 'actor-pool') {
-    return <ActorPoolRenderer state={comp} onActorClick={() => {}} onActorKill={() => {}} />
   }
 
   // Built-in renderer

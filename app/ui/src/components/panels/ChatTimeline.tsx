@@ -209,12 +209,17 @@ export function ChatTimeline({
         return null
       })}
 
-      {isThinking && !streamingText && !entries.some(e => e.kind === 'capability' && e.status === 'running') && (
-        <div style={{ color: '#666', lineHeight: '1.5', marginBottom: '4px' }}>
-          <span style={{ color: assistantLabelColor, marginRight: '8px', fontFamily: 'var(--font-display)', fontSize: '9px', fontWeight: 600, opacity: 0.6 }}>{assistantLabel}</span>
-          <span style={{ fontStyle: 'italic', animation: 'pulse 1.5s infinite', display: 'inline-block' }}>thinking...</span>
-        </div>
-      )}
+      {isThinking && !streamingText && (() => {
+        const hasRunning = entries.some(e => e.kind === 'capability' && e.status === 'running')
+        return (
+          <div style={{ color: '#666', lineHeight: '1.5', marginBottom: '4px' }}>
+            <span style={{ color: assistantLabelColor, marginRight: '8px', fontFamily: 'var(--font-display)', fontSize: '9px', fontWeight: 600, opacity: 0.6 }}>{assistantLabel}</span>
+            <span style={{ fontStyle: 'italic', animation: 'pulse 1.5s infinite', display: 'inline-block' }}>
+              {hasRunning ? 'working...' : 'thinking...'}
+            </span>
+          </div>
+        )
+      })()}
 
       {streamingText && (
         <div style={{ color: 'var(--chat-jarvis)', whiteSpace: 'pre-wrap', lineHeight: '1.5', marginBottom: '4px' }}>

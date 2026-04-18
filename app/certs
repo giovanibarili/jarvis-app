@@ -1,0 +1,18 @@
+[
+  {
+    "client_certificate": {
+      "expires_at": "2027-04-18T18:27:18Z",
+      "device_name": "SM-S731B",
+      "updated_at": "2026-04-18T18:27:18.267Z",
+      "device_model": "SM-S731B",
+      "status": "pending_validation",
+      "id": "69e3cd06-e2dd-4b14-93e1-c2fca09cf2ec",
+      "user_id": "69e3cc43-7beb-4963-a51f-12dd72d21726",
+      "device_id": "f0dce2906b3bb068",
+      "validation_code": "alar chia",
+      "serial_number": "140751749353294382948925667143217894038",
+      "created_at": "2026-04-18T18:27:18.249Z",
+      "customer_id": "69e3cc43-7beb-4963-a51f-12dd72d21726"
+    }
+  }
+]
