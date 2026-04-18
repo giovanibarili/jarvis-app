@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import type { HudState } from './types/hud'
 import { HudRenderer } from './components/HudRenderer'
+import { DetachedPanelRenderer } from './components/DetachedPanelRenderer'
 
 const DEFAULT_STATE: HudState = {
   reactor: { status: 'offline', coreLabel: 'CONNECTING', coreSubLabel: '...' },
@@ -45,9 +46,17 @@ function useTheme() {
   }, [])
 }
 
+/** Check if this window should render a single detached panel */
+function getDetachedPanelId(): string | null {
+  const params = new URLSearchParams(window.location.search)
+  return params.get('panel')
+}
+
 export function App() {
   const [state, setState] = useState<HudState>(DEFAULT_STATE)
   useTheme()
+
+  const detachedPanelId = getDetachedPanelId()
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -75,6 +84,11 @@ export function App() {
     const interval = setInterval(poll, 2000)
     return () => clearInterval(interval)
   }, [])
+
+  // Detached panel mode: render only the requested panel
+  if (detachedPanelId) {
+    return <DetachedPanelRenderer state={state} panelId={detachedPanelId} />
+  }
 
   return <HudRenderer state={state} />
 }

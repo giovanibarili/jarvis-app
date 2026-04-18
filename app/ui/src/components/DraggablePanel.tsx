@@ -13,6 +13,7 @@ type Props = {
   children: ReactNode
   borderColor?: string
   onClose?: () => void
+  onDetach?: (pieceId: string) => void
   /** Watch children height changes and grow/shrink the panel from the top */
   autoGrowBottom?: boolean
   /** Whether to persist layout changes to settings.user.json (default: true).
@@ -40,6 +41,7 @@ export function DraggablePanel({
   children,
   borderColor,
   onClose,
+  onDetach,
   autoGrowBottom = false,
   persistLayout = true,
 }: Props) {
@@ -132,6 +134,13 @@ export function DraggablePanel({
           style={borderColor ? { borderBottomColor: borderColor } : undefined}>
           <span>{id}</span>
           <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            {onDetach && (
+              <span
+                onClick={(e) => { e.stopPropagation(); onDetach(pieceId); }}
+                title="Detach to separate window"
+                style={{ cursor: 'pointer', color: 'var(--color-muted)', fontSize: '9px', lineHeight: 1 }}
+              >⧉</span>
+            )}
             <span className="panelHeaderIcon">⠿</span>
             {onClose && (
               <span

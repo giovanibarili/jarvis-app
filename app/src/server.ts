@@ -118,6 +118,117 @@ export class HttpServer {
       return;
     }
 
+    // ── Detach / Reattach: proxy to Electron on :50053 + persist state ──
+    if (req.url === "/hud/detach" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const parsed = JSON.parse(body);
+          const upstream = await fetch("http://localhost:50053/detach", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          });
+          const result = await upstream.text();
+          // Persist detached state in settings
+          if (upstream.ok && parsed.panelId) {
+            const settings = loadSettings();
+            const pid = parsed.panelId;
+            if (!settings.pieces[pid]) settings.pieces[pid] = { enabled: true, visible: true };
+            settings.pieces[pid].config = {
+              ...settings.pieces[pid].config,
+              detached: true,
+              detachedLayout: parsed.width || parsed.height ? {
+                width: parsed.width ?? 600,
+                height: parsed.height ?? 400,
+              } : settings.pieces[pid].config?.detachedLayout,
+            };
+            saveSettings(settings);
+          }
+          res.writeHead(upstream.status, { "Content-Type": "application/json" });
+          res.end(result);
+        } catch (e) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(e) }));
+        }
+      });
+      return;
+    }
+
+    if (req.url === "/hud/reattach" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const parsed = JSON.parse(body);
+          const upstream = await fetch("http://localhost:50053/reattach", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          });
+          const result = await upstream.text();
+          // Clear detached state in settings
+          if (upstream.ok && parsed.panelId) {
+            const settings = loadSettings();
+            const pid = parsed.panelId;
+            if (settings.pieces[pid]?.config) {
+              settings.pieces[pid].config.detached = false;
+              saveSettings(settings);
+            }
+          }
+          res.writeHead(upstream.status, { "Content-Type": "application/json" });
+          res.end(result);
+        } catch (e) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(e) }));
+        }
+      });
+      return;
+    }
+
+    // Save detached window position/size
+    if (req.url === "/hud/detach-layout" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { panelId, x, y, width, height } = JSON.parse(body);
+          const settings = loadSettings();
+          if (!settings.pieces[panelId]) settings.pieces[panelId] = { enabled: true, visible: true };
+          settings.pieces[panelId].config = {
+            ...settings.pieces[panelId].config,
+            detachedLayout: { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) },
+          };
+          saveSettings(settings);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400); res.end();
+        }
+      });
+      return;
+    }
+
+    // List detached panels (for Electron startup)
+    if (req.url === "/hud/detached" && req.method === "GET") {
+      const settings = loadSettings();
+      const detached: Array<{ panelId: string; title: string; x?: number; y?: number; width?: number; height?: number }> = [];
+      for (const [pid, piece] of Object.entries(settings.pieces)) {
+        const cfg = piece.config as any;
+        if (cfg?.detached) {
+          detached.push({
+            panelId: pid,
+            title: piece.config?.detachedTitle as string ?? pid.toUpperCase(),
+            ...cfg.detachedLayout,
+          });
+        }
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(detached));
+      return;
+    }
+
     if (req.url === "/hud/layout" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk) => { body += chunk; });

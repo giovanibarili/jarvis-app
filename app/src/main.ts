@@ -23,6 +23,7 @@ import { createAnthropicProvider } from "./ai/anthropic/provider.js";
 import { createOpenAIProvider } from "./ai/openai/provider.js";
 import { AnthropicSessionFactory } from "./ai/anthropic/factory.js";
 import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.js";
+import { HudCoreNodePiece } from "./core/hud-core-node.js";
 
 async function main() {
   const bus = new EventBus();
@@ -120,6 +121,9 @@ async function main() {
       }
     },
   });
+
+  // Core Node graph visualization
+  pieces.push(new HudCoreNodePiece());
 
   // Cron scheduler
   pieces.push(new CronPiece(capabilityRegistry));

@@ -7,6 +7,7 @@ import { CapabilityExecutorRenderer } from './CapabilityExecutorRenderer'
 import { McpManagerRenderer } from './McpManagerRenderer'
 // ChatInput & ChatOutput rendered directly in HudRenderer as docked chat
 // ActorPoolRenderer imported directly in HudRenderer (needs click handler)
+// CoreNodeOverlay rendered directly in HudRenderer (wraps the orb)
 
 type Renderer = (props: { state: HudComponentState }) => ReactNode
 

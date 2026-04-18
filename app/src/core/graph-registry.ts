@@ -1,0 +1,126 @@
+// src/core/graph-registry.ts
+// GraphRegistry — typed, bus-free registry for the hud-core-node graph.
+// Pieces call register() in start() and unregister() in stop().
+// The hud-core-node piece calls getTree() every render frame.
+
+import { log } from "../logger/index.js";
+
+export interface GraphNodeDef {
+  /** Unique node id (usually the piece id) */
+  id: string;
+  /** Display label */
+  label: string;
+  /** Current status — drives color: running, processing, stopped, error, connected, etc. */
+  status: string;
+  /** Arbitrary metadata shown in tooltips (e.g. { tools: 5 }, { drawers: 12 }) */
+  meta?: Record<string, unknown>;
+  /** Callback that returns child nodes. Called every render frame — keep it cheap. */
+  children?: () => GraphNodeChild[];
+}
+
+export interface GraphNodeChild {
+  id: string;
+  label: string;
+  status: string;
+  meta?: Record<string, unknown>;
+  children?: () => GraphNodeChild[];
+}
+
+/** Flat snapshot of a node for the renderer */
+export interface GraphNodeSnapshot {
+  id: string;
+  label: string;
+  status: string;
+  parentId: string | null;
+  meta?: Record<string, unknown>;
+}
+
+class GraphRegistryImpl {
+  private nodes = new Map<string, GraphNodeDef>();
+
+  register(node: GraphNodeDef): void {
+    this.nodes.set(node.id, node);
+    log.debug({ nodeId: node.id }, "GraphRegistry: registered");
+  }
+
+  unregister(id: string): void {
+    this.nodes.delete(id);
+    log.debug({ nodeId: id }, "GraphRegistry: unregistered");
+  }
+
+  /** Update status/meta/label without re-registering */
+  update(id: string, patch: Partial<Pick<GraphNodeDef, "status" | "meta" | "label">>): void {
+    const node = this.nodes.get(id);
+    if (!node) return;
+    if (patch.status !== undefined) node.status = patch.status;
+    if (patch.meta !== undefined) node.meta = patch.meta;
+    if (patch.label !== undefined) node.label = patch.label;
+  }
+
+  /**
+   * Returns a flat list of all nodes with parentId references.
+   * The root "jarvis-core" node is always included.
+   * Children are resolved by calling each node's children() callback.
+   */
+  getTree(): GraphNodeSnapshot[] {
+    const result: GraphNodeSnapshot[] = [];
+
+    // Root node
+    result.push({
+      id: "jarvis-core",
+      label: "JARVIS",
+      status: "running",
+      parentId: null,
+    });
+
+    // Level 1: registered pieces → children of jarvis-core
+    for (const node of this.nodes.values()) {
+      result.push({
+        id: node.id,
+        label: node.label,
+        status: node.status,
+        parentId: "jarvis-core",
+        meta: node.meta,
+      });
+
+      // Recurse children
+      if (node.children) {
+        try {
+          this.collectChildren(node.children(), node.id, result);
+        } catch (e) {
+          log.warn({ nodeId: node.id, error: (e as Error).message }, "GraphRegistry: children() threw");
+        }
+      }
+    }
+
+    return result;
+  }
+
+  private collectChildren(children: GraphNodeChild[], parentId: string, result: GraphNodeSnapshot[]): void {
+    for (const child of children) {
+      result.push({
+        id: child.id,
+        label: child.label,
+        status: child.status,
+        parentId,
+        meta: child.meta,
+      });
+
+      if (child.children) {
+        try {
+          this.collectChildren(child.children(), child.id, result);
+        } catch (e) {
+          log.warn({ nodeId: child.id, error: (e as Error).message }, "GraphRegistry: nested children() threw");
+        }
+      }
+    }
+  }
+
+  /** Number of registered level-1 nodes (excludes root) */
+  get size(): number {
+    return this.nodes.size;
+  }
+}
+
+/** Singleton — import this from any piece */
+export const graphRegistry = new GraphRegistryImpl();

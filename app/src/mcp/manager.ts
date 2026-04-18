@@ -12,6 +12,7 @@ import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { Piece } from "../core/piece.js";
 import { log } from "../logger/index.js";
 import { JarvisOAuthProvider } from "./oauth.js";
+import { graphRegistry } from "../core/graph-registry.js";
 
 interface McpServerConfig {
   type: "http" | "sse" | "stdio";
@@ -86,6 +87,20 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
       },
     });
 
+    // Register in graph
+    graphRegistry.register({
+      id: this.id,
+      label: "MCP",
+      status: "running",
+      meta: { servers: this.servers.size },
+      children: () => [...this.servers.values()].map(s => ({
+        id: `mcp-${s.name}`,
+        label: s.name,
+        status: s.status,
+        meta: { tools: s.toolNames.length },
+      })),
+    });
+
     log.info({ serverCount: this.servers.size }, "McpManager: started");
 
     // Fire-and-forget: auto-connect servers with autoConnect: true
@@ -130,6 +145,7 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
       }
     }
     this.servers.clear();
+    graphRegistry.unregister(this.id);
     this.bus.publish({
       channel: "hud.update",
       source: this.id,

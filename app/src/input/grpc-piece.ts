@@ -7,6 +7,7 @@ import { GrpcServer } from "../transport/grpc/server.js";
 import { GrpcInputAdapter } from "./grpc.js";
 import { config } from "../config/index.js";
 import { log } from "../logger/index.js";
+import { graphRegistry } from "../core/graph-registry.js";
 
 export class GrpcPiece implements Piece {
   readonly id = "grpc";
@@ -82,6 +83,13 @@ Tools: grpc_start, grpc_stop, grpc_status.`;
       },
     });
 
+    graphRegistry.register({
+      id: this.id,
+      label: "gRPC",
+      status: this.server ? "running" : "stopped",
+      meta: { port: config.grpcPort },
+    });
+
     log.info({ enabled: config.grpcEnabled, port: config.grpcPort }, "GrpcPiece: started");
   }
 
@@ -90,6 +98,7 @@ Tools: grpc_start, grpc_stop, grpc_status.`;
       this.server.stop();
       this.server = null;
     }
+    graphRegistry.unregister(this.id);
     this.bus.publish({
       channel: "hud.update",
       source: this.id,

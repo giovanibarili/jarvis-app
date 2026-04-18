@@ -1,8 +1,8 @@
-import { useState, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import type { HudState } from '../types/hud'
 import { DraggablePanel } from './DraggablePanel'
 import { renderers } from './renderers/index'
-import { ReactorCore } from './ReactorCore'
+import { CoreNodeOverlay } from './CoreNodeOverlay'
 import { ActorPoolRenderer } from './renderers/ActorPoolRenderer'
 import { ChatPanel } from './panels/ChatPanel'
 
@@ -32,15 +32,24 @@ function GenericRenderer({ state }: { state: any }) {
 
 export function HudRenderer({ state }: { state: HudState }) {
   const coreComp = state.components.find(c => c.id === 'jarvis-core')
+  const coreNodeComp = state.components.find(c => c.id === 'hud-core-node')
   const chatOutputComp = state.components.find(c => c.id === 'chat-output')
   const chatInputComp = state.components.find(c => c.id === 'chat-input')
-  const otherComps = state.components.filter(c => c.id !== 'jarvis-core' && c.id !== 'actor-pool' && c.id !== 'chat-output' && c.id !== 'chat-input' && c.visible !== false)
+  const otherComps = state.components.filter(c => c.id !== 'jarvis-core' && c.id !== 'actor-pool' && c.id !== 'chat-output' && c.id !== 'chat-input' && c.id !== 'hud-core-node' && c.visible !== false)
   const actorPoolComp = state.components.find(c => c.id === 'actor-pool')
 
   const [openChats, setOpenChats] = useState<string[]>([])
   const [hiddenPanels, setHiddenPanels] = useState<Set<string>>(new Set())
+  const [detachedPanels, setDetachedPanels] = useState<Set<string>>(new Set())
 
-  const reactorSize = 180
+  // Load persisted detached state on mount
+  useEffect(() => {
+    fetch('/hud/detached').then(r => r.json()).then((panels: Array<{ panelId: string }>) => {
+      if (panels.length > 0) {
+        setDetachedPanels(new Set(panels.map(p => p.panelId)))
+      }
+    }).catch(() => {})
+  }, [])
 
   const hidePanel = useCallback((pieceId: string) => {
     setHiddenPanels(prev => new Set([...prev, pieceId]))
@@ -49,6 +58,47 @@ export function HudRenderer({ state }: { state: HudState }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pieceId }),
     }).catch(() => {})
+  }, [])
+
+  const detachPanel = useCallback((pieceId: string) => {
+    const comp = state.components.find(c => c.id === pieceId)
+    // Optimistically hide, but revert if request fails
+    setDetachedPanels(prev => new Set([...prev, pieceId]))
+    fetch('/hud/detach', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        panelId: pieceId,
+        title: comp?.name?.toUpperCase() ?? pieceId,
+        width: comp?.size.width ?? 500,
+        height: comp?.size.height ?? 400,
+      }),
+    }).then(r => {
+      if (!r.ok) throw new Error('detach failed')
+    }).catch(() => {
+      // Revert — re-show the panel
+      setDetachedPanels(prev => {
+        const next = new Set(prev)
+        next.delete(pieceId)
+        return next
+      })
+    })
+  }, [state.components])
+
+  // Listen for reattach events from Electron main process
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.panelId) {
+        setDetachedPanels(prev => {
+          const next = new Set(prev)
+          next.delete(detail.panelId)
+          return next
+        })
+      }
+    }
+    window.addEventListener('panel-reattach', handler)
+    return () => window.removeEventListener('panel-reattach', handler)
   }, [])
 
   const statusColor = state.reactor.status === 'online' ? '#4af'
@@ -81,8 +131,10 @@ export function HudRenderer({ state }: { state: HudState }) {
       <div className="hudContent">
         {coreComp && (
           <div className="hudOrbContainer">
-            <ReactorCore reactor={state.reactor} size={reactorSize} />
-            <div className="statusLabel" style={{ color: statusColor, marginTop: '8px', textAlign: 'center' }}>
+            {/* Graph overlay — nebula swarm for all nodes including root */}
+            <CoreNodeOverlay coreNodeState={coreNodeComp} reactorStatus={state.reactor.status} />
+            {/* JARVIS label floats at center */}
+            <div className="coreNodeLabel" style={{ color: statusColor }}>
               <div style={{ fontSize: '14px', letterSpacing: '6px' }}>J A R V I S</div>
               <div style={{ fontSize: '8px', letterSpacing: '2px', marginTop: '4px', opacity: 0.7 }}>
                 {state.reactor.status.toUpperCase().replace('_', ' ')}
@@ -92,11 +144,12 @@ export function HudRenderer({ state }: { state: HudState }) {
         )}
 
         {/* Chat — unified ChatPanel for main session */}
-        {(chatOutputComp || chatInputComp) && (
+        {(chatOutputComp || chatInputComp) && !detachedPanels.has('chat-output') && (
           <DraggablePanel
             key="chat-docked"
             id="CHAT"
             pieceId="chat-output"
+            onDetach={detachPanel}
             defaultX={chatOutputComp?.position.x ?? 10}
             defaultY={chatOutputComp?.position.y ?? 400}
             defaultWidth={chatOutputComp?.size.width ?? 1660}
@@ -114,7 +167,7 @@ export function HudRenderer({ state }: { state: HudState }) {
         )}
 
         {/* Regular panels */}
-        {otherComps.filter(c => !hiddenPanels.has(c.id)).map(comp => {
+        {otherComps.filter(c => !hiddenPanels.has(c.id) && !detachedPanels.has(c.id)).map(comp => {
           // 1. Try built-in renderer
           const BuiltinRenderer = renderers[comp.id]
 
@@ -131,6 +184,7 @@ export function HudRenderer({ state }: { state: HudState }) {
                 minWidth={100}
                 minHeight={60}
                 onClose={() => hidePanel(comp.id)}
+                onDetach={detachPanel}
                 persistLayout={!comp.ephemeral}
               >
                 <BuiltinRenderer state={comp} />
@@ -153,6 +207,7 @@ export function HudRenderer({ state }: { state: HudState }) {
                 minWidth={100}
                 minHeight={60}
                 onClose={() => hidePanel(comp.id)}
+                onDetach={detachPanel}
                 persistLayout={!comp.ephemeral}
               >
                 <Suspense fallback={<GenericRenderer state={comp} />}>
@@ -176,6 +231,7 @@ export function HudRenderer({ state }: { state: HudState }) {
                 minWidth={100}
                 minHeight={60}
                 onClose={() => hidePanel(comp.id)}
+                onDetach={detachPanel}
                 persistLayout={!comp.ephemeral}
               >
                 <GenericRenderer state={comp} />
@@ -187,7 +243,7 @@ export function HudRenderer({ state }: { state: HudState }) {
         })}
 
         {/* Actor Pool — special: passes click handler */}
-        {actorPoolComp && actorPoolComp.visible !== false && (
+        {actorPoolComp && actorPoolComp.visible !== false && !detachedPanels.has(actorPoolComp.id) && (
           <DraggablePanel
             key={actorPoolComp.id}
             id={actorPoolComp.name.toUpperCase()}
