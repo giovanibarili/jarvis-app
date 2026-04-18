@@ -102,14 +102,18 @@ export function ChatPanel({
     }
   }, [input, features.slashMenu])
 
-  // Load history (for actors)
+  // Load history on mount — hydrate from session messages (for reconnect/detach)
   useEffect(() => {
-    if (!historyUrl) return
-    fetch(historyUrl)
+    const url = historyUrl ?? '/chat/history'
+    fetch(url)
       .then(r => r.json())
-      .then((history: Array<{ role: string; text: string; source?: string }>) => {
-        if (history.length > 0) {
-          setEntries(history.map(m => ({
+      .then((history: ChatEntry[] | Array<{ role: string; text: string; source?: string }>) => {
+        if (!history || history.length === 0) return
+        // Detect format: ChatEntry[] (from /chat/history) vs legacy actor format
+        if ('kind' in history[0]) {
+          setEntries(history as ChatEntry[])
+        } else {
+          setEntries((history as Array<{ role: string; text: string; source?: string }>).map(m => ({
             kind: 'message' as const,
             role: m.role === 'user' ? 'user' as const : 'assistant' as const,
             text: m.text,

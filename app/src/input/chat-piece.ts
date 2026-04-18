@@ -4,6 +4,7 @@ import type { EventBus } from "../core/bus.js";
 import type { Piece } from "../core/piece.js";
 import type { AIRequestMessage, AIStreamMessage, HudUpdateMessage } from "../core/types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
+import type { SessionManager } from "../core/session-manager.js";
 import { log } from "../logger/index.js";
 
 const DEFAULT_SESSION = "main";
@@ -14,10 +15,15 @@ export class ChatPiece implements Piece {
 
   private bus!: EventBus;
   private registry?: CapabilityRegistry;
+  private sessions?: SessionManager;
   private streamClients = new Set<ServerResponse>();
 
   setRegistry(registry: CapabilityRegistry): void {
     this.registry = registry;
+  }
+
+  setSessions(sessions: SessionManager): void {
+    this.sessions = sessions;
   }
 
   systemContext(): string {
@@ -224,6 +230,68 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
   /** Broadcast a system event to all connected SSE clients */
   broadcastEvent(data: Record<string, unknown>): void {
     this.broadcast(data);
+  }
+
+  /** HTTP handler for GET /chat/history — returns session messages as ChatEntry[] for UI hydration */
+  handleHistory(_req: IncomingMessage, res: ServerResponse): void {
+    try {
+      if (!this.sessions) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("[]");
+        return;
+      }
+      const managed = this.sessions.get(DEFAULT_SESSION);
+      const rawMessages = managed.session.getMessages() as any[];
+      const entries: any[] = [];
+
+      for (const msg of rawMessages) {
+        if (msg.role === "user") {
+          // Skip tool_result messages (they appear as role=user with tool_result blocks)
+          if (Array.isArray(msg.content) && msg.content.every((b: any) => b.type === "tool_result")) {
+            continue;
+          }
+          let text = "";
+          if (typeof msg.content === "string") {
+            text = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            for (const block of msg.content) {
+              if (block.type === "text") text += block.text;
+            }
+          }
+          if (!text.trim()) continue; // Skip empty user messages
+          entries.push({ kind: "message", role: "user", text, source: "chat" });
+        } else if (msg.role === "assistant") {
+          let text = "";
+          const toolUses: any[] = [];
+          if (typeof msg.content === "string") {
+            text = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            for (const block of msg.content) {
+              if (block.type === "text") text += block.text;
+              if (block.type === "tool_use") toolUses.push(block);
+            }
+          }
+          if (text) {
+            entries.push({ kind: "message", role: "assistant", text, source: "jarvis" });
+          }
+          for (const tu of toolUses) {
+            entries.push({
+              kind: "capability",
+              name: tu.name,
+              id: tu.id,
+              args: typeof tu.input === "object" ? JSON.stringify(tu.input) : String(tu.input ?? ""),
+              status: "done",
+            });
+          }
+        }
+      }
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(entries));
+    } catch (e) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("[]");
+    }
   }
 
   private broadcast(data: Record<string, unknown>): void {

@@ -99,6 +99,12 @@ export class HttpServer {
       return;
     }
 
+    // Return chat history from the current session for UI hydration
+    if (req.url === "/chat/history" && req.method === "GET") {
+      this.chatPiece.handleHistory(req, res);
+      return;
+    }
+
     if (req.url === "/hud/hide" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk) => { body += chunk; });

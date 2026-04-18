@@ -31,6 +31,7 @@ async function main() {
 
   const chatPiece = new ChatPiece();
   chatPiece.setRegistry(capabilityRegistry);
+  // sessions wired later after SessionManager is created
   const jarvisCore = new JarvisCore();
 
   const pieces: Piece[] = [
@@ -64,6 +65,7 @@ async function main() {
   // SessionManager — factory set after provider activation
   const sessions = new SessionManager(null as any);
   jarvisCore.setSessions(sessions);
+  chatPiece.setSessions(sessions);
 
   // Model management tools — now provider-aware
   capabilityRegistry.register({
