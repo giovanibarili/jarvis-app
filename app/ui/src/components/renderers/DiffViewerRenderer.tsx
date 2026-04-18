@@ -191,7 +191,7 @@ const styles = {
     padding: '0 8px 0 0',
     background: highlighted ? 'rgba(68,170,255,0.08)' : 'transparent',
     borderLeft: highlighted ? '3px solid #4af' : '3px solid transparent',
-    minHeight: '18px',
+    height: '18px',
     lineHeight: '18px',
   }),
   annotation: (type: string) => {
@@ -320,28 +320,26 @@ function FileView({ file }: { file: FileEntry }) {
 
   return (
     <div style={styles.fileView}>
-      <pre style={{ margin: 0, padding: '4px 0' }}>
+      <div style={{ margin: 0, padding: '4px 0', fontFamily: "'JetBrains Mono', 'Fira Code', monospace", fontSize: '12px', whiteSpace: 'pre' }}>
         {lines.map((line, i) => {
           const lineNum = i + 1
           const isHighlighted = highlightSet.has(lineNum)
           const lineAnnotations = annotationMap.get(lineNum)
           return (
-            <span key={i}>
-              <code style={styles.codeLine(isHighlighted)}>
+            <div key={i}>
+              <div style={styles.codeLine(isHighlighted)}>
                 <span style={styles.lineNumber}>{lineNum}</span>
                 {highlightSyntax(line, file.language)}
-              </code>
-              {'\n'}
+              </div>
               {lineAnnotations?.map((a, j) => (
-                <code key={`a-${i}-${j}`} style={styles.annotation(a.type ?? 'info')}>
+                <div key={`a-${i}-${j}`} style={styles.annotation(a.type ?? 'info')}>
                   {'💬 '}{a.text}
-                  {'\n'}
-                </code>
+                </div>
               ))}
-            </span>
+            </div>
           )
         })}
-      </pre>
+      </div>
     </div>
   )
 }
