@@ -5,6 +5,7 @@ import { GrpcRenderer } from './GrpcRenderer'
 import { TokenCounterRenderer } from './TokenCounterRenderer'
 import { CapabilityExecutorRenderer } from './CapabilityExecutorRenderer'
 import { McpManagerRenderer } from './McpManagerRenderer'
+import { DiffViewerRenderer } from './DiffViewerRenderer'
 // ChatInput & ChatOutput rendered directly in HudRenderer as docked chat
 // ActorPoolRenderer imported directly in HudRenderer (needs click handler)
 // CoreNodeOverlay rendered directly in HudRenderer (wraps the orb)
@@ -17,6 +18,7 @@ export const renderers: Record<string, Renderer> = {
   "token-counter": TokenCounterRenderer,
   "capability-executor": CapabilityExecutorRenderer,
   "mcp-manager": McpManagerRenderer,
+  "diff-viewer": DiffViewerRenderer,
   // actor-pool rendered specially in HudRenderer (needs click handler)
   // plugin renderers loaded dynamically (phase 2)
 }

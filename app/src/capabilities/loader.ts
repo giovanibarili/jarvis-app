@@ -162,6 +162,17 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
     const text = output.startsWith("__TYPE__:text\n")
       ? output.split("\n").slice(1).join("\n").trim()
       : output.trim();
+
+    // If the output is valid JSON, return it parsed so capabilities like
+    // multi_edit_file return structured data instead of a wrapped string.
+    if (text.startsWith("{") || text.startsWith("[")) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        // Not valid JSON — fall through to text return
+      }
+    }
+
     return { stdout: text, stderr: stderr.trim() || undefined };
   }
 
@@ -178,8 +189,11 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
         );
 
         // Resolve stdin template if defined
+        // Special case: ${__json_input__} sends the entire input as JSON
         const stdinData = config.stdin
-          ? config.stdin.replace(/\$\{(\w+)\}/g, (_, key) => String(input[key] ?? ""))
+          ? config.stdin === "${__json_input__}"
+            ? JSON.stringify(input)
+            : config.stdin.replace(/\$\{(\w+)\}/g, (_, key) => String(input[key] ?? ""))
           : undefined;
 
         try {

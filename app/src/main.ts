@@ -24,6 +24,7 @@ import { createOpenAIProvider } from "./ai/openai/provider.js";
 import { AnthropicSessionFactory } from "./ai/anthropic/factory.js";
 import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.js";
 import { HudCoreNodePiece } from "./core/hud-core-node.js";
+import { DiffViewerPiece } from "./pieces/diff-viewer.js";
 
 async function main() {
   const bus = new EventBus();
@@ -126,6 +127,9 @@ async function main() {
 
   // Core Node graph visualization
   pieces.push(new HudCoreNodePiece());
+
+  // Diff Viewer — file visualization, diff, and comparison in HUD
+  pieces.push(new DiffViewerPiece(capabilityRegistry));
 
   // Cron scheduler
   pieces.push(new CronPiece(capabilityRegistry));

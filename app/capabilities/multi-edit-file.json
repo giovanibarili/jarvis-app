@@ -1,0 +1,75 @@
+{
+  "name": "multi_edit_file",
+  "description": "Apply multiple edits atomically to one or more files. All edits succeed or all are rolled back. Supports str_replace, insert (by line number), and delete_lines. Use dry_run=true to preview changes without applying. Returns unified diff and before/after content for each file. Set show_diff=true to automatically display the diff in the HUD panel.",
+  "type": "script",
+  "command": "python3",
+  "args": ["capabilities/scripts/multi-edit-file.py"],
+  "stdin": "${__json_input__}",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "edits": {
+        "type": "array",
+        "description": "Array of file edits to apply atomically",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Absolute path to the file"
+            },
+            "operations": {
+              "type": "array",
+              "description": "Operations to apply to this file",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": ["str_replace", "insert", "delete_lines"],
+                    "description": "Operation type"
+                  },
+                  "old_string": {
+                    "type": "string",
+                    "description": "For str_replace: exact text to find"
+                  },
+                  "new_string": {
+                    "type": "string",
+                    "description": "For str_replace: replacement text"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "description": "For insert: line number to insert after (0 = beginning)"
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "For insert: text to insert"
+                  },
+                  "start": {
+                    "type": "integer",
+                    "description": "For delete_lines: first line to delete (1-indexed)"
+                  },
+                  "end": {
+                    "type": "integer",
+                    "description": "For delete_lines: last line to delete (1-indexed, inclusive)"
+                  }
+                },
+                "required": ["type"]
+              }
+            }
+          },
+          "required": ["path", "operations"]
+        }
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "If true, return diff without applying changes (default: false)"
+      },
+      "show_diff": {
+        "type": "boolean",
+        "description": "If true, automatically show the diff in the HUD panel (default: false)"
+      }
+    },
+    "required": ["edits"]
+  }
+}

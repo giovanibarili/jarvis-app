@@ -106,10 +106,10 @@ export class CapabilityRegistry {
     const capCommands = [...this.tools.values()].map(({ name, description }) => {
       let category = "general";
       if (name.startsWith("mcp__")) category = "mcp";
-      else if (["bash", "read_file", "write_file", "edit_file", "glob", "grep", "list_dir"].includes(name)) category = "filesystem";
+      else if (["bash", "read_file", "write_file", "edit_file", "multi_edit_file", "glob", "grep", "list_dir"].includes(name)) category = "filesystem";
       else if (["web_fetch", "web_search"].includes(name)) category = "web";
       else if (["model_set", "model_get"].includes(name)) category = "model";
-      else if (["piece_list", "piece_enable", "piece_disable", "hud_show", "hud_hide"].includes(name)) category = "pieces";
+      else if (["piece_list", "piece_enable", "piece_disable", "hud_show", "hud_hide", "hud_layout", "hud_show_diff", "hud_show_file", "hud_compare_files", "hud_screenshot"].includes(name)) category = "hud";
       else if (["actor_dispatch", "actor_list", "actor_kill", "bus_publish"].includes(name)) category = "actors";
       else if (["cron_create", "cron_list", "cron_delete"].includes(name)) category = "cron";
       else if (["plugin_install", "plugin_list", "plugin_update", "plugin_enable", "plugin_disable", "plugin_remove"].includes(name)) category = "plugins";
