@@ -465,11 +465,20 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
     })
   }, [tabs])
 
+  const removeTab = useCallback((idx: number) => {
+    setTabs(prev => prev.filter((_, i) => i !== idx))
+    setActiveTabIdx(prev => {
+      const newLen = tabs.length - 1
+      if (newLen === 0) return 0
+      if (prev >= newLen) return newLen - 1
+      if (prev > idx) return prev - 1
+      return prev
+    })
+  }, [tabs])
+
   const acceptTab = useCallback((idx: number) => {
     const tab = tabs[idx]
     if (!tab || tab.status !== 'pending') return
-
-    setTabs(prev => prev.map((t, i) => i === idx ? { ...t, status: 'accepted' } : t))
 
     const paths = tab.data.diffs?.map(d => d.path).join(', ')
       ?? tab.data.file?.path
@@ -478,13 +487,13 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
     sendAiRequest(
       `[SYSTEM] User ACCEPTED the changes in diff "${tab.title}" (${fileCount} file(s): ${paths}). Proceed with these changes.`
     )
-  }, [tabs])
+
+    removeTab(idx)
+  }, [tabs, removeTab])
 
   const rejectTab = useCallback((idx: number) => {
     const tab = tabs[idx]
     if (!tab || tab.status !== 'pending') return
-
-    setTabs(prev => prev.map((t, i) => i === idx ? { ...t, status: 'rejected' } : t))
 
     const paths = tab.data.diffs?.map(d => d.path).join(', ')
       ?? tab.data.file?.path
@@ -493,7 +502,9 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
     sendAiRequest(
       `[SYSTEM] User REJECTED the changes in diff "${tab.title}" (${fileCount} file(s): ${paths}). Please revert or propose alternatives.`
     )
-  }, [tabs])
+
+    removeTab(idx)
+  }, [tabs, removeTab])
 
   // Empty state — no tabs
   if (tabs.length === 0) {
@@ -574,9 +585,9 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
           )
         })()}
 
-        {/* Status badge or accept/reject buttons */}
+        {/* Accept/Reject buttons — closes tab on action */}
         <span style={{ flex: 1 }} />
-        {activeTab.status === 'pending' && isDiff && (
+        {isDiff && (
           <>
             <button
               style={styles.actionBtn('reject')}
@@ -589,11 +600,6 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
               title="Accept these changes"
             >✓ Accept</button>
           </>
-        )}
-        {activeTab.status !== 'pending' && (
-          <span style={styles.statusBadge(activeTab.status)}>
-            {activeTab.status === 'accepted' ? '✓ Accepted' : '✗ Rejected'}
-          </span>
         )}
       </div>
     </div>
