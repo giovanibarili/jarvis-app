@@ -227,7 +227,7 @@ export class DiffViewerPiece implements Piece {
     // hud_show_diff — show diff data in HUD
     this.registry.register({
       name: "hud_show_diff",
-      description: "Show a diff in the HUD Diff Viewer panel. Accepts before/after content pairs for one or more files. Supports annotations on specific lines.",
+      description: "Present code changes to the user for review and approval. Shows a visual before/after diff in the HUD where the user can Accept (✓) or Reject (✗). Use this to propose edits, show refactoring results, or present any changes that need user confirmation. When the user acts, you receive a [SYSTEM] message with their decision. Each call opens a new tab; multiple proposals can be pending simultaneously. Supports line annotations to explain specific changes.",
       input_schema: {
         type: "object",
         properties: {
@@ -289,7 +289,7 @@ export class DiffViewerPiece implements Piece {
     // hud_show_file — show a file with syntax highlighting
     this.registry.register({
       name: "hud_show_file",
-      description: "Show a file in the HUD with syntax highlighting and line numbers. Supports highlighting specific lines and adding annotations.",
+      description: "Display a file to the user with syntax highlighting, line numbers, and optional annotations. Use to show relevant code, highlight important lines, or point out issues. Opens as a tab the user can review and dismiss. Read-only — no Accept/Reject buttons.",
       input_schema: {
         type: "object",
         properties: {
@@ -352,7 +352,7 @@ export class DiffViewerPiece implements Piece {
     // hud_compare_files — compare two files side by side
     this.registry.register({
       name: "hud_compare_files",
-      description: "Compare two files side by side in the HUD Diff Viewer. Shows unified diff with syntax highlighting.",
+      description: "Compare two files side by side for the user to review. Shows visual diff with syntax highlighting and Accept/Reject buttons. Use when the user needs to see differences between two existing files. When the user acts, you receive a [SYSTEM] message with their decision.",
       input_schema: {
         type: "object",
         properties: {
