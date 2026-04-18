@@ -71,13 +71,9 @@ function sendAiRequest(prompt: string) {
   }).catch(() => {})
 }
 
-function hideHudPanel(pieceId: string) {
-  fetch('/hud/hide', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pieceId }),
-  }).catch(() => {})
-}
+// No-op — panel visibility is controlled by empty-tab check in render.
+// We intentionally do NOT call /hud/hide (which persists visible:false
+// in settings and prevents the panel from reappearing on next show_diff).
 
 // ─── Styles ───
 
@@ -469,15 +465,13 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
   }, [tabs, removeTab])
 
   const removeTab = useCallback((idx: number) => {
-    const newLen = tabs.length - 1
-    if (newLen === 0) {
-      // Last tab — hide the HUD panel
-      setTabs([])
-      hideHudPanel('diff-viewer')
-      return
-    }
-    setTabs(prev => prev.filter((_, i) => i !== idx))
+    setTabs(prev => {
+      const next = prev.filter((_, i) => i !== idx)
+      return next
+    })
     setActiveTabIdx(prev => {
+      const newLen = tabs.length - 1
+      if (newLen <= 0) return 0
       if (prev >= newLen) return newLen - 1
       if (prev > idx) return prev - 1
       return prev
@@ -514,10 +508,9 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
     removeTab(idx)
   }, [tabs, removeTab])
 
-  // Empty state — no tabs
+  // Empty state — no tabs: return null so the panel disappears
   if (tabs.length === 0) {
-    if (!data) return <div style={styles.emptyState}>No data to display</div>
-    return <div style={styles.emptyState}>Loading...</div>
+    return null
   }
 
   const activeTab = tabs[activeTabIdx] ?? tabs[0]

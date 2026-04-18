@@ -2,6 +2,7 @@
 // Canvas drawing — Nebula Swarm style.
 // Each node is a cloud of orbiting particles with glow.
 // Edges have wisps traveling along them.
+// Status-driven intensity: each status has a unique energy profile.
 
 import type { PhysicsNode, PhysicsEdge } from './physics'
 
@@ -65,6 +66,222 @@ const STATUS_COLORS: Record<string, [number, number, number]> = {
 
 function getColor(status: string): [number, number, number] {
   return STATUS_COLORS[status] ?? [90, 140, 180]
+}
+
+// ── Status energy profiles ──
+// Controls visual intensity per status: speed, glow, breathing, pulse, radius.
+
+interface StatusEnergy {
+  speedMultiplier: number    // orbital speed multiplier (1.0 = normal)
+  glowIntensity: number      // ambient glow alpha multiplier (1.0 = normal)
+  glowSpread: number         // ambient glow radius multiplier (1.0 = normal)
+  breatheAmplitude: number   // orbit breathing amplitude (0.2 = normal)
+  breatheSpeed: number       // breathing frequency multiplier (1.0 = normal)
+  pulseAlphaBase: number     // base particle alpha (0.5 = normal)
+  pulseAlphaRange: number    // particle alpha oscillation range (0.4 = normal)
+  pulseSpeed: number         // particle pulse frequency multiplier (1.0 = normal)
+  radiusBoost: number        // additive radius (0 = none)
+  radiusPulseAmp: number     // radius oscillation amplitude (0 = none)
+  radiusPulseSpeed: number   // radius oscillation frequency (0 = none)
+  wispSpeed: number          // edge wisp travel speed multiplier (1.0 = normal)
+  coreAlpha: number          // core point alpha multiplier (1.0 = normal)
+}
+
+const DEFAULT_ENERGY: StatusEnergy = {
+  speedMultiplier: 1.0,
+  glowIntensity: 1.0,
+  glowSpread: 1.0,
+  breatheAmplitude: 0.2,
+  breatheSpeed: 1.0,
+  pulseAlphaBase: 0.5,
+  pulseAlphaRange: 0.4,
+  pulseSpeed: 1.0,
+  radiusBoost: 0,
+  radiusPulseAmp: 0,
+  radiusPulseSpeed: 0,
+  wispSpeed: 1.0,
+  coreAlpha: 1.0,
+}
+
+const STATUS_ENERGY: Record<string, Partial<StatusEnergy>> = {
+  // Calm, serene — slow particles, gentle glow
+  online: {
+    speedMultiplier: 0.7,
+    glowIntensity: 0.8,
+    breatheAmplitude: 0.15,
+    breatheSpeed: 0.7,
+    pulseAlphaBase: 0.4,
+    pulseAlphaRange: 0.25,
+    pulseSpeed: 0.6,
+    wispSpeed: 0.7,
+  },
+  // High energy — fast particles, strong glow, pulsing radius
+  processing: {
+    speedMultiplier: 2.2,
+    glowIntensity: 1.8,
+    glowSpread: 1.3,
+    breatheAmplitude: 0.35,
+    breatheSpeed: 2.0,
+    pulseAlphaBase: 0.6,
+    pulseAlphaRange: 0.4,
+    pulseSpeed: 2.5,
+    radiusBoost: 2,
+    radiusPulseAmp: 2.5,
+    radiusPulseSpeed: 3.0,
+    wispSpeed: 2.0,
+    coreAlpha: 1.3,
+  },
+  // Anticipation — medium speed, subtle intermittent glow
+  waiting_tools: {
+    speedMultiplier: 1.4,
+    glowIntensity: 1.2,
+    glowSpread: 1.1,
+    breatheAmplitude: 0.25,
+    breatheSpeed: 1.3,
+    pulseAlphaBase: 0.35,
+    pulseAlphaRange: 0.5,
+    pulseSpeed: 1.8,
+    radiusPulseAmp: 1.0,
+    radiusPulseSpeed: 1.5,
+    wispSpeed: 1.3,
+  },
+  // Accelerating — building up
+  loading: {
+    speedMultiplier: 1.6,
+    glowIntensity: 1.0,
+    breatheAmplitude: 0.3,
+    breatheSpeed: 1.8,
+    pulseAlphaBase: 0.4,
+    pulseAlphaRange: 0.45,
+    pulseSpeed: 2.0,
+    radiusPulseAmp: 1.5,
+    radiusPulseSpeed: 2.0,
+    wispSpeed: 1.5,
+  },
+  initializing: {
+    speedMultiplier: 1.6,
+    glowIntensity: 1.0,
+    breatheAmplitude: 0.3,
+    breatheSpeed: 1.8,
+    pulseAlphaBase: 0.4,
+    pulseAlphaRange: 0.45,
+    pulseSpeed: 2.0,
+    radiusPulseAmp: 1.5,
+    radiusPulseSpeed: 2.0,
+    wispSpeed: 1.5,
+  },
+  starting: {
+    speedMultiplier: 1.5,
+    glowIntensity: 1.1,
+    breatheAmplitude: 0.28,
+    breatheSpeed: 1.6,
+    pulseSpeed: 1.8,
+    wispSpeed: 1.4,
+  },
+  connecting: {
+    speedMultiplier: 1.5,
+    glowIntensity: 1.1,
+    breatheAmplitude: 0.28,
+    breatheSpeed: 1.6,
+    pulseSpeed: 1.8,
+    wispSpeed: 1.4,
+  },
+  // Normal running — same as default, slightly lively
+  running: {
+    speedMultiplier: 1.0,
+    glowIntensity: 1.0,
+  },
+  connected: {
+    speedMultiplier: 1.0,
+    glowIntensity: 1.0,
+  },
+  // Dormant — barely moving, dim
+  idle: {
+    speedMultiplier: 0.3,
+    glowIntensity: 0.4,
+    glowSpread: 0.8,
+    breatheAmplitude: 0.08,
+    breatheSpeed: 0.4,
+    pulseAlphaBase: 0.25,
+    pulseAlphaRange: 0.15,
+    pulseSpeed: 0.3,
+    wispSpeed: 0.3,
+    coreAlpha: 0.6,
+  },
+  // Stopped — nearly invisible, minimal motion
+  stopped: {
+    speedMultiplier: 0.1,
+    glowIntensity: 0.2,
+    glowSpread: 0.6,
+    breatheAmplitude: 0.04,
+    breatheSpeed: 0.2,
+    pulseAlphaBase: 0.15,
+    pulseAlphaRange: 0.1,
+    pulseSpeed: 0.15,
+    wispSpeed: 0.1,
+    coreAlpha: 0.35,
+  },
+  disconnected: {
+    speedMultiplier: 0.1,
+    glowIntensity: 0.2,
+    glowSpread: 0.6,
+    breatheAmplitude: 0.04,
+    breatheSpeed: 0.2,
+    pulseAlphaBase: 0.15,
+    pulseAlphaRange: 0.1,
+    pulseSpeed: 0.15,
+    wispSpeed: 0.1,
+    coreAlpha: 0.35,
+  },
+  // Alert — erratic, fast pulsing, trembling
+  error: {
+    speedMultiplier: 2.5,
+    glowIntensity: 2.0,
+    glowSpread: 1.4,
+    breatheAmplitude: 0.45,
+    breatheSpeed: 3.0,
+    pulseAlphaBase: 0.5,
+    pulseAlphaRange: 0.5,
+    pulseSpeed: 4.0,
+    radiusPulseAmp: 3.0,
+    radiusPulseSpeed: 5.0,
+    wispSpeed: 2.5,
+    coreAlpha: 1.4,
+  },
+  offline: {
+    speedMultiplier: 2.0,
+    glowIntensity: 1.6,
+    glowSpread: 1.2,
+    breatheAmplitude: 0.4,
+    breatheSpeed: 2.5,
+    pulseAlphaBase: 0.45,
+    pulseAlphaRange: 0.5,
+    pulseSpeed: 3.5,
+    radiusPulseAmp: 2.5,
+    radiusPulseSpeed: 4.0,
+    wispSpeed: 2.0,
+    coreAlpha: 1.2,
+  },
+  auth_required: {
+    speedMultiplier: 1.8,
+    glowIntensity: 1.4,
+    glowSpread: 1.1,
+    breatheAmplitude: 0.35,
+    breatheSpeed: 2.0,
+    pulseAlphaBase: 0.4,
+    pulseAlphaRange: 0.5,
+    pulseSpeed: 3.0,
+    radiusPulseAmp: 2.0,
+    radiusPulseSpeed: 3.5,
+    wispSpeed: 1.8,
+    coreAlpha: 1.1,
+  },
+}
+
+function getEnergy(status: string): StatusEnergy {
+  const overrides = STATUS_ENERGY[status]
+  if (!overrides) return DEFAULT_ENERGY
+  return { ...DEFAULT_ENERGY, ...overrides }
 }
 
 // ── Main draw ──
