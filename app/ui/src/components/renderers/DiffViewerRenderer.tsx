@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import type { HudComponentState } from '../../types/hud'
 import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued'
 import Prism from 'prismjs'
@@ -52,6 +52,24 @@ interface DiffViewerData {
   historyCount: number
 }
 
+/** A tab accumulated in local state — wraps the incoming data */
+interface ViewerTab {
+  id: string
+  title: string
+  data: DiffViewerData
+  status: 'pending' | 'accepted' | 'rejected'
+}
+
+// ─── Send ai.request to the backend ───
+
+function sendAiRequest(text: string) {
+  fetch('/chat/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }).catch(() => {})
+}
+
 // ─── Styles ───
 
 const styles = {
@@ -96,6 +114,21 @@ const styles = {
     cursor: 'pointer',
     transition: 'all 0.15s',
   }),
+  actionBtn: (variant: 'accept' | 'reject') => {
+    const isAccept = variant === 'accept'
+    return {
+      padding: '3px 12px',
+      fontSize: '10px',
+      fontWeight: 600,
+      border: `1px solid ${isAccept ? '#4c8' : '#f55'}`,
+      borderRadius: '3px',
+      background: isAccept ? 'rgba(68,200,100,0.15)' : 'rgba(255,80,80,0.15)',
+      color: isAccept ? '#8fd8a0' : '#f8a0a0',
+      cursor: 'pointer',
+      transition: 'all 0.15s',
+      letterSpacing: '0.5px',
+    }
+  },
   tabBar: {
     display: 'flex',
     gap: '0',
@@ -104,20 +137,39 @@ const styles = {
     flexShrink: 0,
     overflowX: 'auto' as const,
   },
-  tab: (active: boolean) => ({
-    padding: '4px 12px',
-    fontSize: '10px',
-    color: active ? '#4af' : '#6a7a8a',
-    borderBottom: active ? '2px solid #4af' : '2px solid transparent',
+  tab: (active: boolean, status: string) => {
+    const statusColors: Record<string, string> = {
+      accepted: '#4c8',
+      rejected: '#f55',
+      pending: active ? '#4af' : '#6a7a8a',
+    }
+    const color = statusColors[status] ?? statusColors.pending
+    return {
+      padding: '4px 8px',
+      fontSize: '10px',
+      color,
+      borderBottom: active ? `2px solid ${color}` : '2px solid transparent',
+      cursor: 'pointer',
+      background: active ? 'rgba(68,170,255,0.05)' : 'transparent',
+      transition: 'all 0.15s',
+      whiteSpace: 'nowrap' as const,
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+    }
+  },
+  tabClose: {
+    fontSize: '9px',
+    color: '#4a5a6a',
     cursor: 'pointer',
-    background: active ? 'rgba(68,170,255,0.05)' : 'transparent',
+    lineHeight: 1,
+    padding: '1px 2px',
+    borderRadius: '2px',
     transition: 'all 0.15s',
-    whiteSpace: 'nowrap' as const,
-  }),
+  },
   content: {
     flex: 1,
     overflow: 'auto',
-    // CSS containment for performance with large diffs
     contain: 'strict' as const,
   },
   fileView: {
@@ -175,6 +227,25 @@ const styles = {
     fontSize: '10px',
     color: '#4a5a6a',
     flexShrink: 0,
+    alignItems: 'center',
+  },
+  statusBadge: (status: string) => {
+    const colors: Record<string, { bg: string; color: string }> = {
+      accepted: { bg: 'rgba(68,200,100,0.2)', color: '#8fd8a0' },
+      rejected: { bg: 'rgba(255,80,80,0.2)', color: '#f8a0a0' },
+    }
+    const c = colors[status]
+    if (!c) return { display: 'none' }
+    return {
+      padding: '1px 6px',
+      borderRadius: '3px',
+      fontSize: '9px',
+      fontWeight: 600,
+      textTransform: 'uppercase' as const,
+      background: c.bg,
+      color: c.color,
+      letterSpacing: '0.5px',
+    }
   },
 }
 
@@ -275,68 +346,28 @@ function FileView({ file }: { file: FileEntry }) {
   )
 }
 
-// ─── Main Renderer ───
+// ─── Diff Content Component ───
 
-export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
-  const data = state.data as unknown as DiffViewerData | undefined
+function DiffContent({
+  diffs,
+  viewMode,
+  mode,
+}: {
+  diffs: DiffEntry[]
+  viewMode: 'inline' | 'side-by-side'
+  mode: string
+}) {
+  const [subTab, setSubTab] = useState(0)
 
-  const [viewMode, setViewMode] = useState<'inline' | 'side-by-side'>('side-by-side')
-  const [activeTab, setActiveTab] = useState(0)
+  // Reset sub-tab when diffs change
+  useEffect(() => { setSubTab(0) }, [diffs])
 
-  // Sync with incoming data — reset tab when data changes
-  useEffect(() => {
-    if (data?.viewMode) setViewMode(data.viewMode)
-    setActiveTab(data?.activeTab ?? 0)
-  }, [data])
-
-  const toggleView = useCallback(() => {
-    setViewMode(prev => prev === 'inline' ? 'side-by-side' : 'inline')
-  }, [])
-
-  if (!data) {
-    return <div style={styles.emptyState}>No data to display</div>
-  }
-
-  // File view mode
-  if (data.mode === 'file' && data.file) {
-    const lines = data.file.content.split('\n').length
-    return (
-      <div style={styles.container}>
-        <div style={styles.toolbar}>
-          <div style={styles.title}>{data.title ?? data.file.path}</div>
-          <span style={{ fontSize: '10px', color: '#4a5a6a' }}>{data.file.language}</span>
-        </div>
-        <div style={styles.content}>
-          <FileView file={data.file} />
-        </div>
-        <div style={styles.stats}>
-          <span>{lines} lines</span>
-          <span>{data.file.content.length} chars</span>
-          <span>{data.file.language}</span>
-        </div>
-      </div>
-    )
-  }
-
-  // Diff or compare mode
-  const diffs = data.diffs ?? []
-  if (diffs.length === 0) {
-    return <div style={styles.emptyState}>No diffs to display</div>
-  }
-
-  const activeDiff = diffs[activeTab] ?? diffs[0]
-  const addedLines = activeDiff.newContent.split('\n').length - activeDiff.oldContent.split('\n').length
+  const activeDiff = diffs[subTab] ?? diffs[0]
+  if (!activeDiff) return null
 
   return (
-    <div style={styles.container}>
-      <div style={styles.toolbar}>
-        <div style={styles.title}>{data.title ?? 'Diff'}</div>
-        <button style={styles.toggleBtn(viewMode === 'inline')} onClick={toggleView}>
-          {viewMode === 'inline' ? '≡ Inline' : '⇔ Side-by-Side'}
-        </button>
-      </div>
-
-      {/* Tab bar for multi-file diffs */}
+    <>
+      {/* Sub-tabs for multi-file diffs within a single viewer tab */}
       {diffs.length > 1 && (
         <div style={styles.tabBar}>
           {diffs.map((d, i) => {
@@ -344,8 +375,8 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
             return (
               <div
                 key={i}
-                style={styles.tab(i === activeTab)}
-                onClick={() => setActiveTab(i)}
+                style={styles.tab(i === subTab, 'pending')}
+                onClick={() => setSubTab(i)}
               >
                 {fileName}
               </div>
@@ -353,7 +384,6 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
           })}
         </div>
       )}
-
       <div style={styles.content}>
         <ReactDiffViewer
           oldValue={activeDiff.oldContent}
@@ -363,18 +393,210 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
           styles={diffTheme}
           compareMethod={DiffMethod.WORDS}
           renderContent={(str) => highlightSyntax(str ?? '', activeDiff.language)}
-          leftTitle={data.mode === 'compare' ? activeDiff.path.split(' → ')[0] : 'Before'}
-          rightTitle={data.mode === 'compare' ? activeDiff.path.split(' → ')[1] : 'After'}
+          leftTitle={mode === 'compare' ? activeDiff.path.split(' → ')[0] : 'Before'}
+          rightTitle={mode === 'compare' ? activeDiff.path.split(' → ')[1] : 'After'}
         />
       </div>
+    </>
+  )
+}
 
+// ─── Main Renderer ───
+
+let tabIdCounter = 0
+
+export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
+  const data = state.data as unknown as DiffViewerData | undefined
+  const lastHistoryCount = useRef(0)
+
+  const [tabs, setTabs] = useState<ViewerTab[]>([])
+  const [activeTabIdx, setActiveTabIdx] = useState(0)
+  const [viewMode, setViewMode] = useState<'inline' | 'side-by-side'>('side-by-side')
+
+  // Accumulate new data as tabs — each new hud.update adds a tab
+  useEffect(() => {
+    if (!data) return
+    // Avoid re-adding the same data (historyCount is unique per publish)
+    if (data.historyCount === lastHistoryCount.current) return
+    lastHistoryCount.current = data.historyCount
+
+    const title = data.title
+      ?? (data.mode === 'file' && data.file ? data.file.path.split('/').pop() : undefined)
+      ?? (data.diffs?.[0]?.path?.split('/').pop())
+      ?? 'View'
+
+    const newTab: ViewerTab = {
+      id: `tab-${++tabIdCounter}`,
+      title,
+      data,
+      status: 'pending',
+    }
+
+    setTabs(prev => {
+      const next = [...prev, newTab]
+      // Switch to the new tab
+      setTimeout(() => setActiveTabIdx(next.length - 1), 0)
+      return next
+    })
+
+    if (data.viewMode) setViewMode(data.viewMode)
+  }, [data])
+
+  const toggleView = useCallback(() => {
+    setViewMode(prev => prev === 'inline' ? 'side-by-side' : 'inline')
+  }, [])
+
+  const closeTab = useCallback((idx: number) => {
+    const tab = tabs[idx]
+    if (!tab) return
+
+    // Build context about what was closed
+    const paths = tab.data.diffs?.map(d => d.path).join(', ')
+      ?? tab.data.file?.path
+      ?? tab.title
+    sendAiRequest(`[SYSTEM] User closed diff viewer tab "${tab.title}" (${paths}). Status was: ${tab.status}.`)
+
+    setTabs(prev => {
+      const next = prev.filter((_, i) => i !== idx)
+      return next
+    })
+    setActiveTabIdx(prev => {
+      if (prev >= tabs.length - 1) return Math.max(0, tabs.length - 2)
+      if (prev > idx) return prev - 1
+      return prev
+    })
+  }, [tabs])
+
+  const acceptTab = useCallback((idx: number) => {
+    const tab = tabs[idx]
+    if (!tab || tab.status !== 'pending') return
+
+    setTabs(prev => prev.map((t, i) => i === idx ? { ...t, status: 'accepted' } : t))
+
+    const paths = tab.data.diffs?.map(d => d.path).join(', ')
+      ?? tab.data.file?.path
+      ?? tab.title
+    const fileCount = tab.data.diffs?.length ?? 1
+    sendAiRequest(
+      `[SYSTEM] User ACCEPTED the changes in diff "${tab.title}" (${fileCount} file(s): ${paths}). Proceed with these changes.`
+    )
+  }, [tabs])
+
+  const rejectTab = useCallback((idx: number) => {
+    const tab = tabs[idx]
+    if (!tab || tab.status !== 'pending') return
+
+    setTabs(prev => prev.map((t, i) => i === idx ? { ...t, status: 'rejected' } : t))
+
+    const paths = tab.data.diffs?.map(d => d.path).join(', ')
+      ?? tab.data.file?.path
+      ?? tab.title
+    const fileCount = tab.data.diffs?.length ?? 1
+    sendAiRequest(
+      `[SYSTEM] User REJECTED the changes in diff "${tab.title}" (${fileCount} file(s): ${paths}). Please revert or propose alternatives.`
+    )
+  }, [tabs])
+
+  // Empty state — no tabs
+  if (tabs.length === 0) {
+    if (!data) return <div style={styles.emptyState}>No data to display</div>
+    return <div style={styles.emptyState}>Loading...</div>
+  }
+
+  const activeTab = tabs[activeTabIdx] ?? tabs[0]
+  const tabData = activeTab.data
+  const isDiff = tabData.mode === 'diff' || tabData.mode === 'compare'
+
+  return (
+    <div style={styles.container}>
+      {/* Toolbar */}
+      <div style={styles.toolbar}>
+        <div style={styles.title}>{activeTab.title}</div>
+        {isDiff && (
+          <button style={styles.toggleBtn(viewMode === 'inline')} onClick={toggleView}>
+            {viewMode === 'inline' ? '≡ Inline' : '⇔ Side-by-Side'}
+          </button>
+        )}
+      </div>
+
+      {/* Tab bar — always visible when there are tabs */}
+      <div style={styles.tabBar}>
+        {tabs.map((tab, i) => {
+          const statusIcon = tab.status === 'accepted' ? '✓ ' : tab.status === 'rejected' ? '✗ ' : ''
+          return (
+            <div
+              key={tab.id}
+              style={styles.tab(i === activeTabIdx, tab.status)}
+              onClick={() => setActiveTabIdx(i)}
+            >
+              <span>{statusIcon}{tab.title}</span>
+              <span
+                style={styles.tabClose}
+                onClick={(e) => { e.stopPropagation(); closeTab(i) }}
+                onMouseEnter={(e) => { (e.target as HTMLElement).style.color = '#f88'; (e.target as HTMLElement).style.background = 'rgba(255,80,80,0.15)' }}
+                onMouseLeave={(e) => { (e.target as HTMLElement).style.color = '#4a5a6a'; (e.target as HTMLElement).style.background = 'transparent' }}
+                title="Close tab"
+              >✕</span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Content */}
+      {tabData.mode === 'file' && tabData.file ? (
+        <div style={styles.content}>
+          <FileView file={tabData.file} />
+        </div>
+      ) : isDiff && tabData.diffs ? (
+        <DiffContent diffs={tabData.diffs} viewMode={viewMode} mode={tabData.mode} />
+      ) : (
+        <div style={styles.emptyState}>No content</div>
+      )}
+
+      {/* Footer with stats + accept/reject */}
       <div style={styles.stats}>
-        <span>{activeDiff.path}</span>
-        <span style={{ color: addedLines >= 0 ? '#8fd8a0' : '#f8a0a0' }}>
-          {addedLines >= 0 ? `+${addedLines}` : addedLines} lines
-        </span>
-        <span>{activeDiff.language}</span>
-        {diffs.length > 1 && <span>File {activeTab + 1}/{diffs.length}</span>}
+        {tabData.mode === 'file' && tabData.file && (
+          <>
+            <span>{tabData.file.content.split('\n').length} lines</span>
+            <span>{tabData.file.content.length} chars</span>
+            <span>{tabData.file.language}</span>
+          </>
+        )}
+        {isDiff && tabData.diffs && (() => {
+          const totalAdded = tabData.diffs.reduce((sum, d) =>
+            sum + d.newContent.split('\n').length - d.oldContent.split('\n').length, 0)
+          return (
+            <>
+              <span>{tabData.diffs.length} file(s)</span>
+              <span style={{ color: totalAdded >= 0 ? '#8fd8a0' : '#f8a0a0' }}>
+                {totalAdded >= 0 ? `+${totalAdded}` : totalAdded} lines
+              </span>
+              <span>{tabData.diffs[0]?.language}</span>
+            </>
+          )
+        })()}
+
+        {/* Status badge or accept/reject buttons */}
+        <span style={{ flex: 1 }} />
+        {activeTab.status === 'pending' && isDiff && (
+          <>
+            <button
+              style={styles.actionBtn('reject')}
+              onClick={() => rejectTab(activeTabIdx)}
+              title="Reject these changes"
+            >✗ Reject</button>
+            <button
+              style={styles.actionBtn('accept')}
+              onClick={() => acceptTab(activeTabIdx)}
+              title="Accept these changes"
+            >✓ Accept</button>
+          </>
+        )}
+        {activeTab.status !== 'pending' && (
+          <span style={styles.statusBadge(activeTab.status)}>
+            {activeTab.status === 'accepted' ? '✓ Accepted' : '✗ Rejected'}
+          </span>
+        )}
       </div>
     </div>
   )
