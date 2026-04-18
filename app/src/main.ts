@@ -71,7 +71,7 @@ async function main() {
   // Model management tools — now provider-aware
   capabilityRegistry.register({
     name: "model_set",
-    description: `Switch the AI model. Examples: claude-sonnet-4-6, claude-opus-4-6, gpt-4o, gpt-4o-mini, o3. Anthropic models use Claude, others use OpenAI-compatible API.`,
+    description: `Switch the AI model. Examples: claude-sonnet-4-6, claude-opus-4-6, claude-opus-4-7, gpt-4o, gpt-4o-mini, o3. Anthropic models use Claude, others use OpenAI-compatible API.`,
     input_schema: {
       type: "object",
       properties: { model: { type: "string", description: "Model ID to switch to" } },

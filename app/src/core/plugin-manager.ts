@@ -140,6 +140,11 @@ export class PluginManager implements Piece {
     });
 
     log.info({ plugins: [...this.plugins.keys()] }, "PluginManager: started");
+
+    // Async version check — runs in background after startup
+    this.checkPluginVersions().catch(err =>
+      log.warn({ err: String(err) }, "PluginManager: version check failed")
+    );
   }
 
   async stop(): Promise<void> {
@@ -490,6 +495,64 @@ export class PluginManager implements Piece {
       },
       handler: async (input) => this.remove(String(input.name)),
     });
+  }
+
+  // ─── Version Check ────────────────────────────────────────
+
+  private async checkPluginVersions(): Promise<void> {
+    const outdated: string[] = [];
+    const errors: string[] = [];
+
+    for (const [name, plugin] of this.plugins) {
+      const dir = plugin.settings.path;
+      if (!dir || !existsSync(join(dir, ".git"))) continue;
+
+      try {
+        // Fetch latest without modifying working tree
+        execSync(`git -C "${dir}" fetch --quiet 2>/dev/null`, { timeout: 15000 });
+        const local = execSync(`git -C "${dir}" rev-parse HEAD`, { timeout: 5000 }).toString().trim();
+        const remote = execSync(`git -C "${dir}" rev-parse @{u}`, { timeout: 5000 }).toString().trim();
+
+        if (local !== remote) {
+          const behind = execSync(`git -C "${dir}" rev-list HEAD..@{u} --count`, { timeout: 5000 }).toString().trim();
+          outdated.push(`${name} (${behind} commits behind)`);
+        }
+      } catch (err: any) {
+        // No remote / no upstream — skip silently (local-only plugins)
+        if (!String(err).includes("no upstream")) {
+          errors.push(`${name}: ${String(err.message ?? err).slice(0, 80)}`);
+        }
+      }
+    }
+
+    // Check jarvis-app itself
+    try {
+      const appDir = join(import.meta.dirname, "..", "..");
+      if (existsSync(join(appDir, ".git"))) {
+        execSync(`git -C "${appDir}" fetch --quiet 2>/dev/null`, { timeout: 15000 });
+        const local = execSync(`git -C "${appDir}" rev-parse HEAD`, { timeout: 5000 }).toString().trim();
+        const remote = execSync(`git -C "${appDir}" rev-parse @{u}`, { timeout: 5000 }).toString().trim();
+        if (local !== remote) {
+          const behind = execSync(`git -C "${appDir}" rev-list HEAD..@{u} --count`, { timeout: 5000 }).toString().trim();
+          outdated.unshift(`jarvis-app (${behind} commits behind)`);
+        }
+      }
+    } catch {
+      // ignore — no remote or detached HEAD
+    }
+
+    if (outdated.length > 0) {
+      const msg = `[SYSTEM] Plugin version check: updates available for ${outdated.join(", ")}. Use plugin_update to update, or git pull for jarvis-app.`;
+      this.bus.publish({
+        channel: "ai.request",
+        source: this.id,
+        target: "main",
+        text: msg,
+      });
+      log.info({ outdated }, "PluginManager: outdated plugins found");
+    } else {
+      log.info("PluginManager: all plugins up to date");
+    }
   }
 
   // ─── HUD ──────────────────────────────────────────────────

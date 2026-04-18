@@ -20,6 +20,7 @@ export const config: JarvisConfig = {
 };
 
 const MODEL_PROVIDERS: Record<string, string> = {
+  "claude-opus-4-7": "anthropic",
   "claude-opus-4-6": "anthropic",
   "claude-sonnet-4-6": "anthropic",
   "claude-haiku-4-5": "anthropic",
