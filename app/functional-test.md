@@ -197,6 +197,25 @@ Then the content of context.md should appear in the system prompt
 And it should be included in the plugin context block (after core context)
 ```
 
+### Scenario: Plugin renderer ErrorBoundary isolates crashes
+
+```gherkin
+Given a plugin renderer throws an error at render time
+When the HUD renders that plugin panel
+Then only the broken panel shows "⚠ Renderer crashed" with the error message
+And the rest of the HUD (chat, core node, other panels) continues working normally
+And no black screen occurs
+```
+
+### Scenario: Plugin renderer banner exports createElement directly
+
+```gherkin
+Given a plugin renderer uses createElement() calls (not JSX)
+When the HUD requests the compiled renderer JS
+Then the esbuild banner should export both __jarvis_jsx and createElement
+And the renderer should work without "createElement is not defined" errors
+```
+
 ### Scenario: Disable and re-enable a plugin
 
 ```gherkin

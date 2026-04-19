@@ -1,9 +1,37 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import type { HudState } from '../types/hud'
 import { DraggablePanel } from './DraggablePanel'
 import { renderers } from './renderers/index'
 import { CoreNodeOverlay } from './CoreNodeOverlay'
 import { ChatPanel } from './panels/ChatPanel'
+
+// ErrorBoundary — catches runtime errors in plugin renderers so they don't
+// take down the entire HUD. Only the broken panel shows an error message.
+class PluginErrorBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: any) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '12px', color: '#f44', fontFamily: 'monospace', fontSize: '11px' }}>
+          <div style={{ fontWeight: 600, marginBottom: '6px' }}>⚠ Renderer crashed</div>
+          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#f88', opacity: 0.8 }}>
+            {this.state.error?.message ?? 'Unknown error'}
+          </pre>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 // Cache for lazily loaded plugin renderers
 const pluginRendererCache: Record<string, React.LazyExoticComponent<React.ComponentType<{ state: any }>>> = {}
@@ -216,9 +244,11 @@ export function HudRenderer({ state }: { state: HudState }) {
                 onDetach={detachPanel}
                 persistLayout={!comp.ephemeral}
               >
+                <PluginErrorBoundary fallback={<GenericRenderer state={comp} />}>
                 <Suspense fallback={<GenericRenderer state={comp} />}>
                   <PluginRenderer state={comp} />
                 </Suspense>
+              </PluginErrorBoundary>
               </DraggablePanel>
             )
           }
