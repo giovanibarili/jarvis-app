@@ -228,12 +228,52 @@ export class AnthropicSession implements AISession {
     }
   }
 
+  private measureContext(): { systemChars: number; messagesChars: number; messageCount: number; toolsChars: number; totalTokensEst: number } {
+    // System prompt size
+    const sys = this.getSystemPrompt();
+    const systemChars = typeof sys === "string"
+      ? sys.length
+      : Array.isArray(sys)
+        ? sys.reduce((sum, b) => sum + ((b as any).text?.length ?? 0), 0)
+        : 0;
+
+    // Messages size
+    const messagesChars = this.messages.reduce((sum, m) => {
+      if (typeof m.content === "string") return sum + m.content.length;
+      if (Array.isArray(m.content)) return sum + m.content.reduce((s, b: any) => s + (b.text?.length ?? (b.input ? JSON.stringify(b.input).length : 0)), 0);
+      return sum;
+    }, 0);
+
+    // Tools size
+    const rawTools = this.getTools();
+    const toolsChars = JSON.stringify(rawTools).length;
+
+    return {
+      systemChars,
+      messagesChars,
+      messageCount: this.messages.length,
+      toolsChars,
+      totalTokensEst: Math.ceil((systemChars + messagesChars + toolsChars) / 4),
+    };
+  }
+
   private async *streamFromAPI(): AsyncGenerator<AIStreamEvent, void> {
     const t0 = Date.now();
     const rawTools = this.getTools();
     const toolNames = rawTools.map((t: any) => t.name);
 
-    log.info({ label: this.label, messageCount: this.messages.length, toolCount: toolNames.length }, "AnthropicSession: calling API");
+    const ctx = this.measureContext();
+    log.info({
+      label: this.label,
+      messageCount: ctx.messageCount,
+      toolCount: toolNames.length,
+      context: {
+        systemChars: ctx.systemChars,
+        messagesChars: ctx.messagesChars,
+        toolsChars: ctx.toolsChars,
+        totalTokensEst: ctx.totalTokensEst,
+      },
+    }, "AnthropicSession: calling API");
 
     // Detailed message structure only at debug level
     log.debug({ label: this.label, tools: toolNames, messages: this.messages.map((m, i) => {
@@ -380,6 +420,7 @@ export class AnthropicSession implements AISession {
         yield* this.fallbackCompact(totalInput);
       }
 
+      const ctxAfter = this.measureContext();
       log.info({
         label: this.label,
         ms: Date.now() - t0,
@@ -389,18 +430,61 @@ export class AnthropicSession implements AISession {
         textLength: fullText.length,
         textPreview: fullText.slice(0, 300),
         usage,
+        contextAfter: {
+          messageCount: ctxAfter.messageCount,
+          systemChars: ctxAfter.systemChars,
+          messagesChars: ctxAfter.messagesChars,
+          totalTokensEst: ctxAfter.totalTokensEst,
+        },
       }, "AnthropicSession: API call complete");
 
       this.abortController = undefined;
 
-    } catch (err) {
+    } catch (err: any) {
       if (this.abortController?.signal.aborted) {
         log.info({ label: this.label }, "AnthropicSession: stream aborted");
         yield { type: "error", error: "aborted" };
         return;
       }
+
+      // Detect "Could not process image" errors and recover by stripping images
+      const errMsg = String(err?.message ?? err ?? "");
+      if (errMsg.includes("Could not process image")) {
+        log.warn({ label: this.label }, "AnthropicSession: image processing error detected, stripping images from history and retrying");
+        const stripped = this.stripImagesFromMessages();
+        if (stripped > 0) {
+          log.info({ label: this.label, strippedImages: stripped }, "AnthropicSession: images stripped, retrying API call");
+          yield* this.streamFromAPI();
+          return;
+        }
+        // If no images were found to strip, fall through to normal error
+        log.warn({ label: this.label }, "AnthropicSession: no images found to strip despite image error");
+      }
+
       log.error({ label: this.label, err }, "AnthropicSession: API error");
       yield { type: "error", error: String(err) };
     }
+  }
+
+  /**
+   * Walk all messages and replace image blocks with a text placeholder.
+   * Returns the number of images stripped.
+   */
+  private stripImagesFromMessages(): number {
+    let count = 0;
+    for (const msg of this.messages) {
+      if (!Array.isArray(msg.content)) continue;
+      for (let i = msg.content.length - 1; i >= 0; i--) {
+        const block = msg.content[i] as any;
+        if (block.type === "image") {
+          msg.content.splice(i, 1, {
+            type: "text",
+            text: "[Image removed: could not be processed by API]",
+          } as any);
+          count++;
+        }
+      }
+    }
+    return count;
   }
 }

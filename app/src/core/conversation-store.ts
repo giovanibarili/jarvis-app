@@ -1,6 +1,6 @@
 // src/core/conversation-store.ts
 // Persists conversation message history to disk for session recovery across restarts.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { log } from "../logger/index.js";
 
@@ -142,18 +142,66 @@ export function consumeStartupPrompt(): string | null {
   }
 }
 
-/** Clear all saved conversations */
+const ARCHIVE_DIR = join(SESSIONS_DIR, "archive");
+const MAX_ARCHIVES_PER_LABEL = 10;
+
+/** Archive and clear all saved conversations.
+ *  Sessions are rolled to sessions/archive/<label>_<YYYYMMDD_HHMMSS>.json
+ *  with up to MAX_ARCHIVES_PER_LABEL kept per label (oldest pruned). */
 export function clearAllConversations(): void {
   try {
     if (!existsSync(SESSIONS_DIR)) return;
-    const files = readdirSync(SESSIONS_DIR);
+    mkdirSync(ARCHIVE_DIR, { recursive: true });
+
+    const now = new Date();
+    const timestamp = now.getFullYear().toString()
+      + String(now.getMonth() + 1).padStart(2, "0")
+      + String(now.getDate()).padStart(2, "0")
+      + "_"
+      + String(now.getHours()).padStart(2, "0")
+      + String(now.getMinutes()).padStart(2, "0")
+      + String(now.getSeconds()).padStart(2, "0");
+
+    const files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+    let archived = 0;
     for (const f of files) {
-      if (f.endsWith(".json")) {
-        unlinkSync(join(SESSIONS_DIR, f));
-      }
+      const label = f.replace(/\.json$/, "");
+      const src = join(SESSIONS_DIR, f);
+      const dest = join(ARCHIVE_DIR, `${label}_${timestamp}.json`);
+      renameSync(src, dest);
+      archived++;
     }
-    log.info("ConversationStore: cleared all");
+
+    // Prune old archives: keep only last N per label
+    pruneArchives();
+
+    log.info({ archived, timestamp }, "ConversationStore: archived and cleared all");
   } catch (err) {
     log.error({ err }, "ConversationStore: clearAll failed");
+  }
+}
+
+function pruneArchives(): void {
+  if (!existsSync(ARCHIVE_DIR)) return;
+  const archiveFiles = readdirSync(ARCHIVE_DIR).filter(f => f.endsWith(".json"));
+
+  // Group by label (everything before _YYYYMMDD_HHMMSS.json)
+  const byLabel = new Map<string, string[]>();
+  for (const f of archiveFiles) {
+    const match = f.match(/^(.+)_\d{8}_\d{6}\.json$/);
+    if (!match) continue;
+    const label = match[1];
+    if (!byLabel.has(label)) byLabel.set(label, []);
+    byLabel.get(label)!.push(f);
+  }
+
+  for (const [, files] of byLabel) {
+    // Sort by name descending (newest first since timestamps sort lexicographically)
+    files.sort((a, b) => b.localeCompare(a));
+    // Remove excess
+    for (const f of files.slice(MAX_ARCHIVES_PER_LABEL)) {
+      unlinkSync(join(ARCHIVE_DIR, f));
+      log.debug({ file: f }, "ConversationStore: pruned old archive");
+    }
   }
 }

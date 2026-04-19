@@ -82,7 +82,7 @@ export class PluginManager implements Piece {
     const list = [...this.plugins.values()]
       .map(p => `${p.name}: ${p.manifest.description} (${p.tools.length} tools, ${p.pieces.length} pieces)`)
       .join("\n");
-    const header = `## Plugins\n${list}\nTools: plugin_install, plugin_list, plugin_update, plugin_enable, plugin_disable, plugin_remove`;
+    const header = `## Plugins\n${list}\nTools: plugin_install, plugin_list, plugin_update, plugin_enable, plugin_disable, plugin_remove\n\n<system-reminder>\n<important>\n<never-skip>\n**[MUST] Plugin functional tests — MANDATORY, NO EXCEPTIONS.**\n\nEvery plugin MUST have a \`functional-test.md\` in its root directory (\`~/.jarvis/plugins/<plugin-name>/functional-test.md\`).\n\nAfter installing, updating, or enabling a plugin, you MUST:\n1. Read its \`functional-test.md\` in full.\n2. Execute **EVERY SINGLE BDD scenario** one by one — **no skipping, no summarizing, no shortcuts**.\n3. Validate each assertion in each scenario before moving to the next.\n4. Report pass/fail for EACH scenario individually.\n\n**This is NOT optional. This is NOT a suggestion. This is NOT up to LLM judgment.**\n- You MUST NOT skip scenarios you consider "less important" or "already covered".\n- You MUST NOT batch or collapse multiple scenarios into one test.\n- You MUST NOT stop after "the happy path works" — error scenarios, edge cases, and HUD validations are EQUALLY mandatory.\n- You MUST NOT claim installation is successful until ALL scenarios have been executed and pass.\n- If a plugin has no \`functional-test.md\`, report it as a defect — the plugin is incomplete.\n\nA plugin installation is ONLY considered successful when every single scenario in functional-test.md has been individually executed and validated.\n</never-skip>\n</important>\n</system-reminder>`;
 
     // Static context.md from each plugin
     const contexts = [...this.plugins.values()]
@@ -404,7 +404,7 @@ export class PluginManager implements Piece {
   private registerTools(): void {
     this.registry.register({
       name: "plugin_install",
-      description: "Install a JARVIS plugin from a GitHub repo. Clones to ~/.jarvis/plugins/ and loads tools/prompts.",
+      description: "Install a JARVIS plugin from a GitHub repo. Clones to ~/.jarvis/plugins/ and loads tools/prompts. IMPORTANT: Installation is NOT considered successful until the relevant functional tests from functional-test.md have been executed and pass. After calling this tool, you MUST read the plugin's functional-test.md and execute ALL BDD scenarios — every single one, no exceptions, no skipping.",
       input_schema: {
         type: "object",
         properties: { repo: { type: "string", description: "GitHub repo (e.g. 'github.com/user/jarvis-plugin-test')" } },

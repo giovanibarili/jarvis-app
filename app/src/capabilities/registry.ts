@@ -115,7 +115,7 @@ export class CapabilityRegistry {
       else if (["plugin_install", "plugin_list", "plugin_update", "plugin_enable", "plugin_disable", "plugin_remove"].includes(name)) category = "plugins";
       else if (["grpc_start", "grpc_stop", "grpc_status"].includes(name)) category = "grpc";
       else if (["mcp_list", "mcp_connect", "mcp_disconnect", "mcp_login", "mcp_refresh"].includes(name)) category = "mcp";
-      else if (["conversation_clear", "jarvis_reset"].includes(name)) category = "system";
+      else if (["clear_session", "jarvis_reset"].includes(name)) category = "system";
       return { name, description, category };
     });
 
