@@ -28,7 +28,8 @@ export function CoreNodeOverlay({ coreNodeState, reactorStatus }: { coreNodeStat
   const statusesRef = useRef(new Map<string, string>())
   const treeRef = useRef<TreeNode[]>([])
 
-  // Sync tree data
+  // Sync tree data — graphRegistry now carries the real jarvis-core status,
+  // plus override from reactorStatus prop as safety net
   useEffect(() => {
     const tree = (coreNodeState?.data?.tree as TreeNode[]) ?? []
     treeRef.current = tree
@@ -39,7 +40,7 @@ export function CoreNodeOverlay({ coreNodeState, reactorStatus }: { coreNodeStat
       labels.set(n.id, n.label)
       statuses.set(n.id, n.status)
     }
-    // Override root node status with live reactor status
+    // Override root node with live reactor status (authoritative source)
     if (reactorStatus) {
       statuses.set('jarvis-core', reactorStatus)
     }

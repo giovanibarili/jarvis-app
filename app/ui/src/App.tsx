@@ -1,20 +1,18 @@
 // ui/src/App.tsx
-import { useState, useEffect, useRef } from 'react'
-import type { HudState } from './types/hud'
+import { useEffect, useRef } from 'react'
 import { HudRenderer } from './components/HudRenderer'
 import { DetachedPanelRenderer } from './components/DetachedPanelRenderer'
+import { useHudState, useHudPiece, useHudReactor } from './hooks/useHudStream'
 
-const DEFAULT_STATE: HudState = {
-  reactor: { status: 'offline', coreLabel: 'CONNECTING', coreSubLabel: '...' },
-  components: [],
-}
+// Expose HUD hooks globally so plugin renderers can access them
+// without importing from the main bundle (they run in isolated esbuild scope)
+;(window as any).__JARVIS_HUD_HOOKS = { useHudState, useHudPiece, useHudReactor }
 
 // Inject theme CSS vars into a <style> tag, hot-reloading on change
 function useTheme() {
   const styleRef = useRef<HTMLStyleElement | null>(null)
 
   useEffect(() => {
-    // Create a dedicated <style> tag for theme vars
     const el = document.createElement('style')
     el.id = 'jarvis-theme'
     document.head.appendChild(el)
@@ -26,23 +24,19 @@ function useTheme() {
         if (!res.ok) return
         const { vars } = await res.json()
         if (!vars || Object.keys(vars).length === 0) {
-          el.textContent = '' // reset to default
+          el.textContent = ''
           return
         }
         const css = `:root {\n${Object.entries(vars).map(([k, v]) => `  ${k}: ${v};`).join('\n')}\n}`
         el.textContent = css
       } catch {
-        // server not ready yet, ignore
+        // server not ready yet
       }
     }
 
     apply()
-    // Poll for theme changes every 3s (picks up theme switches instantly)
     const interval = setInterval(apply, 3000)
-    return () => {
-      clearInterval(interval)
-      el.remove()
-    }
+    return () => { clearInterval(interval); el.remove() }
   }, [])
 }
 
@@ -53,7 +47,7 @@ function getDetachedPanelId(): string | null {
 }
 
 export function App() {
-  const [state, setState] = useState<HudState>(DEFAULT_STATE)
+  const state = useHudState()
   useTheme()
 
   const detachedPanelId = getDetachedPanelId()
@@ -68,24 +62,6 @@ export function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  useEffect(() => {
-    const poll = async () => {
-      try {
-        const res = await fetch('/hud')
-        if (res.ok) {
-          setState(await res.json())
-        }
-      } catch {
-        setState(DEFAULT_STATE)
-      }
-    }
-
-    poll()
-    const interval = setInterval(poll, 2000)
-    return () => clearInterval(interval)
-  }, [])
-
-  // Detached panel mode: render only the requested panel
   if (detachedPanelId) {
     return <DetachedPanelRenderer state={state} panelId={detachedPanelId} />
   }

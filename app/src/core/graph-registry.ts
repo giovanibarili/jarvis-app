@@ -37,6 +37,8 @@ export interface GraphNodeSnapshot {
 
 class GraphRegistryImpl {
   private nodes = new Map<string, GraphNodeDef>();
+  /** Root node status — updated via update("jarvis-core", { status }) */
+  private rootStatus = "online";
 
   register(node: GraphNodeDef): void {
     this.nodes.set(node.id, node);
@@ -50,6 +52,11 @@ class GraphRegistryImpl {
 
   /** Update status/meta/label without re-registering */
   update(id: string, patch: Partial<Pick<GraphNodeDef, "status" | "meta" | "label">>): void {
+    // Special case: root node status is stored separately
+    if (id === "jarvis-core" && patch.status !== undefined) {
+      this.rootStatus = patch.status;
+      return;
+    }
     const node = this.nodes.get(id);
     if (!node) return;
     if (patch.status !== undefined) node.status = patch.status;
@@ -65,11 +72,11 @@ class GraphRegistryImpl {
   getTree(): GraphNodeSnapshot[] {
     const result: GraphNodeSnapshot[] = [];
 
-    // Root node
+    // Root node — status is updated by JarvisCore.deriveGlobalState()
     result.push({
       id: "jarvis-core",
       label: "JARVIS",
-      status: "running",
+      status: this.rootStatus,
       parentId: null,
     });
 

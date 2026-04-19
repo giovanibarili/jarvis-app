@@ -146,15 +146,26 @@ this.bus.publish({
 
 Plugin renderers are `.tsx` files bundled on-the-fly by esbuild and loaded lazily in the HUD. They receive the component state as props.
 
-React is provided via `window.__JARVIS_REACT` (createElement, Fragment, hooks). Do NOT import React — it's injected by the build banner. Use JSX normally.
+React is provided via `window.__JARVIS_REACT` (createElement, Fragment, hooks). HUD hooks are provided via `window.__JARVIS_HUD_HOOKS`. Do NOT import React — it's injected by the build banner. Use JSX normally.
 
 ```tsx
-// renderers/MyRenderer.tsx
+// renderers/MyRenderer.tsx — basic (state prop, works in all versions)
 export default function MyRenderer({ state }: { state: any }) {
   const data = state.data;
   return <div>{data.message}</div>;
 }
+
+// renderers/MyRenderer.tsx — reactive (useHudPiece, requires @jarvis/core 2.0+)
+export default function MyRenderer({ state }: { state: any }) {
+  const piece = useHudPiece(state.id);  // re-renders only when THIS piece changes
+  const data = piece?.data ?? state.data;
+  return <div>{data.message}</div>;
+}
 ```
+
+Available globals in plugin renderers (injected via esbuild banner):
+- **React**: `createElement`, `Fragment`, `useEffect`, `useRef`, `useState`, `useCallback`, `useMemo`, `useSyncExternalStore`
+- **HUD hooks** (2.0+): `useHudState()`, `useHudPiece(id)`, `useHudReactor()`
 
 The renderer filename (minus `.tsx`) must match the `renderer.file` field in the HUD piece data. The HUD loads it from `/plugins/<plugin>/renderers/<file>.js`.
 
@@ -182,7 +193,7 @@ If present, `context.md` content is injected into the system prompt alongside th
 4. **Plugin renderer dependencies**: external npm packages must be bundled — esbuild runs per-file. Use `window.__JARVIS_REACT` for React.
 5. **Communication**: pieces talk via EventBus channels only — never import other pieces directly.
 6. **Frontend → Backend**: use `fetch('/plugins/<name>/route')` from renderer to custom HTTP routes.
-7. **Backend → Frontend**: publish on `hud.update` channel with updated `data` — the HUD polls `/hud` every 2s and re-renders.
+7. **Backend → Frontend**: publish on `hud.update` channel with updated `data` — HUD receives via SSE `/hud-stream` and re-renders reactively. Plugin renderers can use `useHudPiece(pieceId)` for granular subscriptions.
 
 ### MCP
 
@@ -232,4 +243,46 @@ You are expected to:
 5. **Use `jarvis_eval` for live introspection** — inspect runtime state, debug issues, and test hypotheses directly in the running process before editing source files.
 
 You are not just a user of this system — you are its co-developer. Treat JARVIS as a living project.
+
+<system-reminder>
+<important>
+## @jarvis/core — Versioning & Compatibility
+
+**Current version: 2.0.0** (see `packages/core/CHANGELOG.md` and `packages/core/COMPATIBILITY.md`)
+
+### Rules — ALWAYS follow when modifying JARVIS:
+
+1. **Read `COMPATIBILITY.md` before ANY change** to `packages/core/`, `app/src/server.ts` (public endpoints), or `app/ui/src/hooks/`. It defines the **stable public API surface** that plugins depend on.
+
+2. **Semver is mandatory:**
+   - Adding a new optional field to `HudPieceData`, `PluginContext`, or a new bus event? → **MINOR** bump
+   - Changing a type, removing a field, renaming a channel, breaking renderer banner? → **MAJOR** bump
+   - Bug fix or internal refactor? → **PATCH** bump
+   - Update `packages/core/package.json` version AND add a `CHANGELOG.md` entry
+
+3. **Window globals are public API:**
+   - `window.__JARVIS_REACT` — React instance shared with plugins
+   - `window.__JARVIS_HUD_HOOKS` — `{ useHudState, useHudPiece, useHudReactor }`
+   - The esbuild banner in `server.ts servePluginRenderer()` injects these into every plugin renderer
+   - **Never remove or rename** these without a major version bump
+
+4. **Bus channels and message shapes are public API:**
+   - All 6 channels (`ai.request`, `ai.stream`, `capability.request`, `capability.result`, `hud.update`, `system.event`)
+   - All message interfaces in `packages/core/src/types.ts`
+   - Plugins subscribe to these — breaking changes break ALL plugins
+
+5. **HTTP endpoints are public API:**
+   - `GET /hud`, `GET /hud-stream`, `POST /chat/send`, `GET /chat-stream`, `GET /chat/history`, `POST /chat/abort`
+   - `GET /plugins/{name}/renderers/{file}.js`
+   - Plugin routes registered via `ctx.registerRoute()`
+
+6. **Backward compatibility is non-negotiable:**
+   - Old patterns MUST keep working alongside new ones
+   - `state` prop in renderers → still works (HudRenderer still passes it)
+   - `GET /hud` polling → still works (returns same snapshot format)
+   - Plugin renderers without `useHudPiece` → still work (banner vars are `undefined` if hooks not loaded yet, and `state` prop is always available)
+
+7. **Test plugin compat before merging:** after ANY change to core/server/hooks, verify that a plugin renderer still loads and renders correctly.
+</important>
+</system-reminder>
 </IMPORTANT>

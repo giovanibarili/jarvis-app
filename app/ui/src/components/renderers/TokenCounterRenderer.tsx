@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import type { HudComponentState } from '../../types/hud'
 
 export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
@@ -18,8 +18,25 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const messagesTokens = data?.messagesTokens ?? 0
   const streaming = data?.streaming ?? false
   const streamingVerb = data?.streamingVerb ?? ''
-  const streamingElapsedMs = data?.streamingElapsedMs ?? 0
+  const streamingStartMs = data?.streamingStartMs ?? 0
   const streamingOutputChars = data?.streamingOutputChars ?? 0
+
+  // Compute elapsed locally via requestAnimationFrame — no backend pushes needed
+  const [elapsedMs, setElapsedMs] = useState(0)
+  const rafRef = useRef<number>(0)
+
+  useEffect(() => {
+    if (!streaming || !streamingStartMs) {
+      setElapsedMs(0)
+      return
+    }
+    const tick = () => {
+      setElapsedMs(Date.now() - streamingStartMs)
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [streaming, streamingStartMs])
 
   useEffect(() => {
     const c = canvasRef.current
@@ -162,7 +179,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
 
     // ─── Streaming status or Model ───
     if (streaming) {
-      const elapsedSec = Math.floor(streamingElapsedMs / 1000)
+      const elapsedSec = Math.floor(elapsedMs / 1000)
       const estOutputTokens = Math.round(streamingOutputChars / 4) // rough char→token estimate
       const statusText = `${streamingVerb}… ${elapsedSec}s · ↑ ${fmt(estOutputTokens)} tok`
       // Pulsing effect
@@ -178,7 +195,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       ctx.fillText(model, cx, sy + 24)
     }
 
-  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, streamingElapsedMs, streamingOutputChars])
+  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars])
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>

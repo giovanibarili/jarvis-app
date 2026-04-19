@@ -157,6 +157,13 @@ async function main() {
   pluginManager.setPieceManager(pieceManager);
 
   const server = new HttpServer(50052, chatPiece, () => hudState.getState(), () => jarvisCore.abortSession("main"), () => capabilityRegistry.getSlashCommands());
+  server.setHudStreamHandler((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
+    // Send full snapshot first so client has complete state
+    res.write(`data: ${JSON.stringify({ action: "snapshot", state: hudState.getState() })}\n\n`);
+    hudState.addStreamClient(res);
+    _req.on("close", () => hudState.removeStreamClient(res));
+  });
   server.setOnClearSession(() => {
     log.info("ClearSession: clearing conversation and resetting session");
     jarvisCore.abortSession("main");

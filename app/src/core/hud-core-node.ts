@@ -66,13 +66,27 @@ export class HudCoreNodePiece implements Piece {
     // Listen for actor state changes via ai.stream
     this.unsubs.push(
       bus.subscribe<any>("ai.stream", (msg) => {
-        if (msg.target?.startsWith("actor-")) {
-          const name = msg.target.replace("actor-", "");
-          const actor = this.actors.get(name);
-          if (actor) {
-            if (msg.event === "start") actor.status = "processing";
-            else if (msg.event === "complete" || msg.event === "error") actor.status = "idle";
-          }
+        if (!msg.target?.startsWith("actor-")) return;
+        const name = msg.target.replace("actor-", "");
+        const actor = this.actors.get(name);
+        if (!actor) return;
+
+        switch (msg.event) {
+          case "delta":
+            if (actor.status !== "processing") actor.status = "processing";
+            break;
+          case "tool_start":
+            actor.status = "waiting_tools";
+            break;
+          case "tool_done":
+            // Back to processing after tool completes (AI will continue)
+            actor.status = "processing";
+            break;
+          case "complete":
+          case "error":
+          case "aborted":
+            actor.status = "idle";
+            break;
         }
       })
     );

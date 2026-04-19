@@ -16,6 +16,7 @@ import type { AIStreamEvent, CapabilityCall } from "../ai/types.js";
 import type { Piece } from "./piece.js";
 import { log } from "../logger/index.js";
 import { config } from "../config/index.js";
+import { graphRegistry } from "./graph-registry.js";
 
 function summarizeToolArgs(input: Record<string, unknown>): string {
   const { __sessionId: _, ...args } = input;
@@ -51,7 +52,8 @@ export class JarvisCore implements Piece {
   private sessions: SessionManager;
   private totalRequests = 0;
   private lastResponseMs = 0;
-  private state: "loading" | "online" | "processing" | "waiting_tools" = "loading";
+  private globalState: "loading" | "online" | "processing" | "waiting_tools" = "loading";
+  private sessionStates = new Map<string, "idle" | "processing" | "waiting_tools">();
   private pendingPrompts = new Map<string, AIRequestMessage[]>();
   private pendingReplyTo = new Map<string, string>(); // sessionId → replyTo (actor source)
   private jarvisMdPath = join(process.cwd(), "jarvis.md");
@@ -101,7 +103,7 @@ export class JarvisCore implements Piece {
         pieceId: this.id,
         type: "overlay",
         name: this.name,
-        status: this.state,
+        status: this.globalState,
         data: this.getData(),
         position: { x: 650, y: 30 },
         size: { width: 220, height: 260 },
@@ -123,7 +125,7 @@ export class JarvisCore implements Piece {
   }
 
   ready(): void {
-    this.state = "online";
+    this.globalState = "online";
     this.updateHud();
     log.info("JarvisCore: ready");
 
@@ -164,7 +166,7 @@ export class JarvisCore implements Piece {
 
     this.sessions.abort(sessionId);
     this.pendingPrompts.delete(sessionId);
-    this.state = "online";
+    this.setSessionState(sessionId, "idle");
     this.updateHud();
 
     if (wasWaitingTools && pendingTools) {
@@ -213,7 +215,7 @@ export class JarvisCore implements Piece {
     }
 
     this.sessions.setState(sessionId, "processing");
-    this.state = "processing";
+    this.setSessionState(sessionId, "processing");
     this.updateHud();
     const t0 = Date.now();
     log.info({ sessionId, prompt: text.slice(0, 80), images: msg.images?.length ?? 0, replyTo: msg.replyTo }, "JarvisCore: processing");
@@ -224,7 +226,7 @@ export class JarvisCore implements Piece {
       await this.consumeStream(sessionId, stream);
     } catch (err) {
       this.sessions.setState(sessionId, "idle");
-      this.state = "online";
+      this.setSessionState(sessionId, "idle");
       this.updateHud();
       this.bus.publish({
         channel: "ai.stream",
@@ -238,7 +240,9 @@ export class JarvisCore implements Piece {
 
     this.lastResponseMs = Date.now() - t0;
     this.totalRequests++;
-    if (this.state === "processing") { this.state = "online"; this.updateHud(); }
+    // Derive correct state from all sessions instead of blindly setting "online"
+    this.deriveGlobalState();
+    this.updateHud();
   }
 
   private async handleToolResult(msg: CapabilityResultMessage): Promise<void> {
@@ -278,7 +282,7 @@ export class JarvisCore implements Piece {
 
     managed.pendingToolCalls = undefined;
     this.sessions.setState(sessionId, "processing");
-    this.state = "processing";
+    this.setSessionState(sessionId, "processing");
     this.updateHud();
 
     try {
@@ -286,7 +290,7 @@ export class JarvisCore implements Piece {
       await this.consumeStream(sessionId, stream);
     } catch (err) {
       this.sessions.setState(sessionId, "idle");
-      this.state = "online";
+      this.setSessionState(sessionId, "idle");
       this.updateHud();
       this.bus.publish({
         channel: "ai.stream",
@@ -384,7 +388,7 @@ export class JarvisCore implements Piece {
       const managed = this.sessions.get(sessionId);
       managed.pendingToolCalls = toolCalls;
       this.sessions.setState(sessionId, "waiting_tools");
-      this.state = "waiting_tools";
+      this.setSessionState(sessionId, "waiting_tools");
       this.updateHud();
 
       // Notify chat of tool execution start
@@ -408,7 +412,7 @@ export class JarvisCore implements Piece {
       });
     } else {
       this.sessions.setState(sessionId, "idle");
-      this.state = "online";
+      this.setSessionState(sessionId, "idle");
       this.updateHud();
       this.bus.publish({
         channel: "ai.stream",
@@ -458,10 +462,40 @@ export class JarvisCore implements Piece {
     });
   }
 
+  /** Derive global state from all tracked per-session states */
+  private deriveGlobalState(): void {
+    const prev = this.globalState;
+    if (this.sessionStates.size === 0) {
+      this.globalState = "online";
+    } else {
+      const states = [...this.sessionStates.values()];
+      if (states.includes("waiting_tools")) {
+        this.globalState = "waiting_tools";
+      } else if (states.includes("processing")) {
+        this.globalState = "processing";
+      } else {
+        this.globalState = "online";
+      }
+    }
+    // Keep graphRegistry in sync so the core-node tree reflects live state
+    if (this.globalState !== prev) {
+      graphRegistry.update("jarvis-core", { status: this.globalState });
+    }
+  }
+
+  private setSessionState(sessionId: string, state: "idle" | "processing" | "waiting_tools"): void {
+    if (state === "idle") {
+      this.sessionStates.delete(sessionId);
+    } else {
+      this.sessionStates.set(sessionId, state);
+    }
+    this.deriveGlobalState();
+  }
+
   getData(): Record<string, unknown> {
     return {
-      status: this.state,
-      coreLabel: this.state.toUpperCase().replace("_", " "),
+      status: this.globalState,
+      coreLabel: this.globalState.toUpperCase().replace("_", " "),
       totalRequests: this.totalRequests,
       lastResponseMs: this.lastResponseMs,
       activeSessions: this.sessions.size,
@@ -476,7 +510,7 @@ export class JarvisCore implements Piece {
       action: "update",
       pieceId: this.id,
       data: this.getData(),
-      status: this.state,
+      status: this.globalState,
     });
   }
 }

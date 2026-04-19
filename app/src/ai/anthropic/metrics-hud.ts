@@ -173,8 +173,21 @@ export class AnthropicMetricsHud implements Piece {
     const maxContext = getMaxContext();
     const cachePct = this.lastRequestTokens > 0 ? this.lastCacheRead / this.lastRequestTokens : 0;
     const contextPct = this.lastRequestTokens / maxContext;
+
+    // Use real API cache values for system+tools estimate instead of char-count heuristic.
+    // cache_read + cache_creation = tokens covered by prompt caching (system prompt + tools).
+    // input_tokens (non-cached) ≈ messages tokens (conversation history).
+    const cachedTokens = this.lastCacheRead + this.lastCacheCreate;
+    const nonCachedInput = Math.max(0, this.lastRequestTokens - cachedTokens);
+
+    // Split cached portion into system vs tools using char-ratio as proportional guide only
     const breakdown = this.factory.getTokenBreakdown();
-    const messagesEstimate = Math.max(0, this.lastRequestTokens - breakdown.systemTokens - breakdown.toolsTokens);
+    const charTotal = breakdown.systemTokens + breakdown.toolsTokens;
+    const systemRatio = charTotal > 0 ? breakdown.systemTokens / charTotal : 0.6;
+    const systemTokens = cachedTokens > 0 ? Math.round(cachedTokens * systemRatio) : breakdown.systemTokens;
+    const toolsTokens = cachedTokens > 0 ? cachedTokens - systemTokens : breakdown.toolsTokens;
+    const messagesTokens = nonCachedInput;
+
     return {
       model: config.model,
       // Session accumulated totals
@@ -190,15 +203,15 @@ export class AnthropicMetricsHud implements Piece {
       contextPct,
       maxContext,
       requestCount: this.requestCount,
-      systemTokens: breakdown.systemTokens,
-      toolsTokens: breakdown.toolsTokens,
-      messagesTokens: messagesEstimate,
+      systemTokens,
+      toolsTokens,
+      messagesTokens,
       compactionCount: this.compactionCount,
       lastCompactionEngine: this.lastCompactionEngine,
-      // Streaming state
+      // Streaming state — startMs is stable (doesn't change per tick), elapsed computed by frontend
       streaming: this.streamingActive,
       streamingVerb: this.streamingVerb,
-      streamingElapsedMs: this.streamingActive ? Date.now() - this.streamingStartMs : 0,
+      streamingStartMs: this.streamingActive ? this.streamingStartMs : 0,
       streamingOutputChars: this.streamingOutputChars,
     };
   }

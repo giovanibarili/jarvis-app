@@ -22,6 +22,7 @@ const MIME: Record<string, string> = {
 };
 
 type HudStateProvider = () => Record<string, unknown>;
+type HudStreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
 type CapabilitiesProvider = () => Array<{ name: string; description: string; category?: string }>;
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -30,6 +31,7 @@ export class HttpServer {
   private port: number;
   private chatPiece: ChatPiece;
   private getHudState: HudStateProvider;
+  private handleHudStream?: HudStreamHandler;
   private getCapabilities?: CapabilitiesProvider;
   private rendererCache = new Map<string, { js: string; mtime: number }>();
   private pluginRoutes = new Map<string, RouteHandler>();
@@ -48,6 +50,10 @@ export class HttpServer {
 
   setOnClearSession(handler: () => void): void {
     this.onClearSession = handler;
+  }
+
+  setHudStreamHandler(handler: HudStreamHandler): void {
+    this.handleHudStream = handler;
   }
 
   registerRoute(method: string, path: string, handler: RouteHandler): void {
@@ -343,6 +349,16 @@ export class HttpServer {
       return;
     }
 
+    if (req.url === "/hud-stream") {
+      if (this.handleHudStream) {
+        this.handleHudStream(req, res);
+      } else {
+        res.writeHead(501, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "HUD stream not configured" }));
+      }
+      return;
+    }
+
     if (req.url === "/logs") {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
       for (const entry of getLogBuffer()) res.write(`data: ${JSON.stringify(entry)}\n\n`);
@@ -436,7 +452,7 @@ export class HttpServer {
         write: false,
         external: ["@jarvis/core"],
         banner: {
-          js: `const { createElement: __jarvis_jsx, Fragment: __jarvis_Fragment, useEffect, useRef, useState, useCallback, useMemo } = window.__JARVIS_REACT;`,
+          js: `const { createElement: __jarvis_jsx, Fragment: __jarvis_Fragment, useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } = window.__JARVIS_REACT;\nconst { useHudState, useHudPiece, useHudReactor } = window.__JARVIS_HUD_HOOKS || {};`,
         },
       });
 

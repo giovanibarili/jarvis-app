@@ -233,14 +233,15 @@ export class AnthropicSession implements AISession {
     const rawTools = this.getTools();
     const toolNames = rawTools.map((t: any) => t.name);
 
-    // Debug: log full message history structure
-    const msgSummary = this.messages.map((m, i) => {
+    log.info({ label: this.label, messageCount: this.messages.length, toolCount: toolNames.length }, "AnthropicSession: calling API");
+
+    // Detailed message structure only at debug level
+    log.debug({ label: this.label, tools: toolNames, messages: this.messages.map((m, i) => {
       const role = m.role;
       if (typeof m.content === "string") return { i, role, type: "text", length: m.content.length };
-      if (Array.isArray(m.content)) return { i, role, blocks: m.content.map((b: any) => ({ type: b.type, ...(b.type === "tool_use" ? { name: b.name } : {}), ...(b.type === "tool_result" ? { tool_use_id: b.tool_use_id, contentType: typeof b.content === "string" ? "string" : Array.isArray(b.content) ? `array[${b.content.length}]` : typeof b.content } : {}) })) };
+      if (Array.isArray(m.content)) return { i, role, blocks: m.content.map((b: any) => ({ type: b.type, ...(b.type === "tool_use" ? { name: b.name } : {}), ...(b.type === "tool_result" ? { tool_use_id: b.tool_use_id } : {}) })) };
       return { i, role };
-    });
-    log.info({ label: this.label, messageCount: this.messages.length, toolCount: toolNames.length, tools: toolNames, messages: msgSummary }, "AnthropicSession: calling API");
+    }) }, "AnthropicSession: message structure");
 
     try {
       // Add cache_control (BP1) to the last tool definition

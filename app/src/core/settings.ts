@@ -1,7 +1,8 @@
 // src/core/settings.ts
 // Two-layer settings: default (committed) + user (local, gitignored)
 // load() merges them: user overrides default. save() writes to user only.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+// Uses in-memory cache with mtime check — avoids re-reading disk on every call.
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../logger/index.js";
 
@@ -56,6 +57,27 @@ export function getDefault(): PieceSettings {
   return { enabled: true, visible: true };
 }
 
+// ─── In-memory cache ──────────────────────────────────────────────────────────
+// Avoids re-reading and re-parsing JSON on every load() call.
+// Validates cache using file mtime — if disk changed, re-reads.
+
+interface SettingsCache {
+  settings: Settings;
+  defaultMtime: number;
+  userMtime: number;
+}
+
+let cache: SettingsCache | null = null;
+
+function getMtime(path: string): number {
+  try {
+    if (!existsSync(path)) return 0;
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 function loadFile(path: string): Settings {
   try {
     if (!existsSync(path)) return { pieces: {} };
@@ -87,16 +109,33 @@ function deepMerge(base: Settings, override: Settings): Settings {
 }
 
 export function load(): Settings {
+  const defaultMtime = getMtime(DEFAULT_PATH);
+  const userMtime = getMtime(USER_PATH);
+
+  if (cache && cache.defaultMtime === defaultMtime && cache.userMtime === userMtime) {
+    return cache.settings;
+  }
+
   const defaults = loadFile(DEFAULT_PATH);
   const user = loadFile(USER_PATH);
   const merged = deepMerge(defaults, user);
-  log.info({
+
+  cache = { settings: merged, defaultMtime, userMtime };
+
+  log.debug({
     defaultPath: DEFAULT_PATH,
     userPath: USER_PATH,
     hasUser: existsSync(USER_PATH),
     pieceCount: Object.keys(merged.pieces).length,
-  }, "Settings: loaded");
+    cacheHit: false,
+  }, "Settings: loaded from disk");
+
   return merged;
+}
+
+/** Invalidate in-memory cache — forces next load() to re-read from disk */
+export function invalidateCache(): void {
+  cache = null;
 }
 
 export function save(settings: Settings): void {
@@ -106,6 +145,11 @@ export function save(settings: Settings): void {
     }
     // Always save to user file — default is committed to repo
     writeFileSync(USER_PATH, JSON.stringify(settings, null, 2) + "\n");
+    // Update cache immediately so subsequent load() sees the new state
+    // without waiting for the next mtime check
+    const defaultMtime = getMtime(DEFAULT_PATH);
+    const userMtime = getMtime(USER_PATH);
+    cache = { settings, defaultMtime, userMtime };
     log.debug({ path: USER_PATH }, "Settings: saved (user)");
   } catch (err) {
     log.error({ err }, "Settings: failed to save");
