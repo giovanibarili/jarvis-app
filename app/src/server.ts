@@ -452,7 +452,7 @@ export class HttpServer {
         write: false,
         external: ["@jarvis/core"],
         banner: {
-          js: `const { createElement: __jarvis_jsx, Fragment: __jarvis_Fragment, useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } = window.__JARVIS_REACT;\nconst { useHudState, useHudPiece, useHudReactor } = window.__JARVIS_HUD_HOOKS || {};`,
+          js: `const { createElement: __jarvis_jsx, createElement, Fragment: __jarvis_Fragment, Fragment, useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } = window.__JARVIS_REACT;\nconst { useHudState, useHudPiece, useHudReactor } = window.__JARVIS_HUD_HOOKS || {};`,
         },
       });
 
