@@ -26,7 +26,7 @@ export class EventBus {
         try {
           const result = sub.handler(full);
           if (result instanceof Promise) {
-            result.catch(err => log.error(`bus: handler error on ${full.channel}: ${err instanceof Error ? err.message + '\n' + err.stack : String(err)}`));
+            result.catch(err => log.error({ channel: full.channel, source: full.source, target: full.target, err: err instanceof Error ? err.message : String(err) }, "bus: async handler error"));
           }
         } catch (err) {
           log.error({ channel: full.channel, err }, "bus: handler error (sync)");

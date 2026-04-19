@@ -37,10 +37,17 @@ export function saveConversation(
 ): void {
   try {
     ensureDir();
-    // Trim to max messages (keep most recent)
-    const trimmed = messages.length > MAX_MESSAGES
-      ? messages.slice(messages.length - MAX_MESSAGES)
-      : messages;
+    // Trim to max messages (keep most recent), ensuring we start on a user message
+    // to avoid orphaned assistant/tool_result messages at the start
+    let trimmed = messages;
+    if (messages.length > MAX_MESSAGES) {
+      trimmed = messages.slice(messages.length - MAX_MESSAGES);
+      // Walk forward to find the first user message to ensure valid conversation start
+      const firstUserIdx = trimmed.findIndex((m: any) => m.role === "user");
+      if (firstUserIdx > 0) {
+        trimmed = trimmed.slice(firstUserIdx);
+      }
+    }
 
     const data: StoredConversation = {
       sessionId: sessionLabel,
