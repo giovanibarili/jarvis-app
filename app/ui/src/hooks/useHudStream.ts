@@ -10,7 +10,7 @@
 //
 // Plugins access these via window.__JARVIS_HUD_HOOKS (injected in App.tsx)
 
-import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from 'react'
+import { useSyncExternalStore } from 'react'
 import type { HudState, HudComponentState, HudReactor } from '../types/hud'
 
 const DEFAULT_REACTOR: HudReactor = { status: 'offline', coreLabel: 'CONNECTING', coreSubLabel: '...' }
@@ -128,7 +128,7 @@ const store = new HudStore()
 
 /** Full HudState — used by HudRenderer / App */
 export function useHudState(): HudState {
-  const version = useSyncExternalStore(
+  useSyncExternalStore(
     (cb) => store.subscribe(cb),
     () => store.getVersion(),
   )
@@ -140,7 +140,7 @@ export function useHudState(): HudState {
 
 /** Single piece state — used by plugin renderers and built-in renderers */
 export function useHudPiece(pieceId: string): HudComponentState | undefined {
-  const version = useSyncExternalStore(
+  useSyncExternalStore(
     (cb) => store.subscribe(cb),
     () => store.getVersion(),
   )
@@ -149,7 +149,7 @@ export function useHudPiece(pieceId: string): HudComponentState | undefined {
 
 /** Reactor state only — used by core node overlay */
 export function useHudReactor(): HudReactor {
-  const version = useSyncExternalStore(
+  useSyncExternalStore(
     (cb) => store.subscribe(cb),
     () => store.getVersion(),
   )
