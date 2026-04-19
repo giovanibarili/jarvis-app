@@ -200,11 +200,15 @@ export class JarvisCore implements Piece {
     const managed = this.sessions.get(sessionId);
 
     if (managed.state !== "idle") {
-      // Abort current operation and process new message immediately
-      log.info({ sessionId, state: managed.state }, "JarvisCore: aborting current operation for new prompt");
-      this.sessions.abort(sessionId);
-      // Clear any pending prompts — new message takes priority
-      this.pendingPrompts.delete(sessionId);
+      // Queue the message — it will be drained after the current operation finishes.
+      // Never abort a running operation just because a new message arrived.
+      // Only explicit user abort (ESC / abort button) should interrupt processing.
+      if (!this.pendingPrompts.has(sessionId)) {
+        this.pendingPrompts.set(sessionId, []);
+      }
+      this.pendingPrompts.get(sessionId)!.push(msg);
+      log.info({ sessionId, state: managed.state, queueSize: this.pendingPrompts.get(sessionId)!.length }, "JarvisCore: queued prompt (session busy)");
+      return;
     }
 
     // Track replyTo so we can route the response back to the calling actor
@@ -445,11 +449,12 @@ export class JarvisCore implements Piece {
     const queue = this.pendingPrompts.get(sessionId);
     if (!queue || queue.length === 0) return;
 
-    // Take all queued messages — combine their text
+    // Take all queued messages — combine text and collect images
     const combined = queue.map(m => m.text).join("\n\n");
+    const allImages = queue.flatMap(m => (m as any).images ?? []);
     queue.length = 0;
 
-    log.info({ sessionId, combinedLength: combined.length }, "JarvisCore: draining queued prompts");
+    log.info({ sessionId, combinedLength: combined.length, images: allImages.length }, "JarvisCore: draining queued prompts");
 
     // Process as a new prompt (async, fire and forget)
     this.handlePrompt({
@@ -459,7 +464,8 @@ export class JarvisCore implements Piece {
       source: "queue-drain",
       target: sessionId,
       text: combined,
-    });
+      ...(allImages.length > 0 ? { images: allImages } : {}),
+    } as AIRequestMessage);
   }
 
   /** Derive global state from all tracked per-session states */

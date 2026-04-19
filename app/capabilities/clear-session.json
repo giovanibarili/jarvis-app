@@ -1,0 +1,11 @@
+{
+  "name": "clear_session",
+  "description": "Archive and clear saved conversation history. Sessions are rolled to sessions/archive/ with timestamps before clearing. Next restart will start fresh with no memory of previous messages.",
+  "type": "script",
+  "command": "bash",
+  "args": ["capabilities/scripts/clear-session.sh"],
+  "input_schema": {
+    "type": "object",
+    "properties": {}
+  }
+}

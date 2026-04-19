@@ -45,11 +45,8 @@ export function SlashMenu({ query, onSelect, onClose, visible }: Props) {
     fetch('/capabilities')
       .then(r => r.json())
       .then((data: SlashItem[]) => {
-        // Add built-in system commands that bypass AI
-        const builtins: SlashItem[] = [
-          { name: 'clear_session', description: 'Clear conversation history and start fresh (no restart needed)', category: 'system' },
-        ]
-        setItems([...builtins, ...data])
+        // Deduplicate: capabilities from the backend already include clear_session
+        setItems(data)
       })
       .catch(() => setItems([]))
   }, [visible])
