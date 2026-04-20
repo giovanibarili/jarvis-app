@@ -25,8 +25,12 @@ import { AnthropicSessionFactory } from "./ai/anthropic/factory.js";
 import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.js";
 import { HudCoreNodePiece } from "./core/hud-core-node.js";
 import { DiffViewerPiece } from "./pieces/diff-viewer.js";
+import { ensureUiBuildIntegrity } from "./server.js";
 
 async function main() {
+  // Verify UI build integrity before anything else — if assets are stale, rebuild
+  ensureUiBuildIntegrity();
+
   const bus = new EventBus();
   const capabilityRegistry = new CapabilityRegistry();
 

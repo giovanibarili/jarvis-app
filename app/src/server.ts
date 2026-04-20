@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { homedir } from "node:os";
+import { execSync } from "node:child_process";
 import type { ChatPiece } from "./input/chat-piece.js";
 import { load as loadSettings, save as saveSettings } from "./core/settings.js";
 import { log, getLogBuffer, onLogEntry } from "./logger/index.js";
@@ -10,6 +11,67 @@ import { log, getLogBuffer, onLogEntry } from "./logger/index.js";
 const THEMES_DIR = join(homedir(), ".jarvis", "themes");
 
 const UI_DIST = join(process.cwd(), "ui", "dist");
+const UI_DIR = join(process.cwd(), "ui");
+
+/**
+ * Verify UI build integrity: parse index.html for asset references and check
+ * they exist on disk. If any are missing, automatically rebuild the UI.
+ * Call this at startup before serving any requests or launching Electron.
+ */
+export function ensureUiBuildIntegrity(): void {
+  const indexPath = join(UI_DIST, "index.html");
+
+  if (!existsSync(indexPath)) {
+    log.warn("UI build integrity: index.html not found — triggering build");
+    rebuildUi();
+    return;
+  }
+
+  const html = readFileSync(indexPath, "utf-8");
+
+  // Extract asset paths from src="/assets/..." and href="/assets/..."
+  const assetRefs: string[] = [];
+  const regex = /(?:src|href)="(\/assets\/[^"]+)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(html)) !== null) {
+    assetRefs.push(match[1]); // e.g. "/assets/index-18E7RCLu.js"
+  }
+
+  if (assetRefs.length === 0) {
+    log.warn("UI build integrity: no asset references found in index.html — triggering build");
+    rebuildUi();
+    return;
+  }
+
+  const missing = assetRefs.filter((ref) => {
+    // ref is "/assets/filename", resolve relative to UI_DIST
+    const absPath = join(UI_DIST, ref);
+    return !existsSync(absPath);
+  });
+
+  if (missing.length > 0) {
+    log.warn({ missing }, "UI build integrity: assets referenced in index.html are missing — triggering rebuild");
+    rebuildUi();
+  } else {
+    log.info({ assets: assetRefs.length }, "UI build integrity: all assets present ✓");
+  }
+}
+
+function rebuildUi(): void {
+  log.info("UI build: running 'npm run build' in ui/ ...");
+  try {
+    execSync("npm run build", {
+      cwd: UI_DIR,
+      stdio: "inherit",
+      timeout: 120_000, // 2 minute timeout
+    });
+    log.info("UI build: completed successfully ✓");
+  } catch (err) {
+    log.fatal({ err: String(err) }, "UI build: FAILED — HUD will not render correctly");
+    // Don't crash the process — JARVIS can still operate via gRPC/chat
+    // but the HUD will show a blank/broken page
+  }
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html",
