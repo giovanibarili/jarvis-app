@@ -174,19 +174,15 @@ export class AnthropicMetricsHud implements Piece {
     const cachePct = this.lastRequestTokens > 0 ? this.lastCacheRead / this.lastRequestTokens : 0;
     const contextPct = this.lastRequestTokens / maxContext;
 
-    // Use real API cache values for system+tools estimate instead of char-count heuristic.
-    // cache_read + cache_creation = tokens covered by prompt caching (system prompt + tools).
-    // input_tokens (non-cached) ≈ messages tokens (conversation history).
-    const cachedTokens = this.lastCacheRead + this.lastCacheCreate;
-    const nonCachedInput = Math.max(0, this.lastRequestTokens - cachedTokens);
-
-    // Split cached portion into system vs tools using char-ratio as proportional guide only
+    // With automatic caching, messages are also cached — so cache_read includes
+    // system + tools + messages. Use char-ratio heuristic for system/tools split,
+    // and derive messages as the remainder.
+    const totalInputTokens = this.lastRequestTokens; // input + cacheRead + cacheCreate
     const breakdown = this.factory.getTokenBreakdown();
-    const charTotal = breakdown.systemTokens + breakdown.toolsTokens;
-    const systemRatio = charTotal > 0 ? breakdown.systemTokens / charTotal : 0.6;
-    const systemTokens = cachedTokens > 0 ? Math.round(cachedTokens * systemRatio) : breakdown.systemTokens;
-    const toolsTokens = cachedTokens > 0 ? cachedTokens - systemTokens : breakdown.toolsTokens;
-    const messagesTokens = nonCachedInput;
+    const systemTokens = breakdown.systemTokens;
+    const toolsTokens = breakdown.toolsTokens;
+    const staticTokens = systemTokens + toolsTokens;
+    const messagesTokens = Math.max(0, totalInputTokens - staticTokens);
 
     return {
       model: config.model,
