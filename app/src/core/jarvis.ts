@@ -192,7 +192,7 @@ export class JarvisCore implements Piece {
 
   private async handlePrompt(msg: AIRequestMessage): Promise<void> {
     const sessionId = msg.target!;
-    const text = msg.text;
+    const text = msg.text ?? "";
 
     // Ignore actor sessions — actors handle their own prompts
     if (sessionId.startsWith("actor-")) return;
@@ -450,7 +450,7 @@ export class JarvisCore implements Piece {
     if (!queue || queue.length === 0) return;
 
     // Take all queued messages — combine text and collect images
-    const combined = queue.map(m => m.text).join("\n\n");
+    const combined = queue.map(m => m.text ?? "").join("\n\n");
     const allImages = queue.flatMap(m => (m as any).images ?? []);
     queue.length = 0;
 
