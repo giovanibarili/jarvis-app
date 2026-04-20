@@ -1,6 +1,15 @@
 import { useRef, useEffect, useState } from 'react'
 import type { HudComponentState } from '../../types/hud'
 
+interface RequestSnapshot {
+  seq: number
+  timestamp: number
+  inputTokens: number
+  outputTokens: number
+  cacheRead: number
+  cacheCreation: number
+}
+
 export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const data = state.data as any
@@ -20,6 +29,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const streamingVerb = data?.streamingVerb ?? ''
   const streamingStartMs = data?.streamingStartMs ?? 0
   const streamingOutputChars = data?.streamingOutputChars ?? 0
+  const requestHistory: RequestSnapshot[] = data?.requestHistory ?? []
 
   // Compute elapsed locally via requestAnimationFrame — no backend pushes needed
   const [elapsedMs, setElapsedMs] = useState(0)
@@ -45,7 +55,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     if (!ctx) return
 
     const w = c.width, h = c.height
-    const cx = w / 2, cy = h / 2 - 25
+    const cx = w / 2, cy = h / 2 - 65
     ctx.clearRect(0, 0, w, h)
 
     const outerR = 70
@@ -53,6 +63,19 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     const innerR = 42
 
     const fmt = (n: number) => n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n)
+    const fmtUsd = (n: number) => n >= 1 ? '$' + n.toFixed(2) : '$' + n.toFixed(3)
+
+    // Anthropic pricing per token (claude-opus-4)
+    const PRICE_INPUT = 15 / 1_000_000       // $15/MTok
+    const PRICE_OUTPUT = 75 / 1_000_000      // $75/MTok
+    const PRICE_CACHE_READ = 1.5 / 1_000_000 // $1.50/MTok
+    const PRICE_CACHE_WRITE = 18.75 / 1_000_000 // $18.75/MTok
+
+    const reqCost = (r: RequestSnapshot) =>
+      r.inputTokens * PRICE_INPUT +
+      r.outputTokens * PRICE_OUTPUT +
+      r.cacheRead * PRICE_CACHE_READ +
+      r.cacheCreation * PRICE_CACHE_WRITE
 
     // ─── Outer ring: context breakdown (system / tools / messages) ───
     const total = systemTokens + toolsTokens + messagesTokens
@@ -195,11 +218,152 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       ctx.fillText(model, cx, sy + 24)
     }
 
-  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars])
+    // ─── Request History Sparkline (stacked bars) ───
+    if (requestHistory.length > 0) {
+      const sparkTopY = sy + 40
+      const chartPadL = 12
+      const labelAreaR = 44
+      const chartX0 = chartPadL
+      const chartW = w - chartPadL - labelAreaR
+
+      // Separator line
+      ctx.strokeStyle = 'rgba(68,170,255,0.15)'
+      ctx.lineWidth = 0.5
+      ctx.beginPath()
+      ctx.moveTo(12, sparkTopY)
+      ctx.lineTo(w - 12, sparkTopY)
+      ctx.stroke()
+
+      // Section label
+      ctx.fillStyle = '#6a7a8a'
+      ctx.font = '9px "Orbitron", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText('REQUEST HISTORY', cx, sparkTopY + 14)
+
+      // Limit to last 25 requests for display
+      const displayHistory = requestHistory.slice(-25)
+
+      // Compute costs
+      const allCosts = requestHistory.map(r => reqCost(r))
+      const sessionTotal = allCosts.reduce((a, b) => a + b, 0)
+      const costs = allCosts.slice(-25)
+      const lastReq = displayHistory[displayHistory.length - 1]
+      const lastCostVal = costs[costs.length - 1]
+
+      // Last request info line
+      ctx.fillStyle = '#8af'
+      ctx.font = '9px "JetBrains Mono", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText(`REQ #${lastReq.seq}  ·  ${fmtUsd(lastCostVal)}  ·  SESSION ${fmtUsd(sessionTotal)}`, cx, sparkTopY + 28)
+
+      const barsY = sparkTopY + 38
+      const barsH = 70
+
+      // Find max cost for scaling
+      const maxCost = Math.max(...costs, 0.001)
+
+      const barCount = displayHistory.length
+      const gap = 2
+      const barW = Math.max(4, Math.min(14, (chartW - (barCount - 1) * gap) / barCount))
+      const totalBarsW = barCount * barW + (barCount - 1) * gap
+      const barsX0 = chartX0 + (chartW - totalBarsW) / 2
+
+      // Scale gridlines with USD labels on the right
+      ctx.strokeStyle = 'rgba(68,170,255,0.1)'
+      ctx.lineWidth = 0.5
+      ctx.setLineDash([2, 3])
+      for (let pct = 0.25; pct <= 1; pct += 0.25) {
+        const gy = barsY + barsH - barsH * pct
+        ctx.beginPath()
+        ctx.moveTo(barsX0, gy)
+        ctx.lineTo(barsX0 + totalBarsW, gy)
+        ctx.stroke()
+        // USD label on right side
+        ctx.fillStyle = '#7a8a9a'
+        ctx.font = '9px "JetBrains Mono", monospace'
+        ctx.textAlign = 'left'
+        ctx.fillText(fmtUsd(maxCost * pct), barsX0 + totalBarsW + 4, gy + 3)
+      }
+      ctx.setLineDash([])
+      ctx.textAlign = 'center'
+
+      // Cost breakdown colors
+      const costColors = {
+        input:      '#4488ff',  // blue — input cost
+        output:     '#ffaa44',  // orange — output cost
+        cacheRead:  '#44aa88',  // green — cache read cost (cheap)
+        cacheWrite: '#6644cc',  // purple — cache write cost
+      }
+
+      displayHistory.forEach((req, i) => {
+        const x = barsX0 + i * (barW + gap)
+        const cost = costs[i]
+        const barTotalH = (cost / maxCost) * barsH
+
+        // Cost breakdown per segment
+        const inputC = req.inputTokens * PRICE_INPUT
+        const outputC = req.outputTokens * PRICE_OUTPUT
+        const cacheReadC = req.cacheRead * PRICE_CACHE_READ
+        const cacheWriteC = req.cacheCreation * PRICE_CACHE_WRITE
+
+        const segs = [
+          { value: cacheReadC, color: costColors.cacheRead },
+          { value: cacheWriteC, color: costColors.cacheWrite },
+          { value: inputC, color: costColors.input },
+          { value: outputC, color: costColors.output },
+        ]
+
+        let segY = barsY + barsH
+        segs.forEach(seg => {
+          if (seg.value <= 0 || cost <= 0) return
+          const segH = Math.max(0.5, (seg.value / cost) * barTotalH)
+          segY -= segH
+          ctx.fillStyle = seg.color
+          ctx.fillRect(x, segY, barW, segH)
+        })
+
+        // Highlight current (last) request
+        if (i === barCount - 1) {
+          ctx.strokeStyle = '#fff'
+          ctx.lineWidth = 1.5
+          ctx.strokeRect(x - 0.5, barsY + barsH - barTotalH - 0.5, barW + 1, barTotalH + 1)
+        }
+      })
+
+      // Baseline
+      ctx.strokeStyle = 'rgba(68,170,255,0.25)'
+      ctx.lineWidth = 0.5
+      ctx.beginPath()
+      ctx.moveTo(barsX0, barsY + barsH)
+      ctx.lineTo(barsX0 + totalBarsW, barsY + barsH)
+      ctx.stroke()
+
+      // Legend
+      const sly = barsY + barsH + 10
+      const slegend = [
+        { label: 'IN', color: costColors.input },
+        { label: 'OUT', color: costColors.output },
+        { label: 'CACHE', color: costColors.cacheRead },
+        { label: 'WRITE', color: costColors.cacheWrite },
+      ]
+      const legendW = w - 24
+      const slSpacing = legendW / slegend.length
+      slegend.forEach((item, i) => {
+        const slx = 12 + slSpacing * i + slSpacing / 2 - 20
+        ctx.fillStyle = item.color
+        ctx.fillRect(slx, sly, 7, 7)
+        ctx.fillStyle = '#7a8a9a'
+        ctx.font = '9px "JetBrains Mono", monospace'
+        ctx.textAlign = 'left'
+        ctx.fillText(item.label, slx + 10, sly + 7)
+      })
+    }
+
+  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars, requestHistory])
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-      <canvas ref={canvasRef} width={260} height={265} />
+      <canvas ref={canvasRef} width={300} height={420} />
     </div>
   )
 }

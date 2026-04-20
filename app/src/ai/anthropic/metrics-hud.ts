@@ -13,6 +13,17 @@ const STREAMING_VERBS = [
   "Pontificating", "Quantifying", "Reasoning", "Synthesizing", "Transmuting",
 ];
 
+interface RequestSnapshot {
+  seq: number;
+  timestamp: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+const MAX_REQUEST_HISTORY = 50;
+
 export class AnthropicMetricsHud implements Piece {
   readonly id = "token-counter";
   readonly name = "Anthropic Usage";
@@ -30,6 +41,7 @@ export class AnthropicMetricsHud implements Piece {
   private compactionCount = 0;
   private lastCompactionEngine: string | null = null;
   private factory: AnthropicSessionFactory;
+  private requestHistory: RequestSnapshot[] = [];
 
   // Streaming state
   private streamingActive = false;
@@ -59,6 +71,20 @@ export class AnthropicMetricsHud implements Piece {
       this.lastCacheRead = reqCacheRead;
       this.lastCacheCreate = reqCacheCreate;
       this.requestCount++;
+
+      // Track per-request history
+      this.requestHistory.push({
+        seq: this.requestCount,
+        timestamp: Date.now(),
+        inputTokens: reqInput,
+        outputTokens: (d.output_tokens as number) ?? 0,
+        cacheRead: reqCacheRead,
+        cacheCreation: reqCacheCreate,
+      });
+      if (this.requestHistory.length > MAX_REQUEST_HISTORY) {
+        this.requestHistory.shift();
+      }
+
       log.debug({
         in: d.input_tokens, out: d.output_tokens,
         cacheNew: d.cache_creation_input_tokens, cacheHit: d.cache_read_input_tokens,
@@ -124,7 +150,7 @@ export class AnthropicMetricsHud implements Piece {
         status: "running",
         data: this.getData(),
         position: { x: 1660, y: 100 },
-        size: { width: 280, height: 280 },
+        size: { width: 280, height: 380 },
       },
     });
 
@@ -209,6 +235,8 @@ export class AnthropicMetricsHud implements Piece {
       streamingVerb: this.streamingVerb,
       streamingStartMs: this.streamingActive ? this.streamingStartMs : 0,
       streamingOutputChars: this.streamingOutputChars,
+      // Per-request history for sparkline
+      requestHistory: this.requestHistory,
     };
   }
 }

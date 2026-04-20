@@ -5,6 +5,17 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-19
+
+### Added
+- **Plugin renderer ErrorBoundary** — crashed plugin panels show an error message instead of taking down the entire HUD (black screen prevention)
+- **esbuild banner exports `createElement` directly** — plugin renderers using `createElement()` calls (not JSX) no longer get "createElement is not defined" errors
+- **Tasks plugin** — in-memory task management with dependency tracking, tree-view HUD panel, progress bar, filter chips, session tags, and system context injection ([jarvis-plugin-tasks](https://github.com/giovanibarili/jarvis-plugin-tasks))
+- 2 new BDD scenarios for ErrorBoundary and createElement banner
+
+### Fixed
+- Plugin renderers that call `createElement()` directly now work (banner was only exporting `__jarvis_jsx`)
+
 ## [0.1.0] - 2026-04-19
 
 Initial release — establishing GitFlow and versioning baseline.
