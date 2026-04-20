@@ -1,6 +1,15 @@
 import { useRef, useEffect, useState } from 'react'
 import type { HudComponentState } from '../../types/hud'
 
+interface RequestSnapshot {
+  seq: number
+  timestamp: number
+  inputTokens: number
+  outputTokens: number
+  cacheRead: number
+  cacheCreation: number
+}
+
 export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const data = state.data as any
@@ -20,6 +29,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const streamingVerb = data?.streamingVerb ?? ''
   const streamingStartMs = data?.streamingStartMs ?? 0
   const streamingOutputChars = data?.streamingOutputChars ?? 0
+  const requestHistory: RequestSnapshot[] = data?.requestHistory ?? []
 
   // Compute elapsed locally via requestAnimationFrame — no backend pushes needed
   const [elapsedMs, setElapsedMs] = useState(0)
@@ -45,7 +55,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     if (!ctx) return
 
     const w = c.width, h = c.height
-    const cx = w / 2, cy = h / 2 - 25
+    const cx = w / 2, cy = h / 2 - 65
     ctx.clearRect(0, 0, w, h)
 
     const outerR = 70
@@ -195,11 +205,126 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       ctx.fillText(model, cx, sy + 24)
     }
 
-  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars])
+    // ─── Request History Sparkline (stacked bars) ───
+    if (requestHistory.length > 0) {
+      const sparkTopY = sy + 38
+      const sparkH = 60
+      const sparkPadX = 16
+      const sparkW = w - sparkPadX * 2
+
+      // Separator line
+      ctx.strokeStyle = 'rgba(68,170,255,0.15)'
+      ctx.lineWidth = 0.5
+      ctx.beginPath()
+      ctx.moveTo(sparkPadX, sparkTopY - 4)
+      ctx.lineTo(w - sparkPadX, sparkTopY - 4)
+      ctx.stroke()
+
+      // Section label
+      ctx.fillStyle = '#4a5a6a'
+      ctx.font = '8px "Orbitron", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText('REQUEST HISTORY', cx, sparkTopY + 4)
+
+      const barsY = sparkTopY + 12
+      const barsH = sparkH - 20
+
+      // Find max total tokens across all requests for scaling
+      const maxTokens = Math.max(
+        ...requestHistory.map(r => r.inputTokens + r.outputTokens + r.cacheRead + r.cacheCreation),
+        1
+      )
+
+      const barCount = requestHistory.length
+      const gap = 1
+      const barW = Math.max(2, Math.min(8, (sparkW - (barCount - 1) * gap) / barCount))
+      const totalBarsW = barCount * barW + (barCount - 1) * gap
+      const barsX0 = cx - totalBarsW / 2
+
+      // Scale gridlines
+      ctx.strokeStyle = 'rgba(68,170,255,0.08)'
+      ctx.lineWidth = 0.5
+      ctx.setLineDash([2, 3])
+      for (let pct = 0.25; pct <= 1; pct += 0.25) {
+        const gy = barsY + barsH - barsH * pct
+        ctx.beginPath()
+        ctx.moveTo(barsX0, gy)
+        ctx.lineTo(barsX0 + totalBarsW, gy)
+        ctx.stroke()
+      }
+      ctx.setLineDash([])
+
+      // Segment colors (bottom to top): cacheRead, cacheCreation, input, output
+      const segColors = {
+        cacheRead:     '#44aa88',  // green — cache hit
+        cacheCreation: '#6644cc',  // purple — cache rebuild
+        input:         '#4488ff',  // blue — new input
+        output:        '#ffaa44',  // orange — output
+      }
+
+      requestHistory.forEach((req, i) => {
+        const x = barsX0 + i * (barW + gap)
+        const reqTotal = req.inputTokens + req.outputTokens + req.cacheRead + req.cacheCreation
+        const barTotalH = (reqTotal / maxTokens) * barsH
+
+        // Draw stacked segments bottom-to-top
+        const segs = [
+          { value: req.cacheRead, color: segColors.cacheRead },
+          { value: req.cacheCreation, color: segColors.cacheCreation },
+          { value: req.inputTokens, color: segColors.input },
+          { value: req.outputTokens, color: segColors.output },
+        ]
+
+        let segY = barsY + barsH // bottom of bar area
+        segs.forEach(seg => {
+          if (seg.value <= 0 || reqTotal <= 0) return
+          const segH = Math.max(0.5, (seg.value / reqTotal) * barTotalH)
+          segY -= segH
+          ctx.fillStyle = seg.color
+          ctx.fillRect(x, segY, barW, segH)
+        })
+
+        // Highlight current (last) request
+        if (i === barCount - 1) {
+          ctx.strokeStyle = '#fff'
+          ctx.lineWidth = 1
+          ctx.strokeRect(x - 0.5, barsY + barsH - barTotalH - 0.5, barW + 1, barTotalH + 1)
+        }
+      })
+
+      // Baseline
+      ctx.strokeStyle = 'rgba(68,170,255,0.2)'
+      ctx.lineWidth = 0.5
+      ctx.beginPath()
+      ctx.moveTo(barsX0, barsY + barsH)
+      ctx.lineTo(barsX0 + totalBarsW, barsY + barsH)
+      ctx.stroke()
+
+      // Sparkline legend
+      const sly = barsY + barsH + 6
+      const slegend = [
+        { label: 'CACHE', color: segColors.cacheRead },
+        { label: 'REBUILD', color: segColors.cacheCreation },
+        { label: 'IN', color: segColors.input },
+        { label: 'OUT', color: segColors.output },
+      ]
+      const slSpacing = sparkW / slegend.length
+      slegend.forEach((item, i) => {
+        const slx = sparkPadX + slSpacing * i + slSpacing / 2 - 16
+        ctx.fillStyle = item.color
+        ctx.fillRect(slx, sly, 5, 5)
+        ctx.fillStyle = '#5a6a7a'
+        ctx.font = '7px "JetBrains Mono", monospace'
+        ctx.textAlign = 'left'
+        ctx.fillText(item.label, slx + 7, sly + 5)
+      })
+    }
+
+  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars, requestHistory])
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-      <canvas ref={canvasRef} width={260} height={265} />
+      <canvas ref={canvasRef} width={260} height={370} />
     </div>
   )
 }
