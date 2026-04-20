@@ -307,6 +307,7 @@ export class AnthropicSession implements AISession {
             system: this.getSystemPrompt(),
             messages: this.messages,
             tools,
+            cache_control: { type: "ephemeral" as const },
             betas: compactionConfig.betas,
             context_management: compactionConfig.contextManagement,
           }, { signal: this.abortController.signal });
@@ -336,7 +337,8 @@ export class AnthropicSession implements AISession {
           system: this.getSystemPrompt(),
           messages: this.messages,
           tools,
-        }, { signal: this.abortController.signal });
+          cache_control: { type: "ephemeral" as const },
+        } as any, { signal: this.abortController.signal });
 
         stream.on("text", () => {});
         message = await stream.finalMessage();
