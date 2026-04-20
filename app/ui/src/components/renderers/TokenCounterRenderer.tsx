@@ -63,6 +63,19 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     const innerR = 42
 
     const fmt = (n: number) => n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n)
+    const fmtUsd = (n: number) => n >= 1 ? '$' + n.toFixed(2) : '$' + n.toFixed(3)
+
+    // Anthropic pricing per token (claude-opus-4)
+    const PRICE_INPUT = 15 / 1_000_000       // $15/MTok
+    const PRICE_OUTPUT = 75 / 1_000_000      // $75/MTok
+    const PRICE_CACHE_READ = 1.5 / 1_000_000 // $1.50/MTok
+    const PRICE_CACHE_WRITE = 18.75 / 1_000_000 // $18.75/MTok
+
+    const reqCost = (r: RequestSnapshot) =>
+      r.inputTokens * PRICE_INPUT +
+      r.outputTokens * PRICE_OUTPUT +
+      r.cacheRead * PRICE_CACHE_READ +
+      r.cacheCreation * PRICE_CACHE_WRITE
 
     // ─── Outer ring: context breakdown (system / tools / messages) ───
     const total = systemTokens + toolsTokens + messagesTokens
@@ -207,42 +220,56 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
 
     // ─── Request History Sparkline (stacked bars) ───
     if (requestHistory.length > 0) {
-      const sparkTopY = sy + 38
-      const sparkH = 60
-      const sparkPadX = 16
-      const sparkW = w - sparkPadX * 2
+      const sparkTopY = sy + 40
+      const chartPadL = 12
+      const labelAreaR = 44
+      const chartX0 = chartPadL
+      const chartW = w - chartPadL - labelAreaR
 
       // Separator line
       ctx.strokeStyle = 'rgba(68,170,255,0.15)'
       ctx.lineWidth = 0.5
       ctx.beginPath()
-      ctx.moveTo(sparkPadX, sparkTopY - 4)
-      ctx.lineTo(w - sparkPadX, sparkTopY - 4)
+      ctx.moveTo(12, sparkTopY)
+      ctx.lineTo(w - 12, sparkTopY)
       ctx.stroke()
 
       // Section label
-      ctx.fillStyle = '#4a5a6a'
-      ctx.font = '8px "Orbitron", monospace'
+      ctx.fillStyle = '#6a7a8a'
+      ctx.font = '9px "Orbitron", monospace'
       ctx.textAlign = 'center'
-      ctx.fillText('REQUEST HISTORY', cx, sparkTopY + 4)
+      ctx.fillText('REQUEST HISTORY', cx, sparkTopY + 14)
 
-      const barsY = sparkTopY + 12
-      const barsH = sparkH - 20
+      // Limit to last 25 requests for display
+      const displayHistory = requestHistory.slice(-25)
 
-      // Find max total tokens across all requests for scaling
-      const maxTokens = Math.max(
-        ...requestHistory.map(r => r.inputTokens + r.outputTokens + r.cacheRead + r.cacheCreation),
-        1
-      )
+      // Compute costs
+      const allCosts = requestHistory.map(r => reqCost(r))
+      const sessionTotal = allCosts.reduce((a, b) => a + b, 0)
+      const costs = allCosts.slice(-25)
+      const lastReq = displayHistory[displayHistory.length - 1]
+      const lastCostVal = costs[costs.length - 1]
 
-      const barCount = requestHistory.length
-      const gap = 1
-      const barW = Math.max(2, Math.min(8, (sparkW - (barCount - 1) * gap) / barCount))
+      // Last request info line
+      ctx.fillStyle = '#8af'
+      ctx.font = '9px "JetBrains Mono", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText(`REQ #${lastReq.seq}  ·  ${fmtUsd(lastCostVal)}  ·  SESSION ${fmtUsd(sessionTotal)}`, cx, sparkTopY + 28)
+
+      const barsY = sparkTopY + 38
+      const barsH = 70
+
+      // Find max cost for scaling
+      const maxCost = Math.max(...costs, 0.001)
+
+      const barCount = displayHistory.length
+      const gap = 2
+      const barW = Math.max(4, Math.min(14, (chartW - (barCount - 1) * gap) / barCount))
       const totalBarsW = barCount * barW + (barCount - 1) * gap
-      const barsX0 = cx - totalBarsW / 2
+      const barsX0 = chartX0 + (chartW - totalBarsW) / 2
 
-      // Scale gridlines
-      ctx.strokeStyle = 'rgba(68,170,255,0.08)'
+      // Scale gridlines with USD labels on the right
+      ctx.strokeStyle = 'rgba(68,170,255,0.1)'
       ctx.lineWidth = 0.5
       ctx.setLineDash([2, 3])
       for (let pct = 0.25; pct <= 1; pct += 0.25) {
@@ -251,34 +278,45 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
         ctx.moveTo(barsX0, gy)
         ctx.lineTo(barsX0 + totalBarsW, gy)
         ctx.stroke()
+        // USD label on right side
+        ctx.fillStyle = '#7a8a9a'
+        ctx.font = '9px "JetBrains Mono", monospace'
+        ctx.textAlign = 'left'
+        ctx.fillText(fmtUsd(maxCost * pct), barsX0 + totalBarsW + 4, gy + 3)
       }
       ctx.setLineDash([])
+      ctx.textAlign = 'center'
 
-      // Segment colors (bottom to top): cacheRead, cacheCreation, input, output
-      const segColors = {
-        cacheRead:     '#44aa88',  // green — cache hit
-        cacheCreation: '#6644cc',  // purple — cache rebuild
-        input:         '#4488ff',  // blue — new input
-        output:        '#ffaa44',  // orange — output
+      // Cost breakdown colors
+      const costColors = {
+        input:      '#4488ff',  // blue — input cost
+        output:     '#ffaa44',  // orange — output cost
+        cacheRead:  '#44aa88',  // green — cache read cost (cheap)
+        cacheWrite: '#6644cc',  // purple — cache write cost
       }
 
-      requestHistory.forEach((req, i) => {
+      displayHistory.forEach((req, i) => {
         const x = barsX0 + i * (barW + gap)
-        const reqTotal = req.inputTokens + req.outputTokens + req.cacheRead + req.cacheCreation
-        const barTotalH = (reqTotal / maxTokens) * barsH
+        const cost = costs[i]
+        const barTotalH = (cost / maxCost) * barsH
 
-        // Draw stacked segments bottom-to-top
+        // Cost breakdown per segment
+        const inputC = req.inputTokens * PRICE_INPUT
+        const outputC = req.outputTokens * PRICE_OUTPUT
+        const cacheReadC = req.cacheRead * PRICE_CACHE_READ
+        const cacheWriteC = req.cacheCreation * PRICE_CACHE_WRITE
+
         const segs = [
-          { value: req.cacheRead, color: segColors.cacheRead },
-          { value: req.cacheCreation, color: segColors.cacheCreation },
-          { value: req.inputTokens, color: segColors.input },
-          { value: req.outputTokens, color: segColors.output },
+          { value: cacheReadC, color: costColors.cacheRead },
+          { value: cacheWriteC, color: costColors.cacheWrite },
+          { value: inputC, color: costColors.input },
+          { value: outputC, color: costColors.output },
         ]
 
-        let segY = barsY + barsH // bottom of bar area
+        let segY = barsY + barsH
         segs.forEach(seg => {
-          if (seg.value <= 0 || reqTotal <= 0) return
-          const segH = Math.max(0.5, (seg.value / reqTotal) * barTotalH)
+          if (seg.value <= 0 || cost <= 0) return
+          const segH = Math.max(0.5, (seg.value / cost) * barTotalH)
           segY -= segH
           ctx.fillStyle = seg.color
           ctx.fillRect(x, segY, barW, segH)
@@ -287,36 +325,37 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
         // Highlight current (last) request
         if (i === barCount - 1) {
           ctx.strokeStyle = '#fff'
-          ctx.lineWidth = 1
+          ctx.lineWidth = 1.5
           ctx.strokeRect(x - 0.5, barsY + barsH - barTotalH - 0.5, barW + 1, barTotalH + 1)
         }
       })
 
       // Baseline
-      ctx.strokeStyle = 'rgba(68,170,255,0.2)'
+      ctx.strokeStyle = 'rgba(68,170,255,0.25)'
       ctx.lineWidth = 0.5
       ctx.beginPath()
       ctx.moveTo(barsX0, barsY + barsH)
       ctx.lineTo(barsX0 + totalBarsW, barsY + barsH)
       ctx.stroke()
 
-      // Sparkline legend
-      const sly = barsY + barsH + 6
+      // Legend
+      const sly = barsY + barsH + 10
       const slegend = [
-        { label: 'CACHE', color: segColors.cacheRead },
-        { label: 'REBUILD', color: segColors.cacheCreation },
-        { label: 'IN', color: segColors.input },
-        { label: 'OUT', color: segColors.output },
+        { label: 'IN', color: costColors.input },
+        { label: 'OUT', color: costColors.output },
+        { label: 'CACHE', color: costColors.cacheRead },
+        { label: 'WRITE', color: costColors.cacheWrite },
       ]
-      const slSpacing = sparkW / slegend.length
+      const legendW = w - 24
+      const slSpacing = legendW / slegend.length
       slegend.forEach((item, i) => {
-        const slx = sparkPadX + slSpacing * i + slSpacing / 2 - 16
+        const slx = 12 + slSpacing * i + slSpacing / 2 - 20
         ctx.fillStyle = item.color
-        ctx.fillRect(slx, sly, 5, 5)
-        ctx.fillStyle = '#5a6a7a'
-        ctx.font = '7px "JetBrains Mono", monospace'
+        ctx.fillRect(slx, sly, 7, 7)
+        ctx.fillStyle = '#7a8a9a'
+        ctx.font = '9px "JetBrains Mono", monospace'
         ctx.textAlign = 'left'
-        ctx.fillText(item.label, slx + 7, sly + 5)
+        ctx.fillText(item.label, slx + 10, sly + 7)
       })
     }
 
@@ -324,7 +363,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-      <canvas ref={canvasRef} width={260} height={370} />
+      <canvas ref={canvasRef} width={300} height={420} />
     </div>
   )
 }
