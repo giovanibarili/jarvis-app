@@ -58,7 +58,7 @@ export function ChatTimeline({
   }
 
   return (
-    <div ref={containerRef} style={{ height: '100%', overflowY: 'auto', padding: '8px 12px', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
+    <div ref={containerRef} style={{ height: '100%', overflowY: 'auto', padding: '8px 12px', fontSize: '14px', fontFamily: 'var(--font-mono)' }}>
       {entries.map((entry, i) => {
         if (entry.kind === 'message') {
           return (
