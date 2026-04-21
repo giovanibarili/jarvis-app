@@ -14,6 +14,7 @@ This package follows **Semantic Versioning (semver)**:
 |---|---|---|---|
 | 1.x | `state` prop only | ❌ polling `/hud` every 2s | Original architecture |
 | 2.x | `state` prop + `useHudPiece()` | ✅ SSE `/hud-stream` | Backward compatible — `state` prop still works |
+| 0.2.1 | + `sessionManager?` in PluginContext | ✅ SSE `/hud-stream` | Optional field — plugins without it still work |
 
 ## Public API Surface
 
@@ -23,7 +24,7 @@ These are consumed by plugins and must remain backward compatible:
 
 #### TypeScript Interfaces (`@jarvis/core`)
 - `Piece` — `id`, `name`, `start(bus)`, `stop()`, `systemContext?()`
-- `PluginContext` — `bus`, `capabilityRegistry`, `config`, `pluginDir`, `sessionFactory`, `registerRoute`, `saveConfig`, `registerSlashCommand`, `unregisterSlashCommand`
+- `PluginContext` — `bus`, `capabilityRegistry`, `config`, `pluginDir`, `sessionFactory`, `sessionManager?`, `registerRoute`, `saveConfig`, `registerSlashCommand`, `unregisterSlashCommand`
 - `PluginManifest` — `name`, `version`, `description`, `author?`, `entry?`, `capabilities?`
 - `HudPieceData` — `pieceId`, `type`, `name`, `status`, `data`, `position?`, `size?`, `visible?`, `ephemeral?`, `renderer?`
 - `EventBus` — `publish(msg)`, `subscribe(channel, handler)`, `stats`

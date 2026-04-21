@@ -1,7 +1,7 @@
 import type { EventBus } from "./bus.js";
 import type { Piece } from "./piece.js";
 import type { CapabilityRegistry } from "./tools.js";
-import type { AISessionFactory } from "./ai.js";
+import type { AISessionFactory, SessionManager } from "./ai.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export interface PluginManifest {
@@ -26,6 +26,8 @@ export interface PluginContext {
   config: Record<string, unknown>;
   pluginDir: string;
   sessionFactory: AISessionFactory;
+  /** Central session manager — handles persistence, auto-save, restore for all sessions (added in 0.3.0) */
+  sessionManager?: SessionManager;
   registerRoute: (method: string, path: string, handler: RouteHandler) => void;
   saveConfig: (config: Record<string, unknown>) => void;
   registerSlashCommand: (cmd: import("./tools.js").SlashCommand) => void;

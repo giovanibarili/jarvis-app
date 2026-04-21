@@ -150,6 +150,7 @@ async function main() {
   sessions.setProvider(getCurrentProvider());
   sessions.startAutoSave();
   pluginManager.setFactory(providerRouter.getFactory());
+  pluginManager.setSessionManager(sessions);
 
   // Register session inspector tools (Anthropic-only — exposes session, history, system prompt, tools)
   const activeFactory = providerRouter.getFactory();
@@ -167,6 +168,9 @@ async function main() {
     res.write(`data: ${JSON.stringify({ action: "snapshot", state: hudState.getState() })}\n\n`);
     hudState.addStreamClient(res);
     _req.on("close", () => hudState.removeStreamClient(res));
+  });
+  server.setOnHudRemove((pieceId: string) => {
+    bus.publish({ channel: "hud.update", source: "server", action: "remove", pieceId });
   });
   server.setOnClearSession(() => {
     log.info("ClearSession: clearing conversation and resetting session");

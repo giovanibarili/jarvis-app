@@ -99,6 +99,7 @@ export class HttpServer {
   private pluginRoutes = new Map<string, RouteHandler>();
   private onAbort?: () => void;
   private onClearSession?: () => void;
+  private onHudRemove?: (pieceId: string) => void;
 
   constructor(port: number, chatPiece: ChatPiece, getHudState: HudStateProvider, onAbort?: () => void, getCapabilities?: CapabilitiesProvider) {
     this.port = port;
@@ -116,6 +117,10 @@ export class HttpServer {
 
   setHudStreamHandler(handler: HudStreamHandler): void {
     this.handleHudStream = handler;
+  }
+
+  setOnHudRemove(handler: (pieceId: string) => void): void {
+    this.onHudRemove = handler;
   }
 
   registerRoute(method: string, path: string, handler: RouteHandler): void {
@@ -183,6 +188,24 @@ export class HttpServer {
           if (!settings.pieces[pieceId]) settings.pieces[pieceId] = { enabled: true, visible: true };
           settings.pieces[pieceId].visible = false;
           saveSettings(settings);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400); res.end();
+        }
+      });
+      return;
+    }
+
+    // Remove an ephemeral panel from HudState (no settings persistence).
+    // The piece can re-add itself with a new "add" action to reappear.
+    if (req.url === "/hud/remove" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { pieceId } = JSON.parse(body);
+          this.onHudRemove?.(pieceId);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch {
