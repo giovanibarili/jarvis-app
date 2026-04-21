@@ -20,6 +20,7 @@ export class AnthropicSession implements AISession {
   private messages: MessageParam[] = [];
   private label: string;
   private abortController?: AbortController;
+  private contextInjector?: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>;
   private betaDisabledUntil = 0;
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
   private consecutiveFallbacks = 0;
@@ -44,7 +45,14 @@ export class AnthropicSession implements AISession {
     log.info({ label: this.label, sessionId: this.sessionId }, "AnthropicSession: created");
   }
 
+  setContextInjector(injector: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
+    this.contextInjector = injector;
+  }
+
   async *sendAndStream(prompt: string, images?: ImageBlock[]): AsyncGenerator<AIStreamEvent, void> {
+    // Inject message-mode context (e.g. skills with injection: message)
+    this.injectEphemeralContext();
+
     if (images && images.length > 0) {
       const content: ContentBlockParam[] = [];
       for (const img of images) {
@@ -205,6 +213,7 @@ export class AnthropicSession implements AISession {
       const summary = match ? match[1].trim() : summaryText.trim();
 
       // Replace message history with summary
+      this.injectedContextCount = 0; // compaction wipes all messages — reset ephemeral tracking
       this.messages = [
         { role: "user", content: `[Previous conversation summary]\n\n${summary}` },
         { role: "assistant", content: "Understood. I have the context from our previous conversation. How would you like to proceed?" },
@@ -375,6 +384,7 @@ export class AnthropicSession implements AISession {
         const tokensAfter = message.usage?.input_tokens ?? 0;
 
         // Replace message history with compacted context
+        this.injectedContextCount = 0; // compaction wipes all messages — reset ephemeral tracking
         this.messages = [{ role: "assistant", content: message.content }];
 
         yield {
@@ -440,6 +450,8 @@ export class AnthropicSession implements AISession {
         },
       }, "AnthropicSession: API call complete");
 
+      // Clean up ephemeral injected context so it doesn't persist in saved history
+      this.removeInjectedContext();
       this.abortController = undefined;
 
     } catch (err: any) {
@@ -472,6 +484,44 @@ export class AnthropicSession implements AISession {
    * Walk all messages and replace image blocks with a text placeholder.
    * Returns the number of images stripped.
    */
+  /**
+   * Inject ephemeral context from message-mode skills.
+   * These are added as user messages right before the actual user prompt,
+   * preserving system prompt cache. Ephemeral = removed after each API call
+   * to avoid accumulating in history.
+   */
+  private injectedContextCount = 0;
+
+  private injectEphemeralContext(): void {
+    // Remove previously injected context messages (they're always at the end, before the new user message)
+    this.removeInjectedContext();
+
+    if (!this.contextInjector) return;
+    const contexts = this.contextInjector();
+    if (contexts.length === 0) return;
+
+    for (const ctx of contexts) {
+      this.messages.push({
+        role: "user",
+        content: [{ type: "text", text: ctx.content, ...(ctx.cache_control ? { cache_control: ctx.cache_control } : {}) }],
+      } as any);
+      // Anthropic requires alternating user/assistant — add a synthetic assistant ack
+      this.messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "Understood." }],
+      });
+    }
+    this.injectedContextCount = contexts.length * 2; // user + assistant pairs
+    log.debug({ label: this.label, injected: contexts.length }, "AnthropicSession: ephemeral context injected");
+  }
+
+  private removeInjectedContext(): void {
+    if (this.injectedContextCount > 0) {
+      this.messages.splice(this.messages.length - this.injectedContextCount, this.injectedContextCount);
+      this.injectedContextCount = 0;
+    }
+  }
+
   private stripImagesFromMessages(): number {
     let count = 0;
     for (const msg of this.messages) {

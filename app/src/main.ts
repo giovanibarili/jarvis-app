@@ -180,6 +180,17 @@ async function main() {
 
   await pieceManager.startAll();
 
+  // Wire message-injected skills to the main session's context injector.
+  // This must happen after pieceManager.startAll() so the skill-manager piece is running.
+  // The injector is called on every sendAndStream — skills with injection: "message"
+  // are added as conversation messages, preserving system prompt cache.
+  const mainManaged = sessions.get("main");
+  if (mainManaged.session.setContextInjector) {
+    mainManaged.session.setContextInjector(() =>
+      pluginManager.getMessageInjectedSkills("main")
+    );
+  }
+
   console.log("JARVIS starting...");
   console.log(`HUD  ${server.url}\n`);
   launchHud(server.url);
