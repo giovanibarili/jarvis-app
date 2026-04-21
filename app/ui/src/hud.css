@@ -171,6 +171,8 @@ body {
   overflow: hidden;
   -webkit-app-region: no-drag;
   cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .chatMessages {
@@ -291,7 +293,7 @@ body {
 
 /* ─── Markdown in Chat ───────────────────────────────────────── */
 
-.md-content { display: inline; }
+.md-content { word-break: break-word; }
 .md-content p { display: inline; }
 .md-content p + p { display: block; margin-top: 6px; }
 .md-content strong { color: #fff; font-weight: 600; }
@@ -429,6 +431,9 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .chatDockedOutput > div {

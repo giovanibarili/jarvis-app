@@ -25,12 +25,13 @@ echo "JARVIS restarting... conversation saved, will resume on restart."
 
   # Force kill if still alive
   pkill -9 -f "tsx src/main.ts" 2>/dev/null
+  pkill -9 -f "bash start.sh" 2>/dev/null
   pkill -f Electron 2>/dev/null
   sleep 1
 
-  # Start fresh
+  # Start fresh (build UI + start backend)
   cd "$JARVIS_DIR"
-  nohup npx tsx src/main.ts > /tmp/jarvis.log 2>&1 &
+  nohup bash start.sh > /tmp/jarvis.log 2>&1 &
 ) &
 
 exit 0
