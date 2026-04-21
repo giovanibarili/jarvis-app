@@ -150,6 +150,7 @@ async function main() {
   sessions.setProvider(getCurrentProvider());
   sessions.startAutoSave();
   pluginManager.setFactory(providerRouter.getFactory());
+  pluginManager.setSessionManager(sessions);
 
   // Register session inspector tools (Anthropic-only — exposes session, history, system prompt, tools)
   const activeFactory = providerRouter.getFactory();

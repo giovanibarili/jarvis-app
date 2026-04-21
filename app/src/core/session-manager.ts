@@ -1,5 +1,5 @@
 // src/core/session-manager.ts
-import type { AISession, AISessionFactory } from "../ai/types.js";
+import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../ai/types.js";
 import { log } from "../logger/index.js";
 import {
   saveConversation,
@@ -17,12 +17,25 @@ interface ManagedSession {
   pendingToolCalls?: import("../ai/types.js").CapabilityCall[];
 }
 
+/**
+ * Tracks how a session was created so getWithPrompt can restore actors properly.
+ */
+interface SessionCreationOptions {
+  promptOptions?: CreateWithPromptOptions;
+}
+
 export class SessionManager {
   private sessions = new Map<string, ManagedSession>();
   private factory: AISessionFactory;
   private currentProvider: string = "anthropic";
   private autoSaveTimer?: ReturnType<typeof setInterval>;
   private static AUTO_SAVE_INTERVAL_MS = 30_000; // save every 30s
+
+  /**
+   * Tracks creation options per session so we can restore with the right prompt.
+   * Only set for sessions created via getWithPrompt (actors).
+   */
+  private creationOptions = new Map<string, SessionCreationOptions>();
 
   constructor(factory: AISessionFactory) {
     this.factory = factory;
@@ -48,29 +61,34 @@ export class SessionManager {
     }
   }
 
-  /** Check if a session is managed by SessionManager */
-  private isOwnedSession(sessionId: string): boolean {
-    return sessionId === "main" || sessionId.startsWith("grpc-");
+  /** Check if a session exists (without creating it) */
+  has(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
   }
 
+  /**
+   * Get or create a session.
+   * For main/grpc-* sessions: auto-creates with factory.create() and restores saved conversation.
+   * For actor-* sessions: returns existing session or creates a basic one (prefer getWithPrompt for actors).
+   */
   get(sessionId: string): ManagedSession {
     let managed = this.sessions.get(sessionId);
     if (!managed) {
-      if (!this.isOwnedSession(sessionId)) {
-        log.warn({ sessionId }, "SessionManager: refusing to create session — not owned (actor sessions are managed by actor-runner)");
-        // Return a stub to avoid crashes, but don't persist it
-        const session = this.factory.create({ label: sessionId });
-        return { session, state: "idle", createdAt: Date.now() };
-      }
-
       // Try to load saved conversation for restore
       const saved = loadConversation(sessionId, this.currentProvider);
       const restoreMessages = saved && saved.messages.length > 0 ? saved.messages : undefined;
 
-      // Factory handles restore — each provider knows its own message format
-      const session = this.factory.create({ label: sessionId, restoreMessages });
+      // If this is an actor session with saved creation options, restore with prompt
+      const opts = this.creationOptions.get(sessionId);
+      let session: AISession;
+      if (opts?.promptOptions) {
+        session = this.factory.createWithPrompt(opts.promptOptions);
+      } else {
+        // Factory handles restore — each provider knows its own message format
+        session = this.factory.create({ label: sessionId, restoreMessages });
+      }
 
-      if (restoreMessages) {
+      if (restoreMessages && !opts?.promptOptions) {
         log.info(
           { sessionId, restored: saved!.messageCount, savedAt: saved!.savedAt },
           "SessionManager: conversation restored via factory",
@@ -85,6 +103,41 @@ export class SessionManager {
       this.sessions.set(sessionId, managed);
       log.info({ sessionId, restored: !!restoreMessages }, "SessionManager: created new session");
     }
+    return managed;
+  }
+
+  /**
+   * Get or create a session with custom prompt options (for actors).
+   * If the session already exists, returns it (prompt options are ignored — they're set at creation).
+   * If new, creates with createWithPrompt and optionally restores saved conversation.
+   */
+  getWithPrompt(sessionId: string, options: CreateWithPromptOptions): ManagedSession {
+    let managed = this.sessions.get(sessionId);
+    if (managed) return managed;
+
+    // Store creation options for future restore
+    this.creationOptions.set(sessionId, { promptOptions: options });
+
+    // Create with custom prompt
+    const session = this.factory.createWithPrompt(options);
+
+    // Try to restore saved conversation
+    const saved = loadConversation(sessionId, this.currentProvider);
+    if (saved && saved.messages.length > 0) {
+      session.setMessages?.(saved.messages);
+      log.info(
+        { sessionId, restored: saved.messageCount, savedAt: saved.savedAt },
+        "SessionManager: actor conversation restored",
+      );
+    }
+
+    managed = {
+      session,
+      state: "idle",
+      createdAt: Date.now(),
+    };
+    this.sessions.set(sessionId, managed);
+    log.info({ sessionId, hasRestore: !!(saved && saved.messages.length > 0) }, "SessionManager: created actor session with prompt");
     return managed;
   }
 
@@ -142,6 +195,7 @@ export class SessionManager {
       this.save(sessionId);
       managed.session.close();
       this.sessions.delete(sessionId);
+      this.creationOptions.delete(sessionId);
       log.info({ sessionId }, "SessionManager: closed");
     }
   }
@@ -167,6 +221,7 @@ export class SessionManager {
         this.sessions.delete(id);
       }
     }
+    this.creationOptions.clear();
   }
 
   get size(): number {
