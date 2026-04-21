@@ -122,14 +122,26 @@ export class DiffViewerPiece implements Piece {
     this.registry = registry;
   }
 
+  private unsubRemove?: () => void;
+
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
     this.registerCapabilities();
     this.hookMultiEdit();
+
+    // When the panel is closed (removed from HUD), reset addedToHud so the
+    // next publishToHud uses "add" instead of "update" on a non-existent component.
+    this.unsubRemove = this.bus.subscribe("hud.update", (msg: any) => {
+      if (msg.action === "remove" && msg.pieceId === this.id && msg.source !== this.id) {
+        this.addedToHud = false;
+      }
+    });
+
     log.info("DiffViewer: initialized");
   }
 
   async stop(): Promise<void> {
+    this.unsubRemove?.();
     // Remove HUD panel
     this.bus.publish({
       channel: "hud.update",
@@ -149,13 +161,15 @@ export class DiffViewerPiece implements Piece {
       this.history = this.history.slice(-50);
     }
 
-    const action = this.addedToHud ? "update" : "add";
+    // Always use "add" — this ensures the panel re-appears even if the user
+    // previously closed it. HudState treats "add" on an existing pieceId as
+    // an upsert, so there's no duplication.
     this.addedToHud = true;
 
     this.bus.publish({
       channel: "hud.update",
       source: this.id,
-      action,
+      action: "add",
       pieceId: this.id,
       piece: {
         pieceId: this.id,
