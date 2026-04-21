@@ -169,6 +169,9 @@ async function main() {
     hudState.addStreamClient(res);
     _req.on("close", () => hudState.removeStreamClient(res));
   });
+  server.setOnHudRemove((pieceId: string) => {
+    bus.publish({ channel: "hud.update", source: "server", action: "remove", pieceId });
+  });
   server.setOnClearSession(() => {
     log.info("ClearSession: clearing conversation and resetting session");
     jarvisCore.abortSession("main");
