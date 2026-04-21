@@ -14,8 +14,11 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const data = state.data as any
 
-  const sessionInputTokens = data?.sessionInputTokens ?? data?.inputTokens ?? 0
+  const sessionInputTokensRaw = data?.sessionInputTokens ?? data?.inputTokens ?? 0
   const sessionOutputTokens = data?.sessionOutputTokens ?? data?.outputTokens ?? 0
+  const sessionCacheRead = data?.cacheRead ?? 0
+  const sessionCacheCreation = data?.cacheCreation ?? 0
+  const sessionInputTotal = sessionInputTokensRaw + sessionCacheRead + sessionCacheCreation
   const contextTokens = data?.contextTokens ?? 0
   const cachePct = data?.cachePct ?? 0
   const contextPct = data?.contextPct ?? 0
@@ -198,7 +201,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     ctx.fillText('SESSION', cx, sy)
     ctx.fillStyle = '#5a6a7a'
     ctx.font = '10px "JetBrains Mono", monospace'
-    ctx.fillText(`IN ${fmt(sessionInputTokens)}  OUT ${fmt(sessionOutputTokens)}  REQ ${requestCount}`, cx, sy + 12)
+    ctx.fillText(`IN ${fmt(sessionInputTotal)}  OUT ${fmt(sessionOutputTokens)}  REQ ${requestCount}`, cx, sy + 12)
 
     // ─── Streaming status or Model ───
     if (streaming) {
@@ -359,7 +362,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       })
     }
 
-  }, [sessionInputTokens, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars, requestHistory])
+  }, [sessionInputTotal, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars, requestHistory])
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
