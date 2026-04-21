@@ -42,6 +42,13 @@ export interface ImageBlock {
   mediaType: string;
 }
 
+/** Ephemeral context injected as user messages before each API call */
+export interface InjectedContext {
+  role: "user";
+  content: string;
+  cache_control?: { type: "ephemeral" };
+}
+
 export interface AISession {
   readonly sessionId: string;
   sendAndStream(prompt: string, images?: ImageBlock[]): AsyncGenerator<AIStreamEvent, void>;
@@ -55,6 +62,8 @@ export interface AISession {
   setMessages(messages: unknown[]): void;
   /** Clean up message history after abort during waiting_tools */
   cleanupAbortedTools?(pendingCalls: CapabilityCall[]): void;
+  /** Set a callback to provide ephemeral context injected as messages (not system prompt) */
+  setContextInjector?(injector: () => InjectedContext[]): void;
 }
 
 export interface CreateWithPromptOptions {

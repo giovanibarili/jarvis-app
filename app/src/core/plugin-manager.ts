@@ -110,6 +110,30 @@ export class PluginManager implements Piece {
     return pieceContexts.join("\n\n");
   }
 
+  /**
+   * Get message-injected skill contents for a session.
+   * Returns array of { content, cache_control } for skills with injection: "message".
+   * Used by session to inject skills as conversation messages instead of system prompt.
+   */
+  getMessageInjectedSkills(sessionId: string): Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }> {
+    if (!this.pieceManager) return [];
+
+    for (const plugin of this.plugins.values()) {
+      for (const pieceId of plugin.pieces) {
+        const piece = this.pieceManager.pieces.get(pieceId) as any;
+        if (piece?.getMessageInjectedSkills) {
+          const skills = piece.getMessageInjectedSkills(sessionId);
+          return skills.map((s: any) => ({
+            role: "user" as const,
+            content: `<system-reminder>\n<active_skill name="${s.name}">\n${s.processedBody}\n</active_skill>\n</system-reminder>`,
+            cache_control: { type: "ephemeral" as const },
+          }));
+        }
+      }
+    }
+    return [];
+  }
+
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
 
