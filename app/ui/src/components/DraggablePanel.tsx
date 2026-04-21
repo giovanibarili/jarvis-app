@@ -114,6 +114,8 @@ export function DraggablePanel({
       bounds="parent"
       style={{ zIndex: zRef.current, ...(borderColor ? { borderColor } : {}) }}
       dragHandleClassName="drag-handle"
+      enableUserSelectHack={false}
+      cancel=".panelContent"
       onMouseDown={bringToFront}
       enableResizing={{
         top: false,
