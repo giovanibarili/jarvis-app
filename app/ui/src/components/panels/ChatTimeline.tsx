@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import React, { useRef, useEffect } from 'react'
 import { MarkdownText } from '../MarkdownText'
 
 interface ChatImage {
@@ -27,7 +27,7 @@ interface Props {
   onToggleExpand: (index: number) => void
 }
 
-export function ChatTimeline({
+export const ChatTimeline = React.memo(function ChatTimeline({
   entries,
   streamingText,
   isStreaming,
@@ -58,20 +58,19 @@ export function ChatTimeline({
   }
 
   return (
-    <div ref={containerRef} style={{ height: '100%', overflowY: 'auto', padding: '8px 12px', fontSize: '14px', fontFamily: 'var(--font-mono)' }}>
+    <div ref={containerRef} style={{ height: '100%', overflowY: 'auto', padding: '8px 12px', fontSize: '14px', fontFamily: 'var(--font-mono)', userSelect: 'text', WebkitUserSelect: 'text' }}>
       {entries.map((entry, i) => {
         if (entry.kind === 'message') {
           return (
             <div key={i} style={{
               color: entry.role === 'user' ? 'var(--chat-user)' : 'var(--chat-jarvis)',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
               lineHeight: '1.5',
               marginBottom: '4px',
+              ...(entry.role === 'user' ? { whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const } : {}),
             }}>
-              <span style={{ color: labelColor(entry), marginRight: '8px', fontFamily: 'var(--font-display)', fontSize: '9px', fontWeight: 600 }}>
+              <div style={{ color: labelColor(entry), fontFamily: 'var(--font-display)', fontSize: '9px', fontWeight: 600, marginBottom: '2px' }}>
                 {labelFor(entry)}
-              </span>
+              </div>
               {entry.role === 'user' ? (
                 <>
                   {entry.text}
@@ -244,4 +243,4 @@ export function ChatTimeline({
       `}</style>
     </div>
   )
-}
+})

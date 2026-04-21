@@ -38,7 +38,7 @@ export function MarkdownText({ text, className }: { text: string; className?: st
   }, [text])
 
   return (
-    <span
+    <div
       className={`md-content ${className ?? ''}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />

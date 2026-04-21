@@ -62,8 +62,8 @@ export function ChatPanel({
   userLabelColor: userLabelColorProp,
 }: ChatPanelProps) {
   const features = useMemo(() => ({ ...defaultFeatures, ...featuresProp }), [featuresProp])
-  const getUserLabel = userLabelProp ?? defaultUserLabel
-  const getUserLabelColor = userLabelColorProp ?? defaultUserLabelColor
+  const getUserLabel = useMemo(() => userLabelProp ?? defaultUserLabel, [userLabelProp])
+  const getUserLabelColor = useMemo(() => userLabelColorProp ?? defaultUserLabelColor, [userLabelColorProp])
 
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [streamingText, setStreamingText] = useState('')
@@ -356,7 +356,7 @@ export function ChatPanel({
 
   return (
     <div className="chatDocked" ref={panelRef}>
-      <div className="chatDockedOutput">
+      <div className="chatDockedOutput" onMouseDown={e => e.stopPropagation()}>
         <ChatTimeline
           entries={entries}
           streamingText={streamingText}
