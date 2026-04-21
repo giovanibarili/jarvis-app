@@ -13,6 +13,7 @@ import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { PieceManager } from "./piece-manager.js";
 import type { PluginContext } from "@jarvis/core";
 import type { AISessionFactory } from "../ai/types.js";
+import type { SessionManager } from "./session-manager.js";
 
 interface HttpServerLike {
   registerRoute(method: string, path: string, handler: (req: any, res: any) => void): void;
@@ -56,6 +57,7 @@ export class PluginManager implements Piece {
   private plugins = new Map<string, LoadedPlugin>();
   private pieceManager?: PieceManager;
   private factory?: AISessionFactory;
+  private sessions?: SessionManager;
   private httpServer?: HttpServerLike;
 
   constructor(registry: CapabilityRegistry) {
@@ -68,6 +70,10 @@ export class PluginManager implements Piece {
 
   setFactory(factory: AISessionFactory): void {
     this.factory = factory;
+  }
+
+  setSessionManager(sessions: SessionManager): void {
+    this.sessions = sessions;
   }
 
   setHttpServer(server: HttpServerLike): void {
@@ -257,6 +263,7 @@ export class PluginManager implements Piece {
               config: loadSettings().pieces?.[configKey]?.config ?? {},
               pluginDir,
               sessionFactory: this.factory as unknown as PluginContext["sessionFactory"],
+              sessionManager: this.sessions as unknown as PluginContext["sessionManager"],
               registerRoute: (method: string, path: string, handler: any) => {
                 if (this.httpServer) {
                   this.httpServer.registerRoute(method, path, handler);

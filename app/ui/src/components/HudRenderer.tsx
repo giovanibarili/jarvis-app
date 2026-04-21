@@ -70,6 +70,8 @@ export function HudRenderer({ state }: { state: HudState }) {
   const [hiddenPanels, setHiddenPanels] = useState<Set<string>>(new Set())
   const [detachedPanels, setDetachedPanels] = useState<Set<string>>(new Set())
 
+
+
   // Load persisted detached state on mount
   useEffect(() => {
     fetch('/hud/detached').then(r => r.json()).then((panels: Array<{ panelId: string }>) => {
@@ -80,13 +82,26 @@ export function HudRenderer({ state }: { state: HudState }) {
   }, [])
 
   const hidePanel = useCallback((pieceId: string) => {
-    setHiddenPanels(prev => new Set([...prev, pieceId]))
-    fetch('/hud/hide', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pieceId }),
-    }).catch(() => {})
-  }, [])
+    const comp = state.components.find(c => c.id === pieceId)
+    if (comp?.ephemeral) {
+      // Ephemeral panels: remove from HUD state entirely via /hud/remove.
+      // No hiddenPanels tracking needed — the piece's next "add" creates a
+      // fresh entry and the panel reappears automatically.
+      fetch('/hud/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pieceId }),
+      }).catch(() => {})
+    } else {
+      // Persistent panels: hide locally + persist to settings
+      setHiddenPanels(prev => new Set([...prev, pieceId]))
+      fetch('/hud/hide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pieceId }),
+      }).catch(() => {})
+    }
+  }, [state.components])
 
   const detachPanel = useCallback((pieceId: string) => {
     const comp = state.components.find(c => c.id === pieceId)

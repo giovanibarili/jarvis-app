@@ -30,3 +30,56 @@ export interface AISessionFactory {
   createWithPrompt(options: CreateWithPromptOptions): AISession;
   getToolDefinitions(): Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
 }
+
+// --- Session Manager ---
+
+export type SessionState = "idle" | "processing" | "waiting_tools";
+
+export interface ManagedSession {
+  session: AISession;
+  state: SessionState;
+  createdAt: number;
+  pendingToolCalls?: CapabilityCall[];
+}
+
+/**
+ * Central manager for ALL AI sessions (main, grpc-*, actor-*).
+ * Provides state tracking, persistence, auto-save, and restore.
+ */
+export interface SessionManager {
+  /** Get or create a session. For actor-* sessions, uses getWithPrompt internally if already registered. */
+  get(sessionId: string): ManagedSession;
+
+  /** Get or create a session with custom prompt (for actors). Registers the session if new. */
+  getWithPrompt(sessionId: string, options: CreateWithPromptOptions): ManagedSession;
+
+  /** Update session state. Triggers auto-save when transitioning to idle. */
+  setState(sessionId: string, state: SessionState): void;
+
+  /** Get current session state. Returns 'idle' if session doesn't exist. */
+  getState(sessionId: string): SessionState;
+
+  /** Abort a session — cancels in-flight operations, resets state to idle. */
+  abort(sessionId: string): void;
+
+  /** Save a single session's conversation to disk. */
+  save(sessionId: string): void;
+
+  /** Save all active sessions to disk. */
+  saveAll(): void;
+
+  /** Close and remove a session. Saves before closing. */
+  close(sessionId: string): void;
+
+  /** Close all sessions. Saves before closing. */
+  closeAll(): void;
+
+  /** Clear saved conversation for a session from disk. */
+  clearSaved(sessionId: string): void;
+
+  /** Check if a session exists (without creating it). */
+  has(sessionId: string): boolean;
+
+  /** Number of active sessions. */
+  readonly size: number;
+}

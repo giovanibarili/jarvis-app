@@ -4,6 +4,17 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-04-21
+
+### Added
+- **SessionManager interface** — `SessionManager`, `ManagedSession`, `SessionState` types exported from `@jarvis/core`
+  - Central manager for ALL AI sessions (main, grpc-*, actor-*)
+  - Provides `get()`, `getWithPrompt()`, `setState()`, `abort()`, `save()`, `close()`, `has()`
+  - `getWithPrompt()` supports creating sessions with custom base prompt and role context (for actors)
+- **PluginContext.sessionManager** — optional field added to `PluginContext`
+  - Plugins can now access the central SessionManager for session persistence, restore, and state tracking
+  - Optional field (backward compatible with existing plugins)
+
 ## [2.0.0] — 2025-07-19
 
 ### Added
