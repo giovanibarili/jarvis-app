@@ -13,12 +13,14 @@ import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { PieceManager } from "./piece-manager.js";
 import type { PluginContext } from "@jarvis/core";
 import type { AISessionFactory } from "../ai/types.js";
+// Note: getMessageInjectedSkills was removed — skill injection is a plugin concern
 import type { SessionManager } from "./session-manager.js";
 
 interface HttpServerLike {
   registerRoute(method: string, path: string, handler: (req: any, res: any) => void): void;
 }
 import { load as loadSettings, save as saveSettings, type PluginSettings } from "./settings.js";
+import { graphRegistry } from "./graph-registry.js";
 import { log } from "../logger/index.js";
 
 const PLUGINS_DIR = join(process.env.HOME ?? "~", ".jarvis", "plugins");
@@ -116,30 +118,6 @@ export class PluginManager implements Piece {
     return pieceContexts.join("\n\n");
   }
 
-  /**
-   * Get message-injected skill contents for a session.
-   * Returns array of { content, cache_control } for skills with injection: "message".
-   * Used by session to inject skills as conversation messages instead of system prompt.
-   */
-  getMessageInjectedSkills(sessionId: string): Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }> {
-    if (!this.pieceManager) return [];
-
-    for (const plugin of this.plugins.values()) {
-      for (const pieceId of plugin.pieces) {
-        const piece = this.pieceManager.pieces.get(pieceId) as any;
-        if (piece?.getMessageInjectedSkills) {
-          const skills = piece.getMessageInjectedSkills(sessionId);
-          return skills.map((s: any) => ({
-            role: "user" as const,
-            content: `<system-reminder>\n<active_skill name="${s.name}">\n${s.processedBody}\n</active_skill>\n</system-reminder>`,
-            cache_control: { type: "ephemeral" as const },
-          }));
-        }
-      }
-    }
-    return [];
-  }
-
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
 
@@ -169,6 +147,9 @@ export class PluginManager implements Piece {
       },
     });
 
+    // Enrich graph node with children (installed plugins) — resolved dynamically every render frame
+    this.updateGraphChildren();
+
     log.info({ plugins: [...this.plugins.keys()] }, "PluginManager: started");
 
     // Async version check — runs in background after startup
@@ -178,6 +159,7 @@ export class PluginManager implements Piece {
   }
 
   async stop(): Promise<void> {
+    graphRegistry.setChildren(this.id, undefined);
     this.bus.publish({
       channel: "hud.update",
       source: this.id,
@@ -281,6 +263,14 @@ export class PluginManager implements Piece {
               unregisterSlashCommand: (name: string) => {
                 this.registry.unregisterSlashCommand(name);
               },
+              graphHandle: (pieceId: string) => ({
+                setChildren: (children: (() => import("@jarvis/core").GraphNodeChild[]) | undefined) => {
+                  graphRegistry.setChildren(pieceId, children as any);
+                },
+                update: (patch: { status?: string; meta?: Record<string, unknown>; label?: string }) => {
+                  graphRegistry.update(pieceId, patch);
+                },
+              }),
             };
             const pieces = mod.createPieces(ctx);
             for (const piece of pieces) {
@@ -614,5 +604,16 @@ export class PluginManager implements Piece {
       pieceId: this.id,
       data: this.getData(),
     });
+    this.updateGraphChildren();
+  }
+
+  private updateGraphChildren(): void {
+    graphRegistry.update(this.id, { meta: { plugins: this.plugins.size } });
+    graphRegistry.setChildren(this.id, () => [...this.plugins.values()].map(p => ({
+      id: `plugin-${p.name}`,
+      label: p.name.replace(/^jarvis-plugin-/, ""),
+      status: "running",
+      meta: { tools: p.tools.length, pieces: p.pieces.length, version: p.manifest.version },
+    })));
   }
 }

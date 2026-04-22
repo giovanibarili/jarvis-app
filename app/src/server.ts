@@ -99,6 +99,7 @@ export class HttpServer {
   private pluginRoutes = new Map<string, RouteHandler>();
   private onAbort?: () => void;
   private onClearSession?: () => void;
+  private onCompact?: () => Promise<void>;
   private onHudRemove?: (pieceId: string) => void;
 
   constructor(port: number, chatPiece: ChatPiece, getHudState: HudStateProvider, onAbort?: () => void, getCapabilities?: CapabilitiesProvider) {
@@ -113,6 +114,10 @@ export class HttpServer {
 
   setOnClearSession(handler: () => void): void {
     this.onClearSession = handler;
+  }
+
+  setOnCompact(handler: () => Promise<void>): void {
+    this.onCompact = handler;
   }
 
   setHudStreamHandler(handler: HudStreamHandler): void {
@@ -144,11 +149,13 @@ export class HttpServer {
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     if (req.url === "/chat/send" && req.method === "POST") {
+      log.info("HttpServer: POST /chat/send");
       this.chatPiece.handleSend(req, res);
       return;
     }
 
     if (req.url === "/chat/abort" && req.method === "POST") {
+      log.info("HttpServer: POST /chat/abort");
       if (this.onAbort) this.onAbort();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
@@ -156,9 +163,29 @@ export class HttpServer {
     }
 
     if (req.url === "/chat/clear-session" && req.method === "POST") {
+      log.info("HttpServer: POST /chat/clear-session");
       if (this.onClearSession) this.onClearSession();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (req.url === "/chat/compact" && req.method === "POST") {
+      log.info("HttpServer: POST /chat/compact");
+      if (this.onCompact) {
+        this.onCompact()
+          .then(() => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          })
+          .catch((err: any) => {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: err.message }));
+          });
+      } else {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      }
       return;
     }
 

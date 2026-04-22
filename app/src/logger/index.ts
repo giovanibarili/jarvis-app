@@ -27,13 +27,34 @@ export function onLogEntry(fn: (entry: LogEntry) => void): () => void {
   return () => listeners.delete(fn);
 }
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, renameSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // Always write logs to file
 const LOG_DIR = join(process.cwd(), ".jarvis", "logs");
 mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = process.env.JARVIS_LOG_FILE ?? join(LOG_DIR, "jarvis.log");
+
+// Rotate on startup: rename current log to timestamped file, keep last 3
+const MAX_LOG_FILES = 3;
+if (existsSync(LOG_FILE)) {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const rotated = join(LOG_DIR, `jarvis-${ts}.log`);
+  try {
+    renameSync(LOG_FILE, rotated);
+  } catch { /* ignore — file may be locked briefly */ }
+
+  // Prune old rotated logs, keep only MAX_LOG_FILES most recent
+  try {
+    const rotatedFiles = readdirSync(LOG_DIR)
+      .filter(f => f.startsWith("jarvis-") && f.endsWith(".log"))
+      .sort()
+      .reverse();
+    for (const f of rotatedFiles.slice(MAX_LOG_FILES)) {
+      unlinkSync(join(LOG_DIR, f));
+    }
+  } catch { /* best effort */ }
+}
 
 const consoleLevel = process.env.LOG_LEVEL ?? "silent";
 

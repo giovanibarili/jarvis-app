@@ -131,6 +131,14 @@ app.whenReady().then(() => {
           'window.dispatchEvent(new CustomEvent("panel-reattach", { detail: { panelId: "' + panelId + '" } }))'
         ).catch(() => {});
       }
+      // Persist detached=false in settings so it won't auto-restore on next launch
+      const http4 = require('http');
+      const postData = JSON.stringify({ panelId });
+      const req3 = http4.request({ hostname: 'localhost', port: 50052, path: '/hud/reattach', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) } });
+      req3.write(postData);
+      req3.end();
+      req3.on('error', () => {});
     });
     detachedWindows.set(panelId, child);
   }

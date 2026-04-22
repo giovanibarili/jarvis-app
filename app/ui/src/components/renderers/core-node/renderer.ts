@@ -57,6 +57,7 @@ const STATUS_COLORS: Record<string, [number, number, number]> = {
   idle:           [90, 140, 180],
   starting:       [255, 170, 68],
   connecting:     [255, 170, 68],
+  disabled:       [75, 75, 75],
   stopped:        [75, 75, 75],
   disconnected:   [75, 75, 75],
   offline:        [255, 68, 68],
@@ -69,9 +70,55 @@ function getColor(status: string): [number, number, number] {
 }
 
 // ── Status energy profiles ──
-// Controls visual intensity per status: speed, glow, breathing, pulse, radius.
+// Controls visual intensity per status.
+//   orbitSpeed: multiplier on particle orbit speed (1 = default)
+//   breatheAmp: amplitude of orbit breathing oscillation (0 = static, 0.2 = gentle, 0.5 = dramatic)
+//   breatheFreq: frequency of breathing (1.5 = calm, 4 = frantic)
+//   pulseAmp: particle alpha oscillation amplitude (0 = steady, 0.4 = normal, 0.7 = intense)
+//   pulseFreq: particle alpha oscillation frequency (2 = calm, 6 = fast)
+//   glowRadius: multiplier on ambient glow radius (1 = default)
+//   glowAlpha: multiplier on ambient glow opacity (1 = default)
+//   radiusPulse: additive radius oscillation magnitude (0 = none)
 
+interface EnergyProfile {
+  orbitSpeed: number
+  breatheAmp: number
+  breatheFreq: number
+  pulseAmp: number
+  pulseFreq: number
+  glowRadius: number
+  glowAlpha: number
+  radiusPulse: number
+}
 
+const DEFAULT_ENERGY: EnergyProfile = {
+  orbitSpeed: 1, breatheAmp: 0.2, breatheFreq: 1.5,
+  pulseAmp: 0.4, pulseFreq: 2, glowRadius: 1, glowAlpha: 1, radiusPulse: 0,
+}
+
+const ENERGY_PROFILES: Record<string, Partial<EnergyProfile>> = {
+  // Processing: intense — fast orbits, strong breathing, bright glow, pulsing radius
+  processing:     { orbitSpeed: 2.5, breatheAmp: 0.45, breatheFreq: 4, pulseAmp: 0.7, pulseFreq: 5, glowRadius: 1.4, glowAlpha: 1.6, radiusPulse: 3 },
+  // Waiting tools: active — faster than idle, noticeable breathing
+  waiting_tools:  { orbitSpeed: 1.8, breatheAmp: 0.35, breatheFreq: 3, pulseAmp: 0.55, pulseFreq: 4, glowRadius: 1.2, glowAlpha: 1.3, radiusPulse: 1.5 },
+  // Starting/connecting: moderate activity
+  starting:       { orbitSpeed: 1.5, breatheAmp: 0.3, breatheFreq: 2.5, pulseAmp: 0.5, pulseFreq: 3, glowRadius: 1.1, glowAlpha: 1.2, radiusPulse: 1 },
+  connecting:     { orbitSpeed: 1.5, breatheAmp: 0.3, breatheFreq: 2.5, pulseAmp: 0.5, pulseFreq: 3, glowRadius: 1.1, glowAlpha: 1.2, radiusPulse: 1 },
+  loading:        { orbitSpeed: 1.5, breatheAmp: 0.3, breatheFreq: 2.5, pulseAmp: 0.5, pulseFreq: 3, glowRadius: 1.1, glowAlpha: 1.2, radiusPulse: 1 },
+  // Disabled/stopped: barely alive — slow, dim, no pulse
+  disabled:       { orbitSpeed: 0.2, breatheAmp: 0.05, breatheFreq: 0.5, pulseAmp: 0.1, pulseFreq: 0.5, glowRadius: 0.5, glowAlpha: 0.3, radiusPulse: 0 },
+  stopped:        { orbitSpeed: 0.2, breatheAmp: 0.05, breatheFreq: 0.5, pulseAmp: 0.1, pulseFreq: 0.5, glowRadius: 0.5, glowAlpha: 0.3, radiusPulse: 0 },
+  disconnected:   { orbitSpeed: 0.2, breatheAmp: 0.05, breatheFreq: 0.5, pulseAmp: 0.1, pulseFreq: 0.5, glowRadius: 0.5, glowAlpha: 0.3, radiusPulse: 0 },
+  // Error: erratic flicker
+  error:          { orbitSpeed: 2, breatheAmp: 0.4, breatheFreq: 6, pulseAmp: 0.7, pulseFreq: 8, glowRadius: 1.3, glowAlpha: 1.5, radiusPulse: 2 },
+  auth_required:  { orbitSpeed: 1.2, breatheAmp: 0.3, breatheFreq: 3, pulseAmp: 0.5, pulseFreq: 4, glowRadius: 1.1, glowAlpha: 1.2, radiusPulse: 1 },
+}
+
+function getEnergy(status: string): EnergyProfile {
+  const override = ENERGY_PROFILES[status]
+  if (!override) return DEFAULT_ENERGY
+  return { ...DEFAULT_ENERGY, ...override }
+}
 
 // ── Main draw ──
 
@@ -88,7 +135,7 @@ export function drawGraph(
   ctx.clearRect(0, 0, w, h)
   const t = Date.now() / 1000
 
-  // Prune stale swarms
+  // Prune stale caches
   const activeIds = new Set(nodes.keys())
   pruneSwarmCache(activeIds)
 
@@ -141,38 +188,40 @@ export function drawGraph(
 
     const status = nodeStatuses.get(node.id) ?? 'running'
     const c = getColor(status)
+    const e = getEnergy(status)
     const isRoot = node.parentId === null
     const isHovered = node.id === hoveredId
     const label = nodeLabels.get(node.id) ?? node.id
 
     let r = node.radius
-    if (status === 'processing') {
-      r += Math.sin(t * 3) * 1.5
+    if (e.radiusPulse > 0) {
+      r += Math.sin(t * 3) * e.radiusPulse
     }
     if (isHovered) r += 2
 
     ctx.globalAlpha = node.alpha
 
     // ── Ambient glow ──
-    ctx.globalAlpha = node.alpha * 0.3
-    const ag = ctx.createRadialGradient(node.x, node.y, r * 0.2, node.x, node.y, r * 2.8)
+    const glowR = r * 2.8 * e.glowRadius
+    ctx.globalAlpha = node.alpha * 0.3 * e.glowAlpha
+    const ag = ctx.createRadialGradient(node.x, node.y, r * 0.2, node.x, node.y, glowR)
     ag.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},0.4)`)
     ag.addColorStop(1, 'transparent')
     ctx.fillStyle = ag
     ctx.beginPath()
-    ctx.arc(node.x, node.y, r * 2.8, 0, Math.PI * 2)
+    ctx.arc(node.x, node.y, glowR, 0, Math.PI * 2)
     ctx.fill()
 
     // ── Orbiting particles ──
     const swarm = getSwarm(node.id, r, isRoot)
     for (const p of swarm) {
-      const a = p.angle + t * p.speed
-      const breathe = 1 + 0.2 * Math.sin(t * 1.5 + p.phase)
+      const a = p.angle + t * p.speed * e.orbitSpeed
+      const breathe = 1 + e.breatheAmp * Math.sin(t * e.breatheFreq + p.phase)
       const d = p.orbitRadius * breathe
       const px = node.x + Math.cos(a) * d
       const py = node.y + Math.sin(a) * d
 
-      const pulseAlpha = 0.5 + 0.4 * Math.sin(t * 2 + p.phase)
+      const pulseAlpha = 0.5 + e.pulseAmp * Math.sin(t * e.pulseFreq + p.phase)
       ctx.globalAlpha = node.alpha * pulseAlpha
 
       const pg = ctx.createRadialGradient(px, py, 0, px, py, p.size * 2)

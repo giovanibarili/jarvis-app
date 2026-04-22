@@ -37,6 +37,13 @@
       "visible": true
     }
   },
+  "plugins": {
+    "jarvis-plugin-skills": {
+      "repo": "github.com/giovanibarili/jarvis-plugin-skills",
+      "path": "/Users/giovani.barili/.jarvis/plugins/jarvis-plugin-skills",
+      "enabled": true
+    }
+  },
   "compaction": {
     "enabled": true,
     "thresholdPercent": 83.5,

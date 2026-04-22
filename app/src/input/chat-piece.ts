@@ -18,6 +18,26 @@ export class ChatPiece implements Piece {
   private sessions?: SessionManager;
   private streamClients = new Set<ServerResponse>();
 
+  /** Sessions whose events appear in the chat timeline.
+   *  Default: only "main". Plugins can add more via addTimelineSession(). */
+  private timelineSessions = new Set<string>(["main"]);
+
+  /** Add a session to the chat timeline (events from this session will be shown). */
+  addTimelineSession(sessionId: string): void {
+    this.timelineSessions.add(sessionId);
+  }
+
+  /** Remove a session from the chat timeline. */
+  removeTimelineSession(sessionId: string): void {
+    this.timelineSessions.delete(sessionId);
+  }
+
+  /** Check if a session's events should appear in the chat timeline. */
+  private isTimelineSession(sessionId: string | undefined): boolean {
+    if (!sessionId) return false;
+    return this.timelineSessions.has(sessionId);
+  }
+
   setRegistry(registry: CapabilityRegistry): void {
     this.registry = registry;
   }
@@ -35,9 +55,9 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
 
-    // Subscribe to AI stream — unified timeline for all non-actor sessions
+    // Subscribe to AI stream — unified timeline for owned sessions
     this.bus.subscribe<AIStreamMessage>("ai.stream", (msg) => {
-      if (msg.target?.startsWith("actor-")) return;
+      if (!this.isTimelineSession(msg.target)) return;
       const source = msg.source === "jarvis-core" ? "jarvis" : msg.source;
       switch (msg.event) {
         case "delta":
@@ -75,14 +95,13 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
       }
     });
 
-    // Show user prompts from all non-actor sessions
+    // Show user prompts from timeline sessions
     this.bus.subscribe<AIRequestMessage>("ai.request", (msg) => {
-      if (msg.target?.startsWith("actor-")) return;
+      if (!this.isTimelineSession(msg.target)) return;
       if (msg.source === "chat-input") return; // already shown via handleSend
       // Identify source label
       let source = msg.source;
       if (msg.source === "grpc") source = "grpc";
-      else if (msg.source === "actor-pool") source = "actor";
       else if (msg.source === "queue-drain") source = "system";
       // plugins and other sources use their source as-is
       this.broadcast({ type: "user", text: msg.text, source, session: msg.target });
@@ -125,6 +144,8 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
       const body = Buffer.concat(chunks).toString("utf-8");
       try {
         const { prompt, images } = JSON.parse(body);
+
+        log.info({ prompt: typeof prompt === "string" ? prompt.slice(0, 200) : "<non-string>", hasImages: !!images?.length }, "ChatPiece: handleSend received");
 
         // Intercept slash commands (e.g. /skill-name args)
         if (this.registry && typeof prompt === "string" && prompt.startsWith("/")) {

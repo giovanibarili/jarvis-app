@@ -41,6 +41,12 @@ class GraphRegistryImpl {
   private rootStatus = "online";
 
   register(node: GraphNodeDef): void {
+    const existing = this.nodes.get(node.id);
+    if (existing) {
+      // Preserve children and meta set by plugins via graphHandle
+      if (!node.children && existing.children) node.children = existing.children;
+      if (!node.meta && existing.meta) node.meta = existing.meta;
+    }
     this.nodes.set(node.id, node);
     log.debug({ nodeId: node.id }, "GraphRegistry: registered");
   }
@@ -48,6 +54,15 @@ class GraphRegistryImpl {
   unregister(id: string): void {
     this.nodes.delete(id);
     log.debug({ nodeId: id }, "GraphRegistry: unregistered");
+  }
+
+  /** Set or clear the children callback on an existing node.
+   *  Pieces use this to enrich their graph node with dynamic children
+   *  (e.g. MCP servers, plugin sub-components) without re-registering. */
+  setChildren(id: string, children: (() => GraphNodeChild[]) | undefined): void {
+    const node = this.nodes.get(id);
+    if (!node) return;
+    node.children = children;
   }
 
   /** Update status/meta/label without re-registering */
@@ -121,6 +136,11 @@ class GraphRegistryImpl {
         }
       }
     }
+  }
+
+  /** Check if a node is registered (excludes root) */
+  has(id: string): boolean {
+    return this.nodes.has(id);
   }
 
   /** Number of registered level-1 nodes (excludes root) */

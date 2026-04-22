@@ -4,6 +4,16 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2025-07-20
+
+### Added
+- **GraphHandle & GraphNodeChild** — types exported from `@jarvis/core` for plugins to register children in the HUD graph
+  - `GraphHandle` provides `setChildren()` and `update()` scoped to a piece's graph node
+  - `GraphNodeChild` defines the shape of child nodes (id, label, status, meta, recursive children)
+- **PluginContext.graphHandle** — optional factory `(pieceId: string) => GraphHandle`
+  - Plugins can now enrich their piece's graph node with dynamic children (e.g. active skills, connected services)
+  - Optional field (backward compatible with existing plugins)
+
 ## [0.2.1] — 2026-04-21
 
 ### Added
