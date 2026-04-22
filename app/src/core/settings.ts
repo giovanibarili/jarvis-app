@@ -91,7 +91,7 @@ function loadFile(path: string): Settings {
 const DEFAULT_COMPACTION: CompactionSettings = {
   enabled: true,
   thresholdPercent: 83.5,
-  instructions: "Preserve capability names, tool call results, actor pool state, code snippets, and design decisions. Summarize verbose tool outputs and intermediate reasoning. Keep track of what the user asked for and current progress.",
+  instructions: "Preserve capability names, tool call results, code snippets, and design decisions. Summarize verbose tool outputs and intermediate reasoning. Keep track of what the user asked for and current progress.",
   pauseAfterCompaction: true,
 };
 

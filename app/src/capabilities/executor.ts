@@ -25,7 +25,7 @@ export class CapabilityExecutor implements Piece {
 
     this.bus.subscribe<CapabilityRequestMessage>("capability.request", (msg) => this.handleRequest(msg));
 
-    // Track ALL capability executions (core + actors) via registry listener
+    // Track ALL capability executions via registry listener
     this.registry.onExecution((toolName, isError, timeMs) => {
       this.callsPerTool.set(toolName, (this.callsPerTool.get(toolName) ?? 0) + 1);
       this.totalCalls++;

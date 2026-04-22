@@ -24,10 +24,12 @@ export interface PhysicsEdge {
   targetId: string;
 }
 
-const SPRING_LENGTH = 150;
-const SPRING_STRENGTH = 0.03;
-const REPULSION = 5000;
-const CENTER_GRAVITY = 0.008;
+const SPRING_LENGTH = 200;
+const SPRING_LENGTH_L2 = 100;   // Shorter springs for grandchildren (children of children) — keeps clusters tight
+const SPRING_STRENGTH = 0.02;
+const REPULSION = 6000;
+const ROOT_REPULSION = 20000;   // Strong repulsion from root node — keeps all children well away from center
+const CENTER_GRAVITY = 0.005;
 const DAMPING = 0.85;
 const ALPHA_SPEED = 0.06;
 const MIN_VELOCITY = 0.01;
@@ -120,9 +122,14 @@ export class ForceSimulation {
         continue;
       }
 
-      // Center gravity (weak)
-      node.vx += (this.cx - node.x) * CENTER_GRAVITY;
-      node.vy += (this.cy - node.y) * CENTER_GRAVITY;
+      // Center gravity — only for L1 nodes (direct children of root).
+      // L2+ nodes (grandchildren) are positioned by their spring to their parent only,
+      // so they cluster around their parent instead of being pulled to the center.
+      const isL1 = node.parentId === "jarvis-core";
+      if (isL1) {
+        node.vx += (this.cx - node.x) * CENTER_GRAVITY;
+        node.vy += (this.cy - node.y) * CENTER_GRAVITY;
+      }
     }
 
     // Repulsion between all pairs
@@ -132,11 +139,15 @@ export class ForceSimulation {
         let dx = b.x - a.x;
         let dy = b.y - a.y;
         let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = REPULSION / (dist * dist);
+        // Use stronger repulsion when one node is the root — pushes children outward
+        const isRootPair = a.parentId === null || b.parentId === null;
+        const rep = isRootPair ? ROOT_REPULSION : REPULSION;
+        const force = rep / (dist * dist);
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
-        if (a.parentId !== null && !a.pinned) { a.vx -= fx; a.vy -= fy; }
-        if (b.parentId !== null && !b.pinned) { b.vx += fx; b.vy += fy; }
+        // Root participates in repulsion — it pushes others away (but stays pinned to center by gravity)
+        if (!a.pinned) { a.vx -= fx; a.vy -= fy; }
+        if (!b.pinned) { b.vx += fx; b.vy += fy; }
       }
     }
 
@@ -148,7 +159,10 @@ export class ForceSimulation {
       const dx = target.x - source.x;
       const dy = target.y - source.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const displacement = dist - SPRING_LENGTH;
+      // Use shorter springs for L2 edges (source is not root and not direct child of root)
+      const isL2 = source.parentId !== null && source.parentId !== "jarvis-core";
+      const springLen = isL2 ? SPRING_LENGTH_L2 : SPRING_LENGTH;
+      const displacement = dist - springLen;
       const force = displacement * SPRING_STRENGTH;
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;

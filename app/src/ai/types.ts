@@ -64,11 +64,13 @@ export interface AISession {
   cleanupAbortedTools?(pendingCalls: CapabilityCall[]): void;
   /** Set a callback to provide ephemeral context injected as messages (not system prompt) */
   setContextInjector?(injector: () => InjectedContext[]): void;
+  /** Force context compaction (Engine B) regardless of token threshold */
+  forceCompact?(): AsyncGenerator<AIStreamEvent, void>;
 }
 
 export interface CreateWithPromptOptions {
   label: string;
-  /** Replaces the base system prompt (e.g. actor-system.md instead of jarvis-system.md) */
+  /** Replaces the base system prompt (e.g. custom system prompt instead of jarvis-system.md) */
   basePromptOverride?: string;
   /** Extra context appended inside <system-reminder> after instructions (e.g. role prompt) */
   roleContext?: string;

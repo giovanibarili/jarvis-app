@@ -57,7 +57,14 @@ function GenericRenderer({ state }: { state: any }) {
   )
 }
 
-const ACTOR_BASE = 'http://localhost:50052/plugins/actors'
+// Human-friendly labels for reactor status — shown below the JARVIS title
+const STATUS_LABELS: Record<string, string> = {
+  online:        'ONLINE',
+  processing:    'THINKING…',
+  waiting_tools: 'WORKING…',
+  loading:       'LOADING…',
+  offline:       'OFFLINE',
+}
 
 export function HudRenderer({ state }: { state: HudState }) {
   const coreComp = state.components.find(c => c.id === 'jarvis-core')
@@ -66,7 +73,6 @@ export function HudRenderer({ state }: { state: HudState }) {
   const chatInputComp = state.components.find(c => c.id === 'chat-input')
   const otherComps = state.components.filter(c => c.id !== 'jarvis-core' && c.id !== 'chat-output' && c.id !== 'chat-input' && c.id !== 'hud-core-node' && c.visible !== false)
 
-  const [openChats, setOpenChats] = useState<string[]>([])
   const [hiddenPanels, setHiddenPanels] = useState<Set<string>>(new Set())
   const [detachedPanels, setDetachedPanels] = useState<Set<string>>(new Set())
 
@@ -144,27 +150,6 @@ export function HudRenderer({ state }: { state: HudState }) {
     return () => window.removeEventListener('panel-reattach', handler)
   }, [])
 
-  // Listen for actor events from plugin renderer (CustomEvents)
-  useEffect(() => {
-    const openHandler = (e: Event) => {
-      const name = (e as CustomEvent).detail?.name
-      if (name) setOpenChats(prev => prev.includes(name) ? prev : [...prev, name])
-    }
-    const killHandler = (e: Event) => {
-      const name = (e as CustomEvent).detail?.name
-      if (name) {
-        fetch(`${ACTOR_BASE}/${name}/kill`, { method: 'POST' }).catch(() => {})
-        setOpenChats(prev => prev.filter(n => n !== name))
-      }
-    }
-    window.addEventListener('actor-open-chat', openHandler)
-    window.addEventListener('actor-kill', killHandler)
-    return () => {
-      window.removeEventListener('actor-open-chat', openHandler)
-      window.removeEventListener('actor-kill', killHandler)
-    }
-  }, [])
-
   const statusColor = state.reactor.status === 'online' ? '#4af'
     : state.reactor.status === 'processing' ? '#fa4'
     : state.reactor.status === 'waiting_tools' ? '#a6f'
@@ -186,7 +171,7 @@ export function HudRenderer({ state }: { state: HudState }) {
             <div className="coreNodeLabel" style={{ color: statusColor }}>
               <div style={{ fontSize: '14px', letterSpacing: '6px' }}>J A R V I S</div>
               <div style={{ fontSize: '8px', letterSpacing: '2px', marginTop: '4px', opacity: 0.7 }}>
-                {state.reactor.status.toUpperCase().replace('_', ' ')}
+                {STATUS_LABELS[state.reactor.status] ?? state.reactor.status.toUpperCase().replace('_', ' ')}
               </div>
             </div>
           </div>
@@ -293,43 +278,6 @@ export function HudRenderer({ state }: { state: HudState }) {
           return null
         })}
 
-        {/* Actor chat panels — opened via CustomEvent from plugin renderer */}
-        {openChats.map((name, i) => (
-          <DraggablePanel
-            key={`actor-chat-${name}`}
-            id={`ACTOR: ${name.toUpperCase()}`}
-            pieceId={`actor-chat-${name}`}
-            defaultX={200 + i * 30}
-            defaultY={100 + i * 30}
-            defaultWidth={500}
-            defaultHeight={350}
-            minWidth={300}
-            minHeight={200}
-            onClose={() => setOpenChats(prev => prev.filter(n => n !== name))}
-            persistLayout={false}
-          >
-            <ChatPanel
-              streamUrl={`${ACTOR_BASE}/${name}/stream`}
-              sendUrl={`${ACTOR_BASE}/${name}/send`}
-              abortUrl={`${ACTOR_BASE}/${name}/abort`}
-              historyUrl={`${ACTOR_BASE}/${name}/history`}
-              assistantLabel={name.toUpperCase()}
-              features={{ slashMenu: true, images: false, abort: true, compaction: false }}
-              userLabel={(source) => {
-                if (source === 'jarvis') return 'JARVIS'
-                if (source === 'grpc') return 'GRPC'
-                if (source?.startsWith('actor:')) return source.replace('actor:', '').toUpperCase()
-                return 'YOU'
-              }}
-              userLabelColor={(source) => {
-                if (source === 'jarvis') return '#4af'
-                if (source === 'grpc') return '#fa4'
-                if (source?.startsWith('actor:')) return '#f8a'
-                return 'var(--chat-user-label)'
-              }}
-            />
-          </DraggablePanel>
-        ))}
       </div>
     </div>
   )

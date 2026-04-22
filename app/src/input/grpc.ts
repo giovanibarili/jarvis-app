@@ -11,9 +11,10 @@ export class GrpcInputAdapter {
   }
 
   async processMessage(prompt: string, clientId: string, target?: string): Promise<string> {
-    // If target specified, route to actor session
+    // If target specified, use it as the session ID directly.
+    // Otherwise, derive from clientId or fall back to main.
     const sessionId = target
-      ? `actor-${target}`
+      ? target
       : clientId ? `grpc-${clientId}` : "main";
 
     return new Promise<string>((resolve, reject) => {

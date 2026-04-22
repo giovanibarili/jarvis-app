@@ -55,8 +55,26 @@ export class JarvisCore implements Piece {
   private globalState: "loading" | "online" | "processing" | "waiting_tools" = "loading";
   private sessionStates = new Map<string, "idle" | "processing" | "waiting_tools">();
   private pendingPrompts = new Map<string, AIRequestMessage[]>();
-  private pendingReplyTo = new Map<string, string>(); // sessionId → replyTo (actor source)
+  private pendingReplyTo = new Map<string, string>(); // sessionId → replyTo (caller session)
   private jarvisMdPath = join(process.cwd(), "jarvis.md");
+
+  /** Session ownership: JarvisCore only processes sessions it owns.
+   *  Default: "main" and "grpc-*". Plugins can register additional patterns. */
+  private ownedPatterns: Array<string | RegExp> = ["main", /^grpc-/];
+
+  /** Check if a session ID belongs to this core instance */
+  private isOwnedSession(sessionId: string): boolean {
+    return this.ownedPatterns.some(p =>
+      typeof p === "string" ? p === sessionId : p.test(sessionId)
+    );
+  }
+
+  /** Register an additional session pattern that JarvisCore should manage.
+   *  Accepts exact string or RegExp. */
+  registerSessionPattern(pattern: string | RegExp): void {
+    this.ownedPatterns.push(pattern);
+    log.info({ pattern: String(pattern) }, "JarvisCore: registered session pattern");
+  }
 
   systemContext(): string {
     // jarvis.md is now injected as the first message, not system prompt
@@ -82,8 +100,7 @@ export class JarvisCore implements Piece {
     this.bus = bus;
 
     this.bus.subscribe<AIRequestMessage>("ai.request", (msg) => {
-      // Only handle messages targeting "main" or "grpc-*" sessions (not actors)
-      if (msg.target === "main" || msg.target?.startsWith("grpc-")) {
+      if (msg.target && this.isOwnedSession(msg.target)) {
         return this.handlePrompt(msg);
       }
     });
@@ -194,9 +211,6 @@ export class JarvisCore implements Piece {
     const sessionId = msg.target!;
     const text = msg.text ?? "";
 
-    // Ignore actor sessions — actors handle their own prompts
-    if (sessionId.startsWith("actor-")) return;
-
     const managed = this.sessions.get(sessionId);
 
     if (managed.state !== "idle") {
@@ -211,7 +225,7 @@ export class JarvisCore implements Piece {
       return;
     }
 
-    // Track replyTo so we can route the response back to the calling actor
+    // Track replyTo so we can route the response back to the caller
     if (msg.replyTo) {
       this.pendingReplyTo.set(sessionId, msg.replyTo);
     } else {
@@ -427,11 +441,11 @@ export class JarvisCore implements Piece {
         usage: usage ?? { input_tokens: 0, output_tokens: 0 },
       });
 
-      // Route response back to the calling actor if replyTo is set
+      // Route response back to the calling session if replyTo is set
       const replyTo = this.pendingReplyTo.get(sessionId);
       if (replyTo && fullText) {
         this.pendingReplyTo.delete(sessionId);
-        log.info({ sessionId, replyTo, textLength: fullText.length }, "JarvisCore: routing response back to actor");
+        log.info({ sessionId, replyTo, textLength: fullText.length }, "JarvisCore: routing response to replyTo");
         this.bus.publish({
           channel: "ai.request",
           source: "jarvis-core",

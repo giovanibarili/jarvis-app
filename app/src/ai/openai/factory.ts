@@ -28,7 +28,7 @@ export class OpenAISessionFactory implements AISessionFactory {
     log.info({ model: config.model, baseURL: clientOptions?.baseURL ?? "default" }, "OpenAISessionFactory: initialized");
   }
 
-  /** Create a session with optional overrides (for actors) */
+  /** Create a session with custom system prompt overrides */
   createWithPrompt(options: CreateWithPromptOptions): AISession {
     const { label, basePromptOverride, roleContext } = options;
     const basePrompt = this.getSystemPrompt();

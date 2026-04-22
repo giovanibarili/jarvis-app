@@ -129,6 +129,57 @@ async function main() {
     },
   });
 
+  // /compact slash command — force context compaction (Engine B) on the main session
+  capabilityRegistry.registerSlashCommand({
+    name: "compact",
+    description: "Force context compaction — summarizes conversation to free tokens",
+    hint: "Compacts the current session context (Engine B)",
+    source: "system",
+    handler: async () => {
+      const managed = sessions.get("main");
+      if (!managed.session.forceCompact) {
+        return { message: "⚠️ Current provider does not support forced compaction." };
+      }
+      if (managed.state !== "idle") {
+        return { message: "⚠️ Session is busy — wait for it to finish before compacting." };
+      }
+
+      chatPiece.broadcastEvent({ type: "system", text: "⏳ Compacting context…" });
+
+      const stream = managed.session.forceCompact();
+      for await (const event of stream) {
+        if (event.type === "compaction" && event.compaction) {
+          // Publish compaction events to the bus so metrics and chat timeline update
+          bus.publish({
+            channel: "ai.stream",
+            source: "jarvis-core",
+            target: "main",
+            event: "compaction",
+            compaction: event.compaction,
+          } as any);
+
+          bus.publish({
+            channel: "system.event",
+            source: "jarvis-core",
+            event: "compaction",
+            data: {
+              sessionId: "main",
+              engine: event.compaction.engine,
+              tokensBefore: event.compaction.tokensBefore,
+              tokensAfter: event.compaction.tokensAfter,
+              summaryLength: event.compaction.summary.length,
+            },
+          });
+        }
+      }
+
+      // Save the compacted session
+      sessions.save("main");
+
+      return { message: "✅ Context compacted successfully." };
+    },
+  });
+
   // Core Node graph visualization
   pieces.push(new HudCoreNodePiece());
 
@@ -180,20 +231,46 @@ async function main() {
     // Broadcast to chat UI so it clears the timeline
     chatPiece.broadcastEvent({ type: "session_cleared" });
   });
+  server.setOnCompact(async () => {
+    const managed = sessions.get("main");
+    if (!managed.session.forceCompact) {
+      throw new Error("Current provider does not support forced compaction.");
+    }
+
+    chatPiece.broadcastEvent({ type: "system", text: "⏳ Compacting context…" });
+
+    const stream = managed.session.forceCompact();
+    for await (const event of stream) {
+      if (event.type === "compaction" && event.compaction) {
+        bus.publish({
+          channel: "ai.stream",
+          source: "jarvis-core",
+          target: "main",
+          event: "compaction",
+          compaction: event.compaction,
+        } as any);
+
+        bus.publish({
+          channel: "system.event",
+          source: "jarvis-core",
+          event: "compaction",
+          data: {
+            sessionId: "main",
+            engine: event.compaction.engine,
+            tokensBefore: event.compaction.tokensBefore,
+            tokensAfter: event.compaction.tokensAfter,
+            summaryLength: event.compaction.summary.length,
+          },
+        });
+      }
+    }
+
+    sessions.save("main");
+    chatPiece.broadcastEvent({ type: "system", text: "✅ Context compacted." });
+  });
   pluginManager.setHttpServer(server);
 
   await pieceManager.startAll();
-
-  // Wire message-injected skills to the main session's context injector.
-  // This must happen after pieceManager.startAll() so the skill-manager piece is running.
-  // The injector is called on every sendAndStream — skills with injection: "message"
-  // are added as conversation messages, preserving system prompt cache.
-  const mainManaged = sessions.get("main");
-  if (mainManaged.session.setContextInjector) {
-    mainManaged.session.setContextInjector(() =>
-      pluginManager.getMessageInjectedSkills("main")
-    );
-  }
 
   console.log("JARVIS starting...");
   console.log(`HUD  ${server.url}\n`);

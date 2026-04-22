@@ -8,6 +8,8 @@ import { GrpcInputAdapter } from "./grpc.js";
 import { config } from "../config/index.js";
 import { log } from "../logger/index.js";
 import { graphRegistry } from "../core/graph-registry.js";
+// NOTE: PieceManager is responsible for registering this piece as a core graph node.
+// This piece only updates its node meta (port, running state).
 
 export class GrpcPiece implements Piece {
   readonly id = "grpc";
@@ -83,12 +85,8 @@ Tools: grpc_start, grpc_stop, grpc_status.`;
       },
     });
 
-    graphRegistry.register({
-      id: this.id,
-      label: "gRPC",
-      status: this.server ? "running" : "stopped",
-      meta: { port: config.grpcPort },
-    });
+    // Enrich the graph node (registered by PieceManager) with meta
+    graphRegistry.update(this.id, { meta: { port: config.grpcPort } });
 
     log.info({ enabled: config.grpcEnabled, port: config.grpcPort }, "GrpcPiece: started");
   }
@@ -98,7 +96,7 @@ Tools: grpc_start, grpc_stop, grpc_status.`;
       this.server.stop();
       this.server = null;
     }
-    graphRegistry.unregister(this.id);
+    // NOTE: PieceManager handles graph unregistration
     this.bus.publish({
       channel: "hud.update",
       source: this.id,

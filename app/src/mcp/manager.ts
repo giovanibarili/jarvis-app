@@ -13,6 +13,8 @@ import type { Piece } from "../core/piece.js";
 import { log } from "../logger/index.js";
 import { JarvisOAuthProvider } from "./oauth.js";
 import { graphRegistry } from "../core/graph-registry.js";
+// NOTE: PieceManager is responsible for registering this piece as a core graph node.
+// This piece only enriches its node with children (MCP servers) and updates meta.
 
 interface McpServerConfig {
   type: "http" | "sse" | "stdio";
@@ -87,19 +89,15 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
       },
     });
 
-    // Register in graph
-    graphRegistry.register({
-      id: this.id,
-      label: "MCP",
-      status: "running",
-      meta: { servers: this.servers.size },
-      children: () => [...this.servers.values()].map(s => ({
-        id: `mcp-${s.name}`,
-        label: s.name,
-        status: s.status,
-        meta: { tools: s.toolNames.length },
-      })),
-    });
+    // Enrich the graph node (registered by PieceManager) with children and meta.
+    // Children are MCP server connections — resolved dynamically every render frame.
+    graphRegistry.update(this.id, { meta: { servers: this.servers.size } });
+    graphRegistry.setChildren(this.id, () => [...this.servers.values()].map(s => ({
+      id: `mcp-${s.name}`,
+      label: s.name,
+      status: s.status,
+      meta: { tools: s.toolNames.length },
+    })));
 
     log.info({ serverCount: this.servers.size }, "McpManager: started");
 
@@ -145,7 +143,8 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
       }
     }
     this.servers.clear();
-    graphRegistry.unregister(this.id);
+    // NOTE: PieceManager handles graph unregistration — we just clear children
+    graphRegistry.setChildren(this.id, undefined);
     this.bus.publish({
       channel: "hud.update",
       source: this.id,

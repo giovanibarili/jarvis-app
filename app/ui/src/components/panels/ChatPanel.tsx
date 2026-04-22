@@ -288,6 +288,11 @@ export function ChatPanel({
       textareaRef.current?.focus()
       return
     }
+    if (name === 'compact') {
+      fetch('/chat/compact', { method: 'POST' }).catch(() => {})
+      textareaRef.current?.focus()
+      return
+    }
 
     send(`use /${name}`)
   }, [images])

@@ -20,6 +20,23 @@ export interface PluginManifest {
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
+/** Child node for the HUD graph overlay. Plugins use this to show sub-items under their piece node. */
+export interface GraphNodeChild {
+  id: string;
+  label: string;
+  status: string;
+  meta?: Record<string, unknown>;
+  children?: () => GraphNodeChild[];
+}
+
+/** Scoped handle for a plugin piece to enrich its graph node with children and metadata. */
+export interface GraphHandle {
+  /** Set or clear a dynamic children callback. Called every render frame — keep it cheap. */
+  setChildren(children: (() => GraphNodeChild[]) | undefined): void;
+  /** Update status and/or metadata on the piece's graph node. */
+  update(patch: { status?: string; meta?: Record<string, unknown>; label?: string }): void;
+}
+
 export interface PluginContext {
   bus: EventBus;
   capabilityRegistry: CapabilityRegistry;
@@ -32,6 +49,8 @@ export interface PluginContext {
   saveConfig: (config: Record<string, unknown>) => void;
   registerSlashCommand: (cmd: import("./tools.js").SlashCommand) => void;
   unregisterSlashCommand: (name: string) => void;
+  /** Scoped graph handle for registering children on the piece's graph node (added in 0.3.0) */
+  graphHandle?: (pieceId: string) => GraphHandle;
 }
 
 export interface JarvisPlugin {
