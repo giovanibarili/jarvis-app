@@ -53,8 +53,14 @@ export interface SessionManager {
   /** Get or create a session with custom prompt (for actors). Registers the session if new. */
   getWithPrompt(sessionId: string, options: CreateWithPromptOptions): ManagedSession;
 
-  /** Update session state. Triggers auto-save when transitioning to idle. */
+  /** Update session state. Triggers auto-save when transitioning to idle (unless ephemeral). */
   setState(sessionId: string, state: SessionState): void;
+
+  /** Mark a session as ephemeral (never saved to disk) or persistent. */
+  setEphemeral(sessionId: string, ephemeral: boolean): void;
+
+  /** Check if a session is ephemeral. */
+  isEphemeral(sessionId: string): boolean;
 
   /** Get current session state. Returns 'idle' if session doesn't exist. */
   getState(sessionId: string): SessionState;
@@ -76,6 +82,9 @@ export interface SessionManager {
 
   /** Clear saved conversation for a session from disk. */
   clearSaved(sessionId: string): void;
+
+  /** List saved session labels from disk. Optionally filter by prefix (e.g. "actor-"). */
+  listSaved(prefix?: string): string[];
 
   /** Check if a session exists (without creating it). */
   has(sessionId: string): boolean;

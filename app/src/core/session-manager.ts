@@ -5,6 +5,7 @@ import {
   saveConversation,
   loadConversation,
   clearConversation,
+  listSavedSessions,
 } from "./conversation-store.js";
 import { config } from "../config/index.js";
 
@@ -29,6 +30,7 @@ export class SessionManager {
   private factory: AISessionFactory;
   private currentProvider: string = "anthropic";
   private autoSaveTimer?: ReturnType<typeof setInterval>;
+  private ephemeralSessions = new Set<string>();
   private static AUTO_SAVE_INTERVAL_MS = 30_000; // save every 30s
 
   /**
@@ -147,8 +149,8 @@ export class SessionManager {
       managed.state = state;
       log.debug({ sessionId, state }, "SessionManager: state changed");
 
-      // Save after each complete turn (when going back to idle)
-      if (state === "idle") {
+      // Save after each complete turn (when going back to idle) — skip ephemeral sessions
+      if (state === "idle" && !this.ephemeralSessions.has(sessionId)) {
         this.save(sessionId);
       }
     }
@@ -168,8 +170,25 @@ export class SessionManager {
     }
   }
 
-  /** Save a single session's conversation to disk */
+  /** Mark a session as ephemeral (never saved to disk) or persistent. */
+  setEphemeral(sessionId: string, ephemeral: boolean): void {
+    if (ephemeral) {
+      this.ephemeralSessions.add(sessionId);
+      log.info({ sessionId }, "SessionManager: marked ephemeral");
+    } else {
+      this.ephemeralSessions.delete(sessionId);
+      log.info({ sessionId }, "SessionManager: marked persistent");
+    }
+  }
+
+  /** Check if a session is ephemeral. */
+  isEphemeral(sessionId: string): boolean {
+    return this.ephemeralSessions.has(sessionId);
+  }
+
+  /** Save a single session's conversation to disk (skips ephemeral sessions) */
   save(sessionId: string): void {
+    if (this.ephemeralSessions.has(sessionId)) return;
     const managed = this.sessions.get(sessionId);
     if (managed) {
       saveConversation(
@@ -191,11 +210,12 @@ export class SessionManager {
   close(sessionId: string): void {
     const managed = this.sessions.get(sessionId);
     if (managed) {
-      // Save before closing
+      // Save before closing (save() already skips ephemeral)
       this.save(sessionId);
       managed.session.close();
       this.sessions.delete(sessionId);
       this.creationOptions.delete(sessionId);
+      this.ephemeralSessions.delete(sessionId);
       log.info({ sessionId }, "SessionManager: closed");
     }
   }
@@ -222,6 +242,31 @@ export class SessionManager {
       }
     }
     this.creationOptions.clear();
+    this.ephemeralSessions.clear();
+  }
+
+  /** List saved session labels from disk (e.g. ["main", "actor-alice", "actor-bob"]) */
+  listSaved(prefix?: string): string[] {
+    const all = listSavedSessions();
+    return prefix ? all.filter(id => id.startsWith(prefix)) : all;
+  }
+
+  /** Archive a session: save to archive dir, then delete the live session file */
+  archiveSaved(sessionId: string): void {
+    // clearConversation already deletes the file — we just need to archive first
+    // Re-use the conversation-store archive logic
+    const saved = loadConversation(sessionId, this.currentProvider);
+    if (saved) {
+      // Import archive helper
+      const { archiveConversation } = require("./conversation-store.js");
+      if (typeof archiveConversation === "function") {
+        archiveConversation(sessionId);
+      } else {
+        // Fallback: just delete
+        clearConversation(sessionId);
+      }
+    }
+    log.info({ sessionId }, "SessionManager: archived");
   }
 
   get size(): number {

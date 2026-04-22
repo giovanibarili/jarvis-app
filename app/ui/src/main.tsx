@@ -7,6 +7,10 @@ import './hud.css'
 // Expose React for plugin renderers (they use window.__JARVIS_REACT to share the same instance)
 ;(window as any).__JARVIS_REACT = React
 
+// Expose core UI components for plugin reuse (e.g. actor chat uses ChatPanel)
+import { ChatPanel } from './components/panels/ChatPanel'
+;(window as any).__JARVIS_COMPONENTS = { ChatPanel }
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

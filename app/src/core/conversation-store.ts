@@ -110,6 +110,18 @@ export function clearConversation(sessionLabel: string): void {
   }
 }
 
+/** List all saved session labels from disk */
+export function listSavedSessions(): string[] {
+  try {
+    if (!existsSync(SESSIONS_DIR)) return [];
+    return readdirSync(SESSIONS_DIR)
+      .filter(f => f.endsWith(".json"))
+      .map(f => f.replace(/\.json$/, ""));
+  } catch {
+    return [];
+  }
+}
+
 // --- Startup Prompt ---
 // A one-shot message file that JARVIS reads on boot and sends as first ai.request.
 // Written by jarvis_reset or manually. Deleted after reading.

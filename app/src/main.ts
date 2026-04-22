@@ -281,8 +281,10 @@ async function main() {
   process.on("SIGINT", async () => {
     log.info("Shutting down...");
     sessions.stopAutoSave();
-    sessions.saveAll();
+    // Stop pieces FIRST — actor-runner cleans up ephemeral sessions before we save
     await pieceManager.stopAll();
+    // Now save remaining sessions (ephemeral ones already cleaned by actor-runner)
+    sessions.saveAll();
     const activeProvider = providerRouter.getActiveProvider();
     if (activeProvider) await activeProvider.metricsPiece.stop();
     server.stop();
