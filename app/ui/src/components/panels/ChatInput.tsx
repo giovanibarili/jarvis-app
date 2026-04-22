@@ -73,6 +73,11 @@ export function ChatInput() {
       textareaRef.current?.focus()
       return
     }
+    if (name === 'compact') {
+      fetch('/chat/compact', { method: 'POST' }).catch(() => {})
+      textareaRef.current?.focus()
+      return
+    }
 
     // Regular capabilities — send as "use /capability_name" for JARVIS to interpret
     send(`use /${name}`)

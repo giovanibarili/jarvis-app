@@ -1,9 +1,21 @@
 // src/core/piece-manager.ts
+//
+// PieceManager owns the lifecycle of all pieces AND their core graph node registration.
+//
+// Responsibility boundary:
+//   - PieceManager registers/unregisters every piece as a node in graphRegistry (core nodes).
+//   - PieceManager updates node status on enable/disable transitions.
+//   - Pieces do NOT register/unregister themselves in graphRegistry.
+//   - Pieces MAY enrich their node with children (via graphRegistry.setChildren)
+//     or meta (via graphRegistry.update) — this is their domain-specific data.
+//   - hud-core-node reads graphRegistry.getTree() and pushes it to the HUD.
+//
 import type { EventBus } from "./bus.js";
 import type { Piece } from "./piece.js";
 import type { HudUpdateMessage } from "./types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import { load, save, getPieceSettings, setPieceSettings, isProtected, type Settings } from "./settings.js";
+import { graphRegistry } from "./graph-registry.js";
 import { log } from "../logger/index.js";
 
 export class PieceManager {
@@ -41,8 +53,11 @@ export class PieceManager {
       const ps = getPieceSettings(this.settings, piece.id);
       if (!ps.enabled) {
         log.info({ pieceId: piece.id }, "PieceManager: skipped (disabled in settings)");
+        this.registerGraphNode(piece.id, piece.name, "disabled");
         continue;
       }
+      // Register in graph BEFORE start() so pieces can enrich with children/meta during start()
+      this.registerGraphNode(piece.id, piece.name, "running");
       await piece.start(this.bus);
       this.running.add(piece.id);
 
@@ -72,8 +87,10 @@ export class PieceManager {
     await piece.start(this.bus);
     this.running.add(pieceId);
 
-    this.settings = setPieceSettings(this.settings, pieceId, { enabled: true });
+    // Persist enabled + visible (re-enabling a piece should make it visible again)
+    this.settings = setPieceSettings(this.settings, pieceId, { enabled: true, visible: true });
     save(this.settings);
+    graphRegistry.update(pieceId, { status: "running" });
 
     log.info({ pieceId }, "PieceManager: enabled");
     return { ok: true };
@@ -90,6 +107,7 @@ export class PieceManager {
 
     this.settings = setPieceSettings(this.settings, pieceId, { enabled: false });
     save(this.settings);
+    graphRegistry.update(pieceId, { status: "disabled" });
 
     log.info({ pieceId }, "PieceManager: disabled");
     return { ok: true };
@@ -104,6 +122,8 @@ export class PieceManager {
 
     // If PieceManager already started, start this piece immediately
     if (this.running.size > 0) {
+      // Register in graph BEFORE start() so pieces can enrich with children/meta during start()
+      this.registerGraphNode(piece.id, piece.name, "running");
       await piece.start(this.bus);
       this.running.add(piece.id);
     }
@@ -136,6 +156,7 @@ export class PieceManager {
     }
 
     this.pieces.delete(pieceId);
+    graphRegistry.unregister(pieceId);
     // Don't delete settings — preserves layout for re-enable
 
     log.info({ pieceId }, "PieceManager: unregistered dynamic piece");
@@ -190,6 +211,12 @@ export class PieceManager {
 
     log.info({ pieceId, x, y, width, height }, "PieceManager: layout updated");
     return { ok: true };
+  }
+
+  /** Register a piece as a node in the core graph (unconditional — for disabled pieces). */
+  private registerGraphNode(pieceId: string, label: string, status: string): void {
+    if (pieceId === "jarvis-core") return; // root node is always present
+    graphRegistry.register({ id: pieceId, label, status });
   }
 
   private setVisible(pieceId: string, visible: boolean): void {

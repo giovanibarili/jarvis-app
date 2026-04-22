@@ -110,7 +110,7 @@ export class CapabilityRegistry {
       else if (["web_fetch", "web_search"].includes(name)) category = "web";
       else if (["model_set", "model_get"].includes(name)) category = "model";
       else if (["piece_list", "piece_enable", "piece_disable", "hud_show", "hud_hide", "hud_layout", "hud_show_diff", "hud_show_file", "hud_compare_files", "hud_screenshot"].includes(name)) category = "hud";
-      else if (["actor_dispatch", "actor_list", "actor_kill", "bus_publish"].includes(name)) category = "actors";
+      else if (["bus_publish"].includes(name)) category = "bus";
       else if (["cron_create", "cron_list", "cron_delete"].includes(name)) category = "cron";
       else if (["plugin_install", "plugin_list", "plugin_update", "plugin_enable", "plugin_disable", "plugin_remove"].includes(name)) category = "plugins";
       else if (["grpc_start", "grpc_stop", "grpc_status"].includes(name)) category = "grpc";

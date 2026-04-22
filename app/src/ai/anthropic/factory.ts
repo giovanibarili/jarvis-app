@@ -38,13 +38,13 @@ export class AnthropicSessionFactory implements AISessionFactory {
   }
 
   /**
-   * Build system blocks for actor sessions.
+   * Build system blocks for sessions with custom prompt overrides.
    * Same structure as main (buildSystemBlocks), but with:
    * - basePromptOverride wrapped in <IMPORTANT> after jarvis-system.md
    * - roleContext appended inside <system-reminder> after CLAUDE.md instructions
    * Consolidates into max 2 system blocks (BP2 + BP3) to stay within Anthropic's 4 cache_control limit.
    */
-  private buildActorSystemBlocks(basePromptOverride?: string, roleContext?: string, sessionId?: string): TextBlockParam[] {
+  private buildCustomSystemBlocks(basePromptOverride?: string, roleContext?: string, sessionId?: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
     // Block 0: base prompt + identity override + core contexts + instructions + plugin instructions + role
@@ -91,11 +91,11 @@ export class AnthropicSessionFactory implements AISessionFactory {
     return blocks;
   }
 
-  /** Create a session with optional overrides (for actors — with prompt caching) */
+  /** Create a session with custom system prompt overrides and prompt caching */
   createWithPrompt(options: CreateWithPromptOptions): AISession {
     const { label, basePromptOverride, roleContext } = options;
-    const blockBuilder = () => this.buildActorSystemBlocks(basePromptOverride, roleContext, label);
-    log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext }, "AnthropicSessionFactory: creating actor session with cache");
+    const blockBuilder = () => this.buildCustomSystemBlocks(basePromptOverride, roleContext, label);
+    log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext }, "AnthropicSessionFactory: creating custom session with cache");
     return new AnthropicSession({
       client: this.client,
       model: () => config.model,
@@ -149,7 +149,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
       cache_control: { type: "ephemeral" },
     });
 
-    // Block 1 (BP2): plugin dynamic context — changes every turn (active skills, actor state)
+    // Block 1 (BP2): plugin dynamic context — changes every turn (per-session state)
     const pluginContexts = this.getPluginContext(sessionId).filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({

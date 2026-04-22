@@ -6,7 +6,10 @@ import type { EventBus } from "./bus.js";
 import type { Piece } from "./piece.js";
 import type { AIRequestMessage, HudUpdateMessage } from "./types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
+import { graphRegistry } from "./graph-registry.js";
 import { log } from "../logger/index.js";
+// NOTE: PieceManager is responsible for registering this piece as a core graph node.
+// This piece enriches its node with children (active cron jobs) and meta.
 
 interface CronJob {
   id: string;
@@ -90,6 +93,14 @@ export class CronPiece implements Piece {
       },
     } as any);
 
+    // Enrich graph node with children (active jobs) — resolved dynamically every render frame
+    graphRegistry.setChildren(this.id, () => [...this.jobs.values()].map(j => ({
+      id: `cron-${j.id}`,
+      label: j.id,
+      status: j.recurring ? "running" : "waiting",
+      meta: { prompt: j.prompt.slice(0, 40), runs: j.runs },
+    })));
+
     log.info("CronPiece: started");
   }
 
@@ -99,6 +110,8 @@ export class CronPiece implements Piece {
       if (job.timeout) clearTimeout(job.timeout);
     }
     this.jobs.clear();
+    // NOTE: PieceManager handles graph unregistration — we just clear children
+    graphRegistry.setChildren(this.id, undefined);
     this.bus.publish({
       channel: "hud.update",
       source: this.id,
@@ -143,13 +156,13 @@ export class CronPiece implements Piece {
   private registerTools(): void {
     this.registry.register({
       name: "cron_create",
-      description: "Schedule a prompt to run on a timer. Use cron expressions like '*/5 * * * *' (every 5 min) or 'once:30s' (one-shot in 30 seconds), 'once:5m' (one-shot in 5 minutes). Use target to send to a specific actor (e.g. 'actor-alice').",
+      description: "Schedule a prompt to run on a timer. Use cron expressions like '*/5 * * * *' (every 5 min) or 'once:30s' (one-shot in 30 seconds), 'once:5m' (one-shot in 5 minutes). Use target to send to a specific session ID.",
       input_schema: {
         type: "object",
         properties: {
           cron: { type: "string", description: "Schedule: '*/N * * * *' for every N minutes, 'once:Ns' or 'once:Nm' for one-shot" },
           prompt: { type: "string", description: "The prompt to execute at each trigger" },
-          target: { type: "string", description: "Target session: 'main' (default, JARVIS processes) or 'actor-{name}' (actor processes directly)" },
+          target: { type: "string", description: "Target session ID (default: 'main')" },
           recurring: { type: "boolean", description: "true for recurring (default), false for one-shot" },
         },
         required: ["cron", "prompt"],

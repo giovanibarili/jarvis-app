@@ -18,7 +18,7 @@ interface ManagedSession {
 }
 
 /**
- * Tracks how a session was created so getWithPrompt can restore actors properly.
+ * Tracks how a session was created so getWithPrompt can restore properly.
  */
 interface SessionCreationOptions {
   promptOptions?: CreateWithPromptOptions;
@@ -33,7 +33,7 @@ export class SessionManager {
 
   /**
    * Tracks creation options per session so we can restore with the right prompt.
-   * Only set for sessions created via getWithPrompt (actors).
+   * Only set for sessions created via getWithPrompt.
    */
   private creationOptions = new Map<string, SessionCreationOptions>();
 
@@ -68,8 +68,8 @@ export class SessionManager {
 
   /**
    * Get or create a session.
-   * For main/grpc-* sessions: auto-creates with factory.create() and restores saved conversation.
-   * For actor-* sessions: returns existing session or creates a basic one (prefer getWithPrompt for actors).
+   * Auto-creates with factory.create() and restores saved conversation.
+   * For sessions with custom prompts, prefer getWithPrompt().
    */
   get(sessionId: string): ManagedSession {
     let managed = this.sessions.get(sessionId);
@@ -78,7 +78,7 @@ export class SessionManager {
       const saved = loadConversation(sessionId, this.currentProvider);
       const restoreMessages = saved && saved.messages.length > 0 ? saved.messages : undefined;
 
-      // If this is an actor session with saved creation options, restore with prompt
+      // If session has saved creation options, restore with custom prompt
       const opts = this.creationOptions.get(sessionId);
       let session: AISession;
       if (opts?.promptOptions) {
@@ -107,7 +107,7 @@ export class SessionManager {
   }
 
   /**
-   * Get or create a session with custom prompt options (for actors).
+   * Get or create a session with custom prompt options.
    * If the session already exists, returns it (prompt options are ignored — they're set at creation).
    * If new, creates with createWithPrompt and optionally restores saved conversation.
    */
@@ -127,7 +127,7 @@ export class SessionManager {
       session.setMessages?.(saved.messages);
       log.info(
         { sessionId, restored: saved.messageCount, savedAt: saved.savedAt },
-        "SessionManager: actor conversation restored",
+        "SessionManager: custom session conversation restored",
       );
     }
 
@@ -137,7 +137,7 @@ export class SessionManager {
       createdAt: Date.now(),
     };
     this.sessions.set(sessionId, managed);
-    log.info({ sessionId, hasRestore: !!(saved && saved.messages.length > 0) }, "SessionManager: created actor session with prompt");
+    log.info({ sessionId, hasRestore: !!(saved && saved.messages.length > 0) }, "SessionManager: created session with custom prompt");
     return managed;
   }
 

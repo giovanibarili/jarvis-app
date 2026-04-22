@@ -161,6 +161,22 @@ export class AnthropicSession implements AISession {
     };
   }
 
+  /**
+   * Force compaction (Engine B) regardless of token threshold.
+   * Called by the /compact slash command. Skips threshold checks and
+   * consecutive fallback guards — always runs if there are messages to compact.
+   */
+  async *forceCompact(): AsyncGenerator<AIStreamEvent, void> {
+    if (this.messages.length === 0) return;
+
+    const ctx = this.measureContext();
+    const tokensBefore = ctx.totalTokensEst;
+
+    log.info({ label: this.label, tokensBefore, messageCount: ctx.messageCount }, "AnthropicSession: forced compaction requested");
+
+    yield* this.doCompact(tokensBefore);
+  }
+
   private async *fallbackCompact(lastInputTokens: number): AsyncGenerator<AIStreamEvent, void> {
     const settings = getCompactionSettings(loadSettings());
     if (!settings.enabled) return;
@@ -188,19 +204,33 @@ export class AnthropicSession implements AISession {
     }
 
     this.consecutiveFallbacks++;
-    const tokensBefore = lastInputTokens;
 
-    log.info({ label: this.label, tokensBefore, threshold: safetyThreshold }, "AnthropicSession: Engine B fallback compaction triggered");
+    log.info({ label: this.label, tokensBefore: lastInputTokens, threshold: safetyThreshold }, "AnthropicSession: Engine B fallback compaction triggered");
 
+    yield* this.doCompact(lastInputTokens);
+  }
+
+  /**
+   * Core compaction logic shared by both fallbackCompact and forceCompact.
+   * Sends messages to a summarizer, replaces history with the summary.
+   */
+  private async *doCompact(tokensBefore: number): AsyncGenerator<AIStreamEvent, void> {
+    const settings = getCompactionSettings(loadSettings());
     const instructions = settings.instructions ||
       "Summarize this conversation preserving key decisions, code, and progress.";
 
     try {
+      // Ensure messages end with a user message (API requirement)
+      const msgs = [...this.messages];
+      if (msgs.length > 0 && msgs[msgs.length - 1].role === "assistant") {
+        msgs.push({ role: "user", content: "Please summarize the conversation above." });
+      }
+
       const summaryResponse = await this.client.messages.create({
         model: this.getModel(),
         max_tokens: 4096,
         system: `You are a conversation summarizer. ${instructions}\nWrap your summary in <summary></summary> tags.`,
-        messages: this.messages,
+        messages: msgs,
       });
 
       const summaryText = summaryResponse.content
@@ -233,7 +263,7 @@ export class AnthropicSession implements AISession {
         },
       };
     } catch (err) {
-      log.error({ label: this.label, err }, "AnthropicSession: Engine B fallback compaction failed");
+      log.error({ label: this.label, err }, "AnthropicSession: Engine B compaction failed");
     }
   }
 

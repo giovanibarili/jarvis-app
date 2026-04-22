@@ -58,7 +58,7 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
     if (!ctx) return
 
     const w = c.width, h = c.height
-    const cx = w / 2, cy = h / 2 - 65
+    const cx = w / 2, cy = 90
     ctx.clearRect(0, 0, w, h)
 
     const outerR = 70
