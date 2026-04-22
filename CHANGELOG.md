@@ -5,6 +5,12 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-04-22
+
+### Fixed
+
+- ESC key now correctly aborts only the focused chat session. The global `keydown` handler in `App.tsx` was always calling `/chat/abort` (main session), even when an actor chat panel was open — silently killing the main session mid-stream. `ChatPanel` already handles ESC per-panel via `abortUrl`, so the global handler was redundant and destructive.
+
 ## [0.1.0] - 2026-04-22
 
 First stable release of JARVIS.

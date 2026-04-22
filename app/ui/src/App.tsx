@@ -52,15 +52,7 @@ export function App() {
 
   const detachedPanelId = getDetachedPanelId()
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        fetch('/chat/abort', { method: 'POST' }).catch(() => {})
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+
 
   if (detachedPanelId) {
     return <DetachedPanelRenderer state={state} panelId={detachedPanelId} />
