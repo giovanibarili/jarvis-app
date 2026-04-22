@@ -1,6 +1,7 @@
 // src/core/jarvis.ts
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { EventBus } from "./bus.js";
 import type { SessionManager } from "./session-manager.js";
 import { consumeStartupPrompt } from "./conversation-store.js";
@@ -56,7 +57,7 @@ export class JarvisCore implements Piece {
   private sessionStates = new Map<string, "idle" | "processing" | "waiting_tools">();
   private pendingPrompts = new Map<string, AIRequestMessage[]>();
   private pendingReplyTo = new Map<string, string>(); // sessionId → replyTo (caller session)
-  private jarvisMdPath = join(process.cwd(), "jarvis.md");
+  private jarvisMdPath = join(homedir(), ".jarvis", "jarvis.md");
 
   /** Session ownership: JarvisCore only processes sessions it owns.
    *  Default: "main" and "grpc-*". Plugins can register additional patterns. */
