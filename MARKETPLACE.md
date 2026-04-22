@@ -50,6 +50,16 @@ Persistent semantic memory powered by MemPalace + ChromaDB. Memories are organiz
 
 **Requires:** ChromaDB running locally (default port 8000) — [chromadb.dev](https://www.trychroma.com/)
 
+### Task Manager
+
+In-memory task management with progress tracking. Track multi-step work with dependencies, priorities, and automatic blocker resolution — all visible in a live HUD panel with tree view, progress bar, and filter chips. Tasks are per-session owned but globally visible, so actors and the main session share the same board. Completing a blocker auto-unblocks dependents. System context injection keeps the AI aware of progress every turn.
+
+**Repo:** [github.com/giovanibarili/jarvis-plugin-tasks](https://github.com/giovanibarili/jarvis-plugin-tasks)
+
+**Provides:** TaskManagerPiece (capabilities/state/HUD/system context), TaskRenderer (HUD panel), 6 tools (task_create, task_update, task_list, task_get, task_delete, task_clear)
+
+**Requires:** Nothing — fully standalone, in-memory
+
 ### Canvas
 
 Visual canvas with two tab types: Mermaid diagrams and freehand drawing. The AI can create diagrams programmatically (flowchart, sequence, class, state, ER, gantt, pie, etc.) and draw SVG elements. The user can freehand draw with perfect-freehand strokes, add text labels, erase, pan/zoom on an infinite canvas, and send drawings back to the AI as PNG images for visual collaboration. Dark theme, tab-based UI.

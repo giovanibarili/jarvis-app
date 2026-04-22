@@ -95,10 +95,21 @@ const DEFAULT_COMPACTION: CompactionSettings = {
   pauseAfterCompaction: true,
 };
 
+function mergeSections<T>(
+  base: Record<string, T> | undefined,
+  override: Record<string, T> | undefined,
+): Record<string, T> {
+  const result = { ...base } as Record<string, T>;
+  for (const [key, val] of Object.entries(override ?? {})) {
+    result[key] = { ...result[key] as any, ...val as any } as T;
+  }
+  return result;
+}
+
 function deepMerge(base: Settings, override: Settings): Settings {
   return {
-    pieces: { ...base.pieces, ...override.pieces },
-    plugins: { ...base.plugins, ...override.plugins },
+    pieces: mergeSections(base.pieces, override.pieces),
+    plugins: mergeSections(base.plugins, override.plugins),
     providers: { ...base.providers, ...override.providers },
     model: override.model ?? base.model,
     compaction: override.compaction
@@ -153,6 +164,41 @@ export function save(settings: Settings): void {
     log.debug({ path: USER_PATH }, "Settings: saved (user)");
   } catch (err) {
     log.error({ err }, "Settings: failed to save");
+  }
+}
+
+/**
+ * Remove a key from a specific section in BOTH settings files (default + user).
+ * Use for destructive operations like plugin_remove that must not survive a merge.
+ */
+export function removeKey(section: "plugins" | "pieces", key: string): void {
+  try {
+    // Remove from default file
+    if (existsSync(DEFAULT_PATH)) {
+      const defaults = loadFile(DEFAULT_PATH);
+      const sectionObj = defaults[section] as Record<string, unknown> | undefined;
+      if (sectionObj && key in sectionObj) {
+        delete sectionObj[key];
+        writeFileSync(DEFAULT_PATH, JSON.stringify(defaults, null, 2) + "\n");
+        log.debug({ path: DEFAULT_PATH, section, key }, "Settings: removed key from defaults");
+      }
+    }
+
+    // Remove from user file
+    if (existsSync(USER_PATH)) {
+      const user = loadFile(USER_PATH);
+      const sectionObj = user[section] as Record<string, unknown> | undefined;
+      if (sectionObj && key in sectionObj) {
+        delete sectionObj[key];
+        writeFileSync(USER_PATH, JSON.stringify(user, null, 2) + "\n");
+        log.debug({ path: USER_PATH, section, key }, "Settings: removed key from user");
+      }
+    }
+
+    // Invalidate cache so next load() re-reads from disk
+    cache = null;
+  } catch (err) {
+    log.error({ err, section, key }, "Settings: failed to remove key");
   }
 }
 

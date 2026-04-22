@@ -19,7 +19,7 @@ import type { SessionManager } from "./session-manager.js";
 interface HttpServerLike {
   registerRoute(method: string, path: string, handler: (req: any, res: any) => void): void;
 }
-import { load as loadSettings, save as saveSettings, type PluginSettings } from "./settings.js";
+import { load as loadSettings, save as saveSettings, removeKey, type PluginSettings } from "./settings.js";
 import { graphRegistry } from "./graph-registry.js";
 import { log } from "../logger/index.js";
 
@@ -123,10 +123,40 @@ export class PluginManager implements Piece {
 
     if (!existsSync(PLUGINS_DIR)) mkdirSync(PLUGINS_DIR, { recursive: true });
 
-    // Load enabled plugins from settings
+    // Load enabled plugins from settings — auto-clone if repo not present
     const settings = loadSettings();
     for (const [name, ps] of Object.entries(settings.plugins ?? {})) {
-      if (ps.enabled) await this.loadPlugin(name, ps);
+      if (!ps.enabled) continue;
+
+      // Resolve path: use explicit path or default to ~/.jarvis/plugins/<name>
+      if (!ps.path) ps.path = join(PLUGINS_DIR, name);
+
+      // Auto-clone if the plugin directory doesn't exist but we have a repo URL
+      if (!existsSync(ps.path) && ps.repo) {
+        const repoUrl = ps.repo.startsWith("http") ? ps.repo : `https://${ps.repo}`;
+        try {
+          log.info({ name, repo: repoUrl, dir: ps.path }, "PluginManager: auto-cloning missing plugin");
+          execSync(`git clone ${repoUrl} ${ps.path}`, { timeout: 60000 });
+        } catch (err) {
+          log.error({ name, err: String(err) }, "PluginManager: auto-clone failed (git)");
+          continue;
+        }
+
+        // Run npm install if package.json exists — non-fatal if it fails
+        const pkgPath = join(ps.path, "package.json");
+        if (existsSync(pkgPath)) {
+          try {
+            const npmrcPath = join(ps.path, ".npmrc");
+            const npmrcFlag = existsSync(npmrcPath) ? ` --userconfig "${npmrcPath}"` : "";
+            log.info({ name }, "PluginManager: running npm install after clone");
+            execSync(`npm install --registry https://registry.npmjs.org${npmrcFlag}`, { cwd: ps.path, timeout: 60000 });
+          } catch (err) {
+            log.warn({ name, err: String(err) }, "PluginManager: npm install failed (non-fatal, plugin may still work)");
+          }
+        }
+      }
+
+      await this.loadPlugin(name, ps);
     }
 
     this.registerTools();
@@ -396,10 +426,11 @@ export class PluginManager implements Piece {
   }
 
   private async remove(name: string): Promise<{ ok: boolean; error?: string }> {
-    // Stop plugin pieces first
+    // Stop plugin pieces and collect their IDs for settings cleanup
     const loaded = this.plugins.get(name);
+    const pieceIds: string[] = loaded ? [...loaded.pieces] : [];
     if (loaded && this.pieceManager) {
-      for (const pieceId of loaded.pieces) {
+      for (const pieceId of pieceIds) {
         await this.pieceManager.unregisterDynamic(pieceId);
       }
     }
@@ -407,15 +438,19 @@ export class PluginManager implements Piece {
     const settings = loadSettings();
     const ps = settings.plugins?.[name];
 
+    // Delete the plugin directory
     const dir = loaded?.settings.path ?? ps?.path;
     if (dir && existsSync(dir)) {
       rmSync(dir, { recursive: true, force: true });
     }
 
+    // Remove from in-memory map
     this.plugins.delete(name);
-    if (settings.plugins) {
-      delete settings.plugins[name];
-      saveSettings(settings);
+
+    // Remove plugin + its pieces from BOTH settings files
+    removeKey("plugins", name);
+    for (const pieceId of pieceIds) {
+      removeKey("pieces", pieceId);
     }
 
     this.updateHud();

@@ -40,7 +40,14 @@
   "plugins": {
     "jarvis-plugin-skills": {
       "repo": "github.com/giovanibarili/jarvis-plugin-skills",
-      "path": "/Users/giovani.barili/.jarvis/plugins/jarvis-plugin-skills",
+      "enabled": true
+    },
+    "jarvis-plugin-actors": {
+      "repo": "github.com/giovanibarili/jarvis-plugin-actors",
+      "enabled": true
+    },
+    "jarvis-plugin-tasks": {
+      "repo": "github.com/giovanibarili/jarvis-plugin-tasks",
       "enabled": true
     }
   },

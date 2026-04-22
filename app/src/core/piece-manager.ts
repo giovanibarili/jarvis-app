@@ -128,17 +128,21 @@ export class PieceManager {
       this.running.add(piece.id);
     }
 
-    // Create default settings entry — reload from disk to avoid overwriting other changes
+    // Ensure settings entry has enabled/visible — reload from disk to avoid overwriting other changes
     this.settings = load();
-    const existing = getPieceSettings(this.settings, piece.id);
-    // Only set defaults if piece has no settings yet — preserve visible state
-    if (!this.settings.pieces[piece.id]) {
-      this.settings = setPieceSettings(this.settings, piece.id, { enabled: true, visible: true });
+    const existing = this.settings.pieces[piece.id];
+    // Set defaults if piece has no settings or is missing enabled/visible (e.g. only has config.layout)
+    if (!existing || existing.enabled === undefined || existing.visible === undefined) {
+      this.settings = setPieceSettings(this.settings, piece.id, {
+        enabled: existing?.enabled ?? true,
+        visible: existing?.visible ?? true,
+      });
       save(this.settings);
     }
 
-    // Apply saved visibility
-    if (!existing.visible) {
+    // Apply saved visibility — re-read after potential save above
+    const finalSettings = getPieceSettings(this.settings, piece.id);
+    if (!finalSettings.visible) {
       this.setVisible(piece.id, false);
     }
 
