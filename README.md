@@ -1,5 +1,7 @@
 # J.A.R.V.I.S.
 
+![JARVIS HUD](docs/assets/screenshot.png)
+
 An open AI assistant you fully own and evolve. Built on a plugin architecture where every capability — voice, tools, HUD panels — is a composable piece you can swap, extend, or replace.
 
 The goal is freedom: freedom to shape your AI interface exactly how you want it, with full access to every layer — from the system prompt re-evaluated on every API call, to the capabilities the AI can use, to the pixels on the HUD. No black boxes, no locked-down behaviors. You build the assistant you actually need.
