@@ -4,6 +4,76 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-04-23
+
+### Breaking Changes — Unified Chat Refactor
+
+Chat is now **session-agnostic**: a single unified chat system services any number of sessions (`main`, `actor-*`, or arbitrary labels). The root `jarvis-app` knows nothing about the concept of "actor" — it operates on opaque `sessionId` strings.
+
+#### HTTP API — sessionId is now required
+
+All `/chat/*` endpoints require a `sessionId`. Missing or empty → `HTTP 400`.
+
+| Endpoint | Method | Required shape |
+|----------|--------|----------------|
+| `/chat/send` | POST | body: `{ sessionId, prompt, images? }` |
+| `/chat-stream` | GET | query: `?sessionId=X` |
+| `/chat/history` | GET | query: `?sessionId=X` |
+| `/chat/abort` | POST | body: `{ sessionId }` |
+| `/chat/clear-session` | POST | body: `{ sessionId }` |
+| `/chat/compact` | POST | body: `{ sessionId }` |
+
+Removed: `POST /chat` (legacy SSE streaming endpoint).
+
+#### HudPieceData renderer — core renderer opt-in
+
+`renderer.plugin` now accepts `null` to resolve a core renderer from `window.__JARVIS_COMPONENTS`:
+
+```ts
+{ plugin: null, file: "ChatPanel" }  // core ChatPanelHudAdapter
+{ plugin: "jarvis-plugin-x", file: "MyRenderer" }  // plugin renderer (unchanged)
+```
+
+#### ChatPanel — props changed
+
+Old: `streamUrl`, `sendUrl`, `abortUrl`, `historyUrl`, `assistantLabel`.
+
+New: `sessionId` (required) + `assistantLabel` + optional features/labels. All URLs are derived internally from `sessionId`. A core `ChatPanelHudAdapter` is exposed on `window.__JARVIS_COMPONENTS.ChatPanelHudAdapter` so HUD pieces can mount it via `renderer: { plugin: null, file: "ChatPanel" }` with `data.sessionId`.
+
+#### Server callbacks — sessionId-scoped
+
+`HttpServer` callbacks now take `sessionId` as their first argument:
+
+```ts
+server.setOnAbort((sessionId: string) => ...)
+server.setOnClearSession((sessionId: string) => ...)
+server.setOnCompact((sessionId: string) => ...)
+```
+
+#### ChatPiece — multi-pool SSE
+
+`ChatPiece.broadcastEvent(data)` became `broadcastEvent(sessionId, data)`. Internal state `streamClients` went from `Set<ServerResponse>` to `Map<sessionId, Set<ServerResponse>>`. Removed: `DEFAULT_SESSION` constant, `timelineSessions`, `addTimelineSession`, `removeTimelineSession`.
+
+#### DiffViewer — sessionId propagation
+
+`hud_show_diff`/`hud_show_file`/`hud_compare_files` now forward the calling session's `__sessionId` into `data.sessionId` on the HUD panel so Accept/Reject replies route back to the correct chat.
+
+### Removed — jarvis-plugin-actors
+
+- `actor-chat` piece — replaced by core chat endpoints
+- `ActorChatRenderer` — replaced by core `ChatPanelHudAdapter`
+- Routes `/plugins/actors/<name>/{send,stream,history,abort}` — replaced by `/chat/{send,stream,history,abort}` with `sessionId`
+
+Retained (administrative lifecycle only):
+- `POST /plugins/actors/create` — spawn actor
+- `POST /plugins/actors/<name>/kill` — destroy actor
+
+### Migration
+
+- Any plugin calling `/chat/send` must include `sessionId` in the body.
+- Any plugin embedding `ChatPanel` as a React component must pass `sessionId` instead of URL props.
+- Any plugin mounting a chat in the HUD should publish `renderer: { plugin: null, file: "ChatPanel" }` with `data: { sessionId, assistantLabel? }`.
+
 ## [0.3.0] — 2025-07-20
 
 ### Added

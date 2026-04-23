@@ -4,6 +4,15 @@ import { DraggablePanel } from './DraggablePanel'
 import { renderers } from './renderers/index'
 import { CoreNodeOverlay } from './CoreNodeOverlay'
 import { ChatPanel } from './panels/ChatPanel'
+import { ChatPanelHudAdapter } from './panels/ChatPanelHudAdapter'
+
+// Core renderer registry — resolved when a HUD piece declares
+// `renderer: { plugin: null, file: '<name>' }`. Plugins (including
+// jarvis-plugin-actors) use this to mount the unified ChatPanel for any
+// session by passing `data.sessionId` in the HUD payload.
+const CORE_RENDERERS: Record<string, React.ComponentType<{ state: any }>> = {
+  ChatPanel: ChatPanelHudAdapter,
+}
 
 // ErrorBoundary — catches runtime errors in plugin renderers so they don't
 // take down the entire HUD. Only the broken panel shows an error message.
@@ -191,12 +200,9 @@ export function HudRenderer({ state }: { state: HudState }) {
             minWidth={300}
             minHeight={120}
           >
-            <ChatPanel
-              streamUrl="/chat-stream"
-              sendUrl="/chat/send"
-              abortUrl="/chat/abort"
-              assistantLabel="JARVIS"
-            />
+            {/* App-level responsibility: the root chat is sessionId "main".
+                This is the ONLY place in the app that hardcodes it. */}
+            <ChatPanel sessionId="main" assistantLabel="JARVIS" />
           </DraggablePanel>
         )}
 
@@ -226,7 +232,34 @@ export function HudRenderer({ state }: { state: HudState }) {
             )
           }
 
-          // 2. Try plugin renderer (lazy loaded)
+          // 2. Core renderer — piece declares { plugin: null, file: 'ChatPanel' }
+          if (comp.renderer && comp.renderer.plugin === null) {
+            const CoreRenderer = CORE_RENDERERS[comp.renderer.file]
+            if (CoreRenderer) {
+              return (
+                <DraggablePanel
+                  key={comp.id}
+                  id={comp.name.toUpperCase()}
+                  pieceId={comp.id}
+                  defaultX={comp.position.x}
+                  defaultY={comp.position.y}
+                  defaultWidth={comp.size.width}
+                  defaultHeight={comp.size.height}
+                  minWidth={100}
+                  minHeight={60}
+                  onClose={() => hidePanel(comp.id)}
+                  onDetach={detachPanel}
+                  persistLayout={!comp.ephemeral}
+                >
+                  <PluginErrorBoundary fallback={<GenericRenderer state={comp} />}>
+                    <CoreRenderer state={comp} />
+                  </PluginErrorBoundary>
+                </DraggablePanel>
+              )
+            }
+          }
+
+          // 3. Plugin renderer (lazy loaded)
           if (comp.renderer) {
             const PluginRenderer = getPluginRenderer(comp.renderer.plugin, comp.renderer.file)
             return (
