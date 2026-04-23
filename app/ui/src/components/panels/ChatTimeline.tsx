@@ -11,6 +11,7 @@ export type ChatEntry =
   | { kind: 'message'; role: 'user' | 'assistant'; text: string; images?: ChatImage[]; source?: string; session?: string; aborted?: boolean }
   | { kind: 'capability'; name: string; id: string; args?: string; status: 'running' | 'done' | 'cancelled'; ms?: number; output?: string; expanded?: boolean }
   | { kind: 'compaction'; engine: 'api' | 'fallback'; tokensBefore: number; tokensAfter: number; summary: string; expanded?: boolean }
+  | { kind: 'bash_result'; command: string; output: string; exitCode: number; ms: number; expanded?: boolean }
 
 interface Props {
   entries: ChatEntry[]
@@ -157,6 +158,61 @@ export const ChatTimeline = React.memo(function ChatTimeline({
                   onClick={() => onToggleExpand(i)}
                 >
                   {visibleLines.join('\n')}
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        if (entry.kind === 'bash_result') {
+          const ok = entry.exitCode === 0
+          const lines = entry.output ? entry.output.split('\n') : []
+          const previewLines = lines.slice(-3)
+          const hasMore = lines.length > 3
+          const visibleLines = entry.expanded ? lines : previewLines
+
+          return (
+            <div key={i} style={{ marginBottom: '2px' }}>
+              <div
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: (entry.output && visibleLines.length > 0) ? '4px 4px 0 0' : '4px',
+                  fontSize: '10px',
+                  borderLeft: ok ? '3px solid #50fa7b' : '3px solid #ff5555',
+                  background: '#1a1e2e',
+                  color: ok ? '#50fa7b' : '#ff5555',
+                  cursor: hasMore ? 'pointer' : 'default',
+                  fontFamily: 'var(--font-mono)',
+                }}
+                onClick={hasMore ? () => onToggleExpand(i) : undefined}
+              >
+                <span style={{ opacity: 0.6 }}>$</span>{' '}
+                <strong>{entry.command}</strong>
+                <span style={{ marginLeft: '8px', opacity: 0.6 }}>{entry.ms}ms · exit {entry.exitCode}</span>
+                {hasMore && <span style={{ marginLeft: '4px', opacity: 0.5 }}>{entry.expanded ? '▾' : '▸'}</span>}
+              </div>
+              {entry.output && visibleLines.length > 0 && (
+                <div
+                  style={{
+                    padding: '4px 8px 4px 14px',
+                    background: '#111420',
+                    borderLeft: ok ? '3px solid #50fa7b44' : '3px solid #ff555544',
+                    borderRadius: '0 0 4px 4px',
+                    fontSize: '9px',
+                    color: ok ? '#aaa' : '#ff8888',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                    lineHeight: '1.4',
+                    cursor: hasMore ? 'pointer' : 'default',
+                  }}
+                  onClick={hasMore ? () => onToggleExpand(i) : undefined}
+                >
+                  {visibleLines.join('\n')}
+                  {!entry.expanded && hasMore && (
+                    <span style={{ display: 'block', color: '#666', marginTop: '2px' }}>
+                      … {lines.length - 3} more lines
+                    </span>
+                  )}
                 </div>
               )}
             </div>

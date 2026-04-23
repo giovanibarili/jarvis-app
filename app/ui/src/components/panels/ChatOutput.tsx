@@ -99,6 +99,16 @@ export function ChatOutput() {
             summary: data.summary ?? '',
           }])
           break
+        case 'bash_result':
+          setEntries(prev => [...prev, {
+            kind: 'bash_result',
+            command: data.command,
+            output: data.output ?? '',
+            exitCode: data.exitCode ?? 0,
+            ms: data.ms ?? 0,
+          }])
+          setIsThinking(false)
+          break
         case 'session_cleared':
           setEntries([])
           setStreamingText('')
@@ -116,6 +126,7 @@ export function ChatOutput() {
       if (j !== index) return e
       if (e.kind === 'capability') return { ...e, expanded: !e.expanded }
       if (e.kind === 'compaction') return { ...e, expanded: !e.expanded }
+      if (e.kind === 'bash_result') return { ...e, expanded: !e.expanded }
       return e
     }))
   }, [])

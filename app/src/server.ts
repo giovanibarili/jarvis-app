@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { homedir } from "node:os";
-import { execSync } from "node:child_process";
+import { execSync, exec } from "node:child_process";
 import type { ChatPiece } from "./input/chat-piece.js";
 import { load as loadSettings, save as saveSettings } from "./core/settings.js";
 import { log, getLogBuffer, onLogEntry } from "./logger/index.js";
@@ -186,6 +186,12 @@ export class HttpServer {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
       }
+      return;
+    }
+
+    if (req.url === "/chat/bash" && req.method === "POST") {
+      log.info("HttpServer: POST /chat/bash");
+      this.handleBash(req, res);
       return;
     }
 
@@ -578,6 +584,52 @@ export class HttpServer {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: `Compilation failed: ${err}` }));
     }
+  }
+
+  private handleBash(req: IncomingMessage, res: ServerResponse): void {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => { chunks.push(Buffer.from(chunk)); });
+    req.on("end", () => {
+      let command = "";
+      try {
+        const body = Buffer.concat(chunks).toString("utf-8");
+        const parsed = JSON.parse(body);
+        command = String(parsed.command ?? "").trim();
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON body" }));
+        return;
+      }
+
+      if (!command) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Missing command" }));
+        return;
+      }
+
+      log.info({ command }, "HttpServer: running bash command");
+      const startMs = Date.now();
+
+      exec(command, { timeout: 30_000, shell: "/bin/bash" }, (err, stdout, stderr) => {
+        const ms = Date.now() - startMs;
+        const output = [stdout, stderr].filter(Boolean).join("\n").trimEnd();
+        const exitCode = err?.code != null ? Number(err.code) : (err ? 1 : 0);
+
+        log.info({ command, exitCode, ms }, "HttpServer: bash command done");
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, output, exitCode, ms }));
+
+        // Broadcast result to chat timeline
+        this.chatPiece.broadcastEvent({
+          type: "bash_result",
+          command,
+          output,
+          exitCode,
+          ms,
+        });
+      });
+    });
   }
 
   stop(): void { this.server.close(); }

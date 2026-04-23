@@ -46,6 +46,23 @@ export function ChatInput() {
     const prompt = (overrideText ?? input).trim()
     if (!prompt && images.length === 0) return
 
+    // Bash shortcut: lines starting with "!" run a shell command directly
+    // Result appears in timeline as a bash_result entry (no AI involved)
+    if (prompt.startsWith('!') && images.length === 0) {
+      const command = prompt.slice(1).trim()
+      if (command) {
+        setInput('')
+        setSlashActive(false)
+        fetch('/chat/bash', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command }),
+        }).catch(() => {})
+        textareaRef.current?.focus()
+        return
+      }
+    }
+
     const text = prompt || (images.length > 0 ? images.map(i => i.label).join(', ') : '')
     const payload: Record<string, unknown> = { prompt: text }
     if (images.length > 0) {
@@ -168,7 +185,7 @@ export function ChatInput() {
           onChange={handleChange}
           onKeyDown={handleKey}
           onPaste={handlePaste}
-          placeholder="Type a message... (/ for commands)"
+          placeholder="Type a message... (/ for commands, ! to run shell)"
           autoFocus
           rows={1}
           className="chatInput chatTextarea"
