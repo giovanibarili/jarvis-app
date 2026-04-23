@@ -278,9 +278,55 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
   }
 }
 
-/** Parse raw session messages into chat timeline entries. Pure helper. */
+/** Parse raw session messages into chat timeline entries. Pure helper.
+ *
+ * Special handling for jarvis_ask_choice:
+ *   - tool_use(jarvis_ask_choice, {question, options, multi, allow_other})
+ *     → entry kind:'choice'
+ *   - If the NEXT user message starts with "[choice] <same question> → ...",
+ *     that message is consumed as the answer (not emitted as its own entry)
+ *     and the choice is marked answered with parsed values.
+ */
 export function parseMessagesToHistory(rawMessages: any[]): any[] {
   const entries: any[] = [];
+
+  // Pending choices waiting for their answer (indexed by question for matching)
+  let pendingChoice: { entryIdx: number; question: string; options: Array<{ value: string; label: string }> } | null = null;
+
+  const OTHER_VALUE = "__other__";
+
+  const consumeChoiceAnswer = (text: string): boolean => {
+    if (!pendingChoice) return false;
+    // Format: "[choice] <question> → <labels>"
+    const m = text.match(/^\[choice\]\s+(.+?)\s+→\s+(.+)$/s);
+    if (!m) return false;
+    const q = m[1].trim();
+    const answerStr = m[2].trim();
+    if (q !== pendingChoice.question) return false;
+
+    // Map labels back to values. Split by ", " for multi.
+    const labels = answerStr.split(/,\s+/).map(s => s.trim()).filter(Boolean);
+    const values: string[] = [];
+    let otherText: string | undefined;
+    const knownLabels = new Set(pendingChoice.options.map(o => o.label));
+    for (const lbl of labels) {
+      if (knownLabels.has(lbl)) {
+        const opt = pendingChoice.options.find(o => o.label === lbl);
+        if (opt) values.push(opt.value);
+      } else {
+        // Unknown label → treat as "Other" free-text
+        values.push(OTHER_VALUE);
+        otherText = lbl;
+      }
+    }
+    const entry = entries[pendingChoice.entryIdx];
+    if (entry && entry.kind === "choice") {
+      entry.answer = values;
+      if (otherText) entry.other_text = otherText;
+    }
+    pendingChoice = null;
+    return true;
+  };
 
   for (const msg of rawMessages) {
     if (msg.role === "user") {
@@ -294,6 +340,8 @@ export function parseMessagesToHistory(rawMessages: any[]): any[] {
         }
       }
       if (!text.trim()) continue;
+      // If this user message is a choice answer, consume it silently.
+      if (consumeChoiceAnswer(text.trim())) continue;
       entries.push({ kind: "message", role: "user", text, source: "chat" });
     } else if (msg.role === "assistant") {
       let text = "";
@@ -308,6 +356,25 @@ export function parseMessagesToHistory(rawMessages: any[]): any[] {
       }
       if (text) entries.push({ kind: "message", role: "assistant", text, source: "jarvis" });
       for (const tu of toolUses) {
+        if (tu.name === "jarvis_ask_choice" && tu.input && typeof tu.input === "object") {
+          const input = tu.input as any;
+          const question = String(input.question ?? "");
+          const options = Array.isArray(input.options)
+            ? input.options.filter((o: any) => o && typeof o.value === "string" && typeof o.label === "string")
+                .map((o: any) => ({ value: String(o.value), label: String(o.label), description: o.description }))
+            : [];
+          const choiceEntry: any = {
+            kind: "choice",
+            choice_id: tu.id ?? `choice-${entries.length}`,
+            question,
+            options,
+            multi: input.multi === true,
+            allow_other: input.allow_other !== false,
+          };
+          entries.push(choiceEntry);
+          pendingChoice = { entryIdx: entries.length - 1, question, options };
+          continue;
+        }
         entries.push({
           kind: "capability",
           name: tu.name,
