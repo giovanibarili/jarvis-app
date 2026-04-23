@@ -25,6 +25,7 @@ import { AnthropicSessionFactory } from "./ai/anthropic/factory.js";
 import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.js";
 import { HudCoreNodePiece } from "./core/hud-core-node.js";
 import { DiffViewerPiece } from "./pieces/diff-viewer.js";
+import { ChoicePromptPiece } from "./pieces/choice-prompt.js";
 import { ensureUiBuildIntegrity } from "./server.js";
 
 async function main() {
@@ -187,6 +188,9 @@ async function main() {
 
   // Diff Viewer — file visualization, diff, and comparison in HUD
   pieces.push(new DiffViewerPiece(capabilityRegistry));
+
+  // Choice Prompt — inline chat choice cards (radio / checkbox / other)
+  pieces.push(new ChoicePromptPiece(capabilityRegistry, chatPiece));
 
   // Cron scheduler
   pieces.push(new CronPiece(capabilityRegistry));

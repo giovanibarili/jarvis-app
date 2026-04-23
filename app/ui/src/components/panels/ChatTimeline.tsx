@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react'
+import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { MarkdownText } from '../MarkdownText'
 
 interface ChatImage {
@@ -7,11 +7,18 @@ interface ChatImage {
   mediaType: string
 }
 
+export interface ChoiceOption {
+  value: string
+  label: string
+  description?: string
+}
+
 export type ChatEntry =
   | { kind: 'message'; role: 'user' | 'assistant'; text: string; images?: ChatImage[]; source?: string; session?: string; aborted?: boolean }
   | { kind: 'capability'; name: string; id: string; args?: string; status: 'running' | 'done' | 'cancelled'; ms?: number; output?: string; expanded?: boolean }
   | { kind: 'compaction'; engine: 'api' | 'fallback'; tokensBefore: number; tokensAfter: number; summary: string; expanded?: boolean }
   | { kind: 'bash_result'; command: string; output: string; exitCode: number; ms: number; expanded?: boolean }
+  | { kind: 'choice'; choice_id: string; question: string; options: ChoiceOption[]; multi: boolean; allow_other: boolean; answer?: string[]; other_text?: string }
 
 interface Props {
   entries: ChatEntry[]
@@ -26,6 +33,238 @@ interface Props {
   /** Colors for assistant labels */
   assistantLabelColor?: string
   onToggleExpand: (index: number) => void
+  /** Submit a choice answer. values = selected option values; otherText = free-text from "Other" field (if any). */
+  onChoiceSubmit?: (index: number, values: string[], otherText?: string) => void
+}
+
+// ─── Choice card (inline prompt with radio / checkbox + free-text "Other") ───
+
+const OTHER_VALUE = '__other__'
+
+interface ChoiceCardProps {
+  index: number
+  entry: Extract<ChatEntry, { kind: 'choice' }>
+  onSubmit?: (index: number, values: string[], otherText?: string) => void
+  assistantLabel: string
+  assistantLabelColor: string
+}
+
+function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColor }: ChoiceCardProps) {
+  const answered = Array.isArray(entry.answer) && entry.answer.length > 0
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [otherText, setOtherText] = useState('')
+
+  const otherChecked = selected.has(OTHER_VALUE)
+
+  const toggle = useCallback((value: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (entry.multi) {
+        if (next.has(value)) next.delete(value)
+        else next.add(value)
+      } else {
+        next.clear()
+        next.add(value)
+      }
+      return next
+    })
+  }, [entry.multi])
+
+  const canSubmit = !answered && (
+    (selected.size > 0 && !otherChecked) ||
+    (otherChecked && otherText.trim().length > 0)
+  ) && (entry.multi || selected.size === 1 || otherChecked)
+
+  const handleSubmit = useCallback(() => {
+    if (!canSubmit || !onSubmit) return
+    const values = Array.from(selected)
+    onSubmit(index, values, otherChecked ? otherText.trim() : undefined)
+  }, [canSubmit, onSubmit, index, selected, otherChecked, otherText])
+
+  const renderAnswerSummary = () => {
+    if (!answered) return null
+    const labels = entry.answer!.map(v => {
+      if (v === OTHER_VALUE) return entry.other_text ?? '(other)'
+      return entry.options.find(o => o.value === v)?.label ?? v
+    })
+    return (
+      <div style={{
+        marginTop: '6px',
+        padding: '4px 8px',
+        background: 'rgba(68,170,255,0.08)',
+        borderLeft: '2px solid #4af',
+        borderRadius: '0 3px 3px 0',
+        fontSize: '11px',
+        color: '#4af',
+      }}>
+        <span style={{ opacity: 0.7, marginRight: '6px' }}>→</span>
+        {labels.join(', ')}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{
+      marginBottom: '8px',
+      padding: '8px 10px',
+      background: '#11151e',
+      border: '1px solid #2a3040',
+      borderLeft: '3px solid #4af',
+      borderRadius: '4px',
+      opacity: answered ? 0.75 : 1,
+    }}>
+      <div style={{
+        color: assistantLabelColor,
+        fontFamily: 'var(--font-display)',
+        fontSize: '9px',
+        fontWeight: 600,
+        marginBottom: '4px',
+        letterSpacing: '0.5px',
+      }}>
+        {assistantLabel} · CHOICE{entry.multi ? ' · MULTI' : ''}
+      </div>
+      <div style={{
+        color: 'var(--chat-jarvis)',
+        fontSize: '13px',
+        lineHeight: '1.4',
+        marginBottom: '6px',
+      }}>
+        {entry.question}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+        {entry.options.map(opt => {
+          const checked = selected.has(opt.value) || (answered && entry.answer!.includes(opt.value))
+          return (
+            <label
+              key={opt.value}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '8px',
+                padding: '4px 6px',
+                borderRadius: '3px',
+                cursor: answered ? 'default' : 'pointer',
+                background: checked ? 'rgba(68,170,255,0.08)' : 'transparent',
+                border: checked ? '1px solid rgba(68,170,255,0.3)' : '1px solid transparent',
+                fontSize: '12px',
+                color: 'var(--chat-jarvis)',
+                transition: 'all 0.12s',
+              }}
+              onMouseEnter={e => { if (!answered && !checked) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.03)' }}
+              onMouseLeave={e => { if (!answered && !checked) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+            >
+              <input
+                type={entry.multi ? 'checkbox' : 'radio'}
+                name={`choice-${entry.choice_id}`}
+                checked={checked}
+                disabled={answered}
+                onChange={() => toggle(opt.value)}
+                style={{ marginTop: '2px', accentColor: '#4af' }}
+              />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 500 }}>{opt.label}</div>
+                {opt.description && (
+                  <div style={{ fontSize: '10px', color: '#6a7a8a', marginTop: '1px' }}>{opt.description}</div>
+                )}
+              </div>
+            </label>
+          )
+        })}
+
+        {entry.allow_other && (
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '8px',
+              padding: '4px 6px',
+              borderRadius: '3px',
+              cursor: answered ? 'default' : 'pointer',
+              background: otherChecked || (answered && entry.answer!.includes(OTHER_VALUE))
+                ? 'rgba(68,170,255,0.08)'
+                : 'transparent',
+              border: otherChecked || (answered && entry.answer!.includes(OTHER_VALUE))
+                ? '1px solid rgba(68,170,255,0.3)'
+                : '1px solid transparent',
+              fontSize: '12px',
+              color: 'var(--chat-jarvis)',
+            }}
+          >
+            <input
+              type={entry.multi ? 'checkbox' : 'radio'}
+              name={`choice-${entry.choice_id}`}
+              checked={otherChecked || (answered && entry.answer!.includes(OTHER_VALUE))}
+              disabled={answered}
+              onChange={() => toggle(OTHER_VALUE)}
+              style={{ marginTop: '2px', accentColor: '#4af' }}
+            />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500, fontStyle: 'italic', opacity: 0.85 }}>Other (write your own)</div>
+              {(otherChecked && !answered) && (
+                <textarea
+                  value={otherText}
+                  onChange={e => setOtherText(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleSubmit()
+                    }
+                  }}
+                  placeholder="Type your answer..."
+                  autoFocus
+                  rows={2}
+                  style={{
+                    width: '100%',
+                    marginTop: '4px',
+                    padding: '4px 6px',
+                    background: '#0a0e14',
+                    color: 'var(--chat-jarvis)',
+                    border: '1px solid #2a3040',
+                    borderRadius: '3px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '12px',
+                    resize: 'vertical',
+                    outline: 'none',
+                  }}
+                />
+              )}
+              {answered && entry.answer!.includes(OTHER_VALUE) && entry.other_text && (
+                <div style={{ fontSize: '11px', color: '#8cf', marginTop: '2px', fontStyle: 'italic' }}>
+                  "{entry.other_text}"
+                </div>
+              )}
+            </div>
+          </label>
+        )}
+      </div>
+
+      {!answered && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
+          <button
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            style={{
+              padding: '4px 14px',
+              fontSize: '11px',
+              fontWeight: 600,
+              letterSpacing: '0.5px',
+              border: `1px solid ${canSubmit ? '#4af' : '#2a3040'}`,
+              borderRadius: '3px',
+              background: canSubmit ? 'rgba(68,170,255,0.15)' : 'transparent',
+              color: canSubmit ? '#4af' : '#4a5a6a',
+              cursor: canSubmit ? 'pointer' : 'not-allowed',
+              transition: 'all 0.15s',
+            }}
+          >
+            CONFIRM
+          </button>
+        </div>
+      )}
+
+      {renderAnswerSummary()}
+    </div>
+  )
 }
 
 export const ChatTimeline = React.memo(function ChatTimeline({
@@ -38,6 +277,7 @@ export const ChatTimeline = React.memo(function ChatTimeline({
   userLabelColor = () => 'var(--chat-user-label)',
   assistantLabelColor = 'var(--chat-jarvis-label)',
   onToggleExpand,
+  onChoiceSubmit,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -216,6 +456,19 @@ export const ChatTimeline = React.memo(function ChatTimeline({
                 </div>
               )}
             </div>
+          )
+        }
+
+        if (entry.kind === 'choice') {
+          return (
+            <ChoiceCard
+              key={i}
+              index={i}
+              entry={entry}
+              onSubmit={onChoiceSubmit}
+              assistantLabel={assistantLabel}
+              assistantLabelColor={assistantLabelColor}
+            />
           )
         }
 

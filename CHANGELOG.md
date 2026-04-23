@@ -5,6 +5,23 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-23
+
+### Added
+
+- **Choice Prompt** — new `jarvis_ask_choice` capability. The AI can ask the user to pick between options via an inline chat card (radio / checkbox, optional "Other" free-text). Answer arrives as the next user message formatted as `[choice] <question> → <value(s)>`. Backed by a new `ChoicePromptPiece` and rehydratable from session history via `parseMessagesToHistory`.
+- **Model-aware max output tokens** — new `getMaxOutput(model)` in `config/index.ts`. Opus → 128k, Sonnet/Haiku → 64k, unknown → 16k safe default. Replaces the hardcoded `max_tokens: 8192` in streaming and compaction calls.
+- Regression tests:
+  - `config/max-output.test.ts` — pins per-model output caps.
+  - `ai/anthropic/session-tool-dedup.test.ts` — guards against duplicate `tool_use` ids in message history.
+- Functional-test scenarios for the full Choice Prompt flow (single, multi, "Other", history rehydration, suppressed capability entry).
+
+### Fixed
+
+- **Duplicate `tool_use` id crash on long Opus runs.** `streamFromAPI` pushed the assistant `message.content` (with `tool_use` blocks) whenever `stop_reason !== "tool_use"`, and `addToolResults` pushed a reconstructed assistant message with the same ids. When Opus returned a mixed `text + tool_use` response with `stop_reason: "end_turn"`, both pushes fired and the next API call failed with HTTP 400 `tool_use ids must be unique`. Now `streamFromAPI` always pushes `message.content` (unless compaction replaced history) and `addToolResults` only appends the user `tool_result` message.
+- **`write_file` / `bash` mid-stream JSON truncation.** The 8192 `max_tokens` cap truncated large tool_use `input` JSON mid-stream, leading to `command is required` / `content is required` errors. Streaming and beta compaction now use `getMaxOutput(model)`.
+- Compaction summary call bumped from 4096 → 8192 `max_tokens` (summaries are short prose but were occasionally clipped).
+
 ## [0.1.1] - 2026-04-22
 
 ### Fixed

@@ -178,6 +178,9 @@ export function ChatPanel({
           setStreamingText('')
           break
         case 'tool_start':
+          // Skip jarvis_ask_choice — the choice card (kind:'choice') replaces
+          // the default capability entry for this tool.
+          if (data.name === 'jarvis_ask_choice') break
           setStreamingText(prev => {
             if (prev) {
               setIsStreaming(false)
@@ -190,6 +193,7 @@ export function ChatPanel({
           setIsThinking(true)
           break
         case 'tool_done': {
+          if (data.name === 'jarvis_ask_choice') break
           const startTime = toolStartTimes.current.get(data.id)
           const ms = startTime ? Date.now() - startTime : undefined
           toolStartTimes.current.delete(data.id)
@@ -204,6 +208,7 @@ export function ChatPanel({
           break
         }
         case 'tool_cancelled':
+          if (data.name === 'jarvis_ask_choice') break
           toolStartTimes.current.delete(data.id)
           setEntries(prev => prev.map(e =>
             e.kind === 'capability' && e.id === data.id ? { ...e, status: 'cancelled' as const } : e
@@ -242,6 +247,24 @@ export function ChatPanel({
           setStreamingText('')
           setIsStreaming(false)
           setIsThinking(false)
+          break
+        case 'choice':
+          setIsThinking(false)
+          setIsStreaming(false)
+          setStreamingText(prev => {
+            if (prev) {
+              setEntries(msgs => [...msgs, { kind: 'message', role: 'assistant', text: prev, source: data.source, session: data.session }])
+            }
+            return ''
+          })
+          setEntries(prev => [...prev, {
+            kind: 'choice',
+            choice_id: data.choice_id,
+            question: data.question,
+            options: data.options ?? [],
+            multi: !!data.multi,
+            allow_other: data.allow_other !== false,
+          }])
           break
       }
     }
@@ -382,6 +405,40 @@ export function ChatPanel({
     setImages(prev => prev.filter(i => i.label !== label))
   }
 
+  const handleChoiceSubmit = useCallback((index: number, values: string[], otherText?: string) => {
+    let question = ''
+    let options: { value: string; label: string }[] = []
+    let multi = false
+
+    setEntries(prev => {
+      const target = prev[index]
+      if (!target || target.kind !== 'choice') return prev
+      question = target.question
+      options = target.options
+      multi = target.multi
+      return prev.map((e, i) => {
+        if (i !== index) return e
+        if (e.kind !== 'choice') return e
+        return { ...e, answer: values, other_text: otherText }
+      })
+    })
+
+    if (!question) return
+
+    const labels = values.map(v => {
+      if (v === '__other__') return otherText ?? '(other)'
+      return options.find(o => o.value === v)?.label ?? v
+    })
+    const joined = multi ? labels.join(', ') : (labels[0] ?? '')
+    const prompt = `[choice] ${question} → ${joined}`
+
+    fetch(sendUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, prompt }),
+    }).catch(() => {})
+  }, [sendUrl, sessionId])
+
   const toggleExpand = useCallback((index: number) => {
     setEntries(prev => prev.map((e, j) => {
       if (j !== index) return e
@@ -403,6 +460,7 @@ export function ChatPanel({
           userLabel={getUserLabel}
           userLabelColor={getUserLabelColor}
           onToggleExpand={toggleExpand}
+          onChoiceSubmit={handleChoiceSubmit}
         />
       </div>
 

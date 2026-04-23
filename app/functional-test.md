@@ -21,6 +21,7 @@ Then piece_list should show all core pieces:
   | plugin-manager     | true    | false     |
   | grpc               | true    | false     |
   | diff-viewer        | true    | false     |
+  | choice-prompt      | true    | false     |
 And GET /hud should return a JSON with reactor.status "online"
 And GET /hud should return components for all visible pieces
 And the HUD Electron window should render without errors
@@ -623,6 +624,120 @@ When hud_show_file is called with a file path
 Then a file viewer tab should appear with syntax highlighting
 When hud_compare_files is called with two file paths
 Then a side-by-side comparison should appear
+```
+
+## Feature: Choice Prompt (jarvis_ask_choice)
+
+### Scenario: Tool is registered
+
+```gherkin
+Given the choice-prompt piece is running
+When session_get_tools filter="jarvis_ask_choice"
+Then the tool is listed with schema containing question, options, multi, allow_other
+```
+
+### Scenario: Single-choice card renders inline in chat
+
+```gherkin
+Given a live chat session with SSE connected
+When the AI calls jarvis_ask_choice with question "Which DB?" and 3 options
+Then the chat SSE broadcasts event type:"choice" with choice_id, question, options, multi:false
+And ChatPanel appends an entry of kind:"choice" to the timeline
+And the ChoiceCard renders radio buttons (one per option)
+And the CONFIRM button is disabled until a selection is made
+And NO capability entry for jarvis_ask_choice appears (suppressed in favor of the card)
+```
+
+### Scenario: Single choice submission sends [choice] prompt
+
+```gherkin
+Given a pending single-choice card "Which DB? → Postgres|DynamoDB|Redis"
+When the user clicks "Postgres" and presses CONFIRM
+Then POST /chat/send is called with prompt exactly "[choice] Which DB? → Postgres"
+And the card becomes answered (opacity reduced, inputs disabled)
+And the answer summary "→ Postgres" renders below the options
+And the AI receives the prompt as the next user turn
+```
+
+### Scenario: Multi-choice selects multiple values
+
+```gherkin
+Given the AI calls jarvis_ask_choice with multi:true and 4 options
+When the user checks options A and C
+And presses CONFIRM
+Then POST /chat/send is called with prompt "[choice] <question> → A-label, C-label"
+And the answer summary shows both labels joined by ", "
+```
+
+### Scenario: "Other (write your own)" with free-text input
+
+```gherkin
+Given a choice card with allow_other:true (default)
+When the user selects "Other (write your own)"
+Then a textarea appears below with autofocus
+And CONFIRM remains disabled until the textarea has non-empty content
+When the user types "Cassandra" and presses Enter (or clicks CONFIRM)
+Then POST /chat/send is called with prompt "[choice] <question> → Cassandra"
+And the answered card shows the free text in italic quotes
+```
+
+### Scenario: allow_other=false hides the "Other" option
+
+```gherkin
+Given the AI calls jarvis_ask_choice with allow_other:false
+Then the choice card renders WITHOUT the "Other (write your own)" row
+```
+
+### Scenario: Persistence — answered choice survives session reload
+
+```gherkin
+Given the user has completed a single-choice prompt in the main session
+When GET /chat/history?sessionId=main is fetched
+Then the response contains an entry with kind:"choice", question, options, multi
+And that entry has answer field populated with the chosen value(s)
+And the preceding assistant text (if any) appears before the choice entry
+And the "[choice]" user message is NOT emitted as a separate entry (consumed as the answer)
+```
+
+### Scenario: Persistence — pending choice (no answer yet) survives reload
+
+```gherkin
+Given a choice prompt was published but the user hasn't clicked CONFIRM
+And JARVIS is restarted before submission
+When GET /chat/history?sessionId=main returns the history
+Then the choice entry exists with no answer field
+And the ChoiceCard renders in its pending state (inputs enabled, CONFIRM present)
+When the user now clicks an option and CONFIRM
+Then the submission flow proceeds normally
+```
+
+### Scenario: "Other" free text round-trips through reload
+
+```gherkin
+Given the user answered a choice via "Other" with text "Cassandra"
+When the session is reloaded via GET /chat/history
+Then the choice entry has answer:["__other__"] and other_text:"Cassandra"
+And the card re-renders with the italic quoted free text
+```
+
+### Scenario: Invalid input returns error
+
+```gherkin
+Given the AI calls jarvis_ask_choice with empty question
+Then the tool returns { ok:false, error:"question is required" }
+And no SSE choice event is broadcast
+
+Given the AI calls jarvis_ask_choice with empty options array
+Then the tool returns { ok:false, error:"at least one option is required" }
+```
+
+### Scenario: Session scoping — choice only reaches the caller session
+
+```gherkin
+Given two sessions exist: main and actor-alice
+When the AI in session "main" calls jarvis_ask_choice
+Then only the SSE pool for sessionId="main" receives the type:"choice" event
+And the actor-alice SSE pool receives nothing
 ```
 
 ## Execution Checklist

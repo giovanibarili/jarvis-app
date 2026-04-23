@@ -6,7 +6,7 @@ import { log } from "../../logger/index.js";
 import { cleanupAbortedToolMessages } from "./cleanup-aborted-tools.js";
 import { sanitizeMessages } from "./sanitize-messages.js";
 import { load as loadSettings, getCompactionSettings } from "../../core/settings.js";
-import { getMaxContext } from "../../config/index.js";
+import { getMaxContext, getMaxOutput } from "../../config/index.js";
 
 type CapabilityDef = { name: string; description: string; input_schema: Record<string, unknown> };
 type SystemPrompt = string | TextBlockParam[];
@@ -81,13 +81,13 @@ export class AnthropicSession implements AISession {
         preview: typeof r.content === 'string' ? r.content.slice(0, 100) : JSON.stringify(r.content).slice(0, 100),
       })),
     }, "AnthropicSession: addToolResults");
-    const toolUseBlocks: ContentBlockParam[] = toolCalls.map(tc => ({
-      type: "tool_use" as const,
-      id: tc.id,
-      name: tc.name,
-      input: tc.input,
-    }));
-    this.messages.push({ role: "assistant", content: toolUseBlocks });
+
+    // NOTE: We do NOT push an assistant tool_use message here.
+    // The assistant message (including any tool_use blocks) is already pushed
+    // by streamFromAPI with the original message.content preserved.
+    // Rebuilding tool_use blocks here would create duplicate IDs in history
+    // whenever the API returns a mixed response (text + tool_use) with a
+    // stop_reason that allows the streamFromAPI push to happen.
 
     const toolResultBlocks: ToolResultBlockParam[] = results.map(r => ({
       type: "tool_result" as const,
@@ -228,7 +228,7 @@ export class AnthropicSession implements AISession {
 
       const summaryResponse = await this.client.messages.create({
         model: this.getModel(),
-        max_tokens: 4096,
+        max_tokens: 8192, // summary is short prose, doesn't need the full output budget
         system: `You are a conversation summarizer. ${instructions}\nWrap your summary in <summary></summary> tags.`,
         messages: msgs,
       });
@@ -342,7 +342,7 @@ export class AnthropicSession implements AISession {
           log.info({ label: this.label, betas: compactionConfig.betas }, "AnthropicSession: attempting beta compaction API");
           const betaStream = (this.client.beta.messages as any).stream({
             model: this.getModel(),
-            max_tokens: 8192,
+            max_tokens: getMaxOutput(this.getModel()),
             system: this.getSystemPrompt(),
             messages: this.messages,
             tools,
@@ -372,7 +372,7 @@ export class AnthropicSession implements AISession {
       if (!message) {
         const stream = this.client.messages.stream({
           model: this.getModel(),
-          max_tokens: 8192,
+          max_tokens: getMaxOutput(this.getModel()),
           system: this.getSystemPrompt(),
           messages: this.messages,
           tools,
@@ -436,8 +436,11 @@ export class AnthropicSession implements AISession {
         }, "AnthropicSession: compaction applied");
       }
 
-      // Push to message history only if not tool_use, not compaction stop, and no compaction happened
-      if (message.stop_reason !== "tool_use" && message.stop_reason !== "compaction" && !compactionSummary) {
+      // Push assistant message to history whenever there's content to preserve,
+      // unless compaction already replaced the history above.
+      // This includes stop_reason === "tool_use" (so the tool_use blocks are
+      // persisted before addToolResults appends the matching tool_result).
+      if (message.stop_reason !== "compaction" && !compactionSummary && message.content.length > 0) {
         this.messages.push({ role: "assistant", content: message.content });
       }
 

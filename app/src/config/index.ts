@@ -69,3 +69,26 @@ export function getMaxContext(model?: string): number {
   if (m.includes("haiku")) return 200_000;
   return 200_000; // sonnet and others
 }
+
+/**
+ * Max output tokens per single completion/stream.
+ *
+ * Anthropic models as of 2026-04:
+ * - Opus 4.7:    128k output tokens
+ * - Sonnet 4.6:   64k output tokens
+ * - Haiku 4.5:    64k output tokens
+ *
+ * This directly limits:
+ * - How large a single tool_use `input` JSON can be (big write_file/bash payloads)
+ * - How long a single assistant text block can be
+ *
+ * Set too low → model truncates tool_use JSON mid-stream → capability receives
+ * empty/partial args → `command is required` / `content is required` errors.
+ */
+export function getMaxOutput(model?: string): number {
+  const m = model ?? config.model;
+  if (m.includes("opus")) return 128_000;
+  if (m.includes("haiku")) return 64_000;
+  if (m.includes("sonnet")) return 64_000;
+  return 16_000; // safe default for unknown models (OpenAI etc)
+}
