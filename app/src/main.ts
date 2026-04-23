@@ -144,7 +144,9 @@ async function main() {
         return { message: "⚠️ Session is busy — wait for it to finish before compacting." };
       }
 
-      chatPiece.broadcastEvent({ type: "system", text: "⏳ Compacting context…" });
+      // Slash command /compact only has meaning for the root chat session ("main").
+      // For other sessions, clients call POST /chat/compact with { sessionId }.
+      chatPiece.broadcastEvent("main", { type: "system", text: "⏳ Compacting context…", session: "main" });
 
       const stream = managed.session.forceCompact();
       for await (const event of stream) {
@@ -212,7 +214,13 @@ async function main() {
   const pieceManager = new PieceManager(pieces, bus, capabilityRegistry);
   pluginManager.setPieceManager(pieceManager);
 
-  const server = new HttpServer(50052, chatPiece, () => hudState.getState(), () => jarvisCore.abortSession("main"), () => capabilityRegistry.getSlashCommands());
+  const server = new HttpServer(
+    50052,
+    chatPiece,
+    () => hudState.getState(),
+    (sessionId: string) => jarvisCore.abortSession(sessionId),
+    () => capabilityRegistry.getSlashCommands(),
+  );
   server.setHudStreamHandler((_req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
     // Send full snapshot first so client has complete state
@@ -223,21 +231,24 @@ async function main() {
   server.setOnHudRemove((pieceId: string) => {
     bus.publish({ channel: "hud.update", source: "server", action: "remove", pieceId });
   });
-  server.setOnClearSession(() => {
-    log.info("ClearSession: clearing conversation and resetting session");
-    jarvisCore.abortSession("main");
-    sessions.closeAll();
-    clearAllConversations();
-    // Broadcast to chat UI so it clears the timeline
-    chatPiece.broadcastEvent({ type: "session_cleared" });
+  server.setOnClearSession((sessionId: string) => {
+    log.info({ sessionId }, "ClearSession: clearing conversation for session");
+    jarvisCore.abortSession(sessionId);
+    sessions.close(sessionId);
+    sessions.clearSaved(sessionId);
+    // Tell only the SSE pool of this session to clear its timeline
+    chatPiece.broadcastEvent(sessionId, { type: "session_cleared", session: sessionId });
   });
-  server.setOnCompact(async () => {
-    const managed = sessions.get("main");
+  server.setOnCompact(async (sessionId: string) => {
+    if (!sessions.has(sessionId)) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const managed = sessions.get(sessionId);
     if (!managed.session.forceCompact) {
       throw new Error("Current provider does not support forced compaction.");
     }
 
-    chatPiece.broadcastEvent({ type: "system", text: "⏳ Compacting context…" });
+    chatPiece.broadcastEvent(sessionId, { type: "system", text: "⏳ Compacting context…", session: sessionId });
 
     const stream = managed.session.forceCompact();
     for await (const event of stream) {
@@ -245,7 +256,7 @@ async function main() {
         bus.publish({
           channel: "ai.stream",
           source: "jarvis-core",
-          target: "main",
+          target: sessionId,
           event: "compaction",
           compaction: event.compaction,
         } as any);
@@ -255,7 +266,7 @@ async function main() {
           source: "jarvis-core",
           event: "compaction",
           data: {
-            sessionId: "main",
+            sessionId,
             engine: event.compaction.engine,
             tokensBefore: event.compaction.tokensBefore,
             tokensAfter: event.compaction.tokensAfter,
@@ -265,8 +276,8 @@ async function main() {
       }
     }
 
-    sessions.save("main");
-    chatPiece.broadcastEvent({ type: "system", text: "✅ Context compacted." });
+    sessions.save(sessionId);
+    chatPiece.broadcastEvent(sessionId, { type: "system", text: "✅ Context compacted.", session: sessionId });
   });
   pluginManager.setHttpServer(server);
 

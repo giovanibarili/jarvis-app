@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, type KeyboardEvent, type ChangeEvent, type ClipboardEvent } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback, type KeyboardEvent, type ChangeEvent, type ClipboardEvent } from 'react'
 import { ChatTimeline, type ChatEntry } from './ChatTimeline'
 import { SlashMenu } from './SlashMenu'
 
@@ -16,11 +16,16 @@ interface ChatPanelFeatures {
   compaction?: boolean
 }
 
+/**
+ * ChatPanel — session-scoped chat UI.
+ *
+ * Receives a sessionId as the single identity for the conversation. Derives
+ * all HTTP endpoints from it. Core/plugins differ only in how they compose a
+ * sessionId (e.g. "main" for the root chat, "actor-<name>" for per-actor
+ * chats) — this component does not know or care about the naming scheme.
+ */
 interface ChatPanelProps {
-  streamUrl: string
-  sendUrl: string
-  abortUrl?: string
-  historyUrl?: string
+  sessionId: string
   assistantLabel: string
   features?: ChatPanelFeatures
   userLabel?: (source?: string) => string
@@ -37,14 +42,14 @@ const defaultFeatures: ChatPanelFeatures = {
 }
 
 const defaultUserLabel = (source?: string) => {
-  if (!source || source === 'chat') return 'YOU'
+  if (!source || source === 'chat' || source === 'you') return 'YOU'
   if (source === 'jarvis') return 'JARVIS'
   if (source === 'grpc') return 'GRPC'
   return source.toUpperCase()
 }
 
 const defaultUserLabelColor = (source?: string) => {
-  if (!source || source === 'chat') return 'var(--chat-user-label)'
+  if (!source || source === 'chat' || source === 'you') return 'var(--chat-user-label)'
   if (source === 'system') return '#fa4'
   if (source === 'jarvis') return '#4af'
   if (source === 'grpc') return '#fa4'
@@ -52,15 +57,24 @@ const defaultUserLabelColor = (source?: string) => {
 }
 
 export function ChatPanel({
-  streamUrl,
-  sendUrl,
-  abortUrl,
-  historyUrl,
+  sessionId,
   assistantLabel,
   features: featuresProp,
   userLabel: userLabelProp,
   userLabelColor: userLabelColorProp,
 }: ChatPanelProps) {
+  if (!sessionId) {
+    throw new Error('ChatPanel requires a non-empty sessionId prop')
+  }
+
+  // All endpoints are derived from sessionId — a single source of identity.
+  const streamUrl = `/chat-stream?sessionId=${encodeURIComponent(sessionId)}`
+  const historyUrl = `/chat/history?sessionId=${encodeURIComponent(sessionId)}`
+  const sendUrl = `/chat/send`
+  const abortUrl = `/chat/abort`
+  const clearUrl = `/chat/clear-session`
+  const compactUrl = `/chat/compact`
+
   const features = useMemo(() => ({ ...defaultFeatures, ...featuresProp }), [featuresProp])
   const getUserLabel = useMemo(() => userLabelProp ?? defaultUserLabel, [userLabelProp])
   const getUserLabelColor = useMemo(() => userLabelColorProp ?? defaultUserLabelColor, [userLabelColorProp])
@@ -78,6 +92,15 @@ export function ChatPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toolStartTimes = useRef(new Map<string, number>())
 
+  // Reset conversation state when sessionId changes (panels reused across sessions)
+  useEffect(() => {
+    setEntries([])
+    setStreamingText('')
+    setIsStreaming(false)
+    setIsThinking(false)
+    toolStartTimes.current.clear()
+  }, [sessionId])
+
   // Auto-resize textarea
   const autoResize = useCallback(() => {
     const el = textareaRef.current
@@ -91,7 +114,6 @@ export function ChatPanel({
 
   useEffect(() => { autoResize() }, [input, autoResize])
 
-  // Track slash state
   useEffect(() => {
     if (features.slashMenu && input.startsWith('/')) {
       setSlashActive(true)
@@ -102,14 +124,12 @@ export function ChatPanel({
     }
   }, [input, features.slashMenu])
 
-  // Load history on mount — hydrate from session messages (for reconnect/detach)
+  // Hydrate from session history for reconnect/detach
   useEffect(() => {
-    const url = historyUrl ?? '/chat/history'
-    fetch(url)
+    fetch(historyUrl)
       .then(r => r.json())
       .then((history: ChatEntry[] | Array<{ role: string; text: string; source?: string }>) => {
         if (!history || history.length === 0) return
-        // Detect format: ChatEntry[] (from /chat/history) vs legacy actor format
         if ('kind' in history[0]) {
           setEntries(history as ChatEntry[])
         } else {
@@ -124,7 +144,7 @@ export function ChatPanel({
       .catch(() => {})
   }, [historyUrl])
 
-  // SSE stream
+  // SSE stream scoped to this sessionId
   useEffect(() => {
     const source = new EventSource(streamUrl)
 
@@ -247,25 +267,33 @@ export function ChatPanel({
 
   // Esc to abort — only when THIS panel has focus
   useEffect(() => {
-    if (!features.abort || !abortUrl) return
+    if (!features.abort) return
     const handleEsc = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape' && panelFocused && !slashActive && (isStreaming || isThinking)) {
         e.preventDefault()
-        fetch(abortUrl, { method: 'POST' }).catch(() => {})
+        fetch(abortUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId }),
+        }).catch(() => {})
       }
     }
     window.addEventListener('keydown', handleEsc)
     return () => window.removeEventListener('keydown', handleEsc)
-  }, [features.abort, abortUrl, isStreaming, isThinking, slashActive, panelFocused])
+  }, [features.abort, abortUrl, sessionId, isStreaming, isThinking, slashActive, panelFocused])
 
   const send = (overrideText?: string) => {
     const prompt = (overrideText ?? input).trim()
     if (!prompt && images.length === 0) return
 
     const text = prompt || (images.length > 0 ? images.map(i => i.label).join(', ') : '')
-    const payload: Record<string, unknown> = features.images
-      ? { prompt: text, images: images.length > 0 ? images.map(({ label, base64, mediaType }) => ({ label, base64, mediaType })) : undefined }
-      : { text }
+    const payload: Record<string, unknown> = {
+      sessionId,
+      prompt: text,
+      ...(features.images && images.length > 0
+        ? { images: images.map(({ label, base64, mediaType }) => ({ label, base64, mediaType })) }
+        : {}),
+    }
 
     setInput('')
     setImages([])
@@ -284,18 +312,26 @@ export function ChatPanel({
     setInput('')
 
     if (name === 'clear_session') {
-      fetch('/chat/clear-session', { method: 'POST' }).catch(() => {})
+      fetch(clearUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      }).catch(() => {})
       textareaRef.current?.focus()
       return
     }
     if (name === 'compact') {
-      fetch('/chat/compact', { method: 'POST' }).catch(() => {})
+      fetch(compactUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      }).catch(() => {})
       textareaRef.current?.focus()
       return
     }
 
     send(`use /${name}`)
-  }, [images])
+  }, [sessionId, clearUrl, compactUrl, images])
 
   const handleSlashClose = useCallback(() => {
     setSlashActive(false)
@@ -303,12 +339,8 @@ export function ChatPanel({
   }, [])
 
   const handleKey = (e: KeyboardEvent) => {
-    if (slashActive && ['ArrowUp', 'ArrowDown', 'Tab', 'Escape'].includes(e.key)) {
-      return
-    }
-    if (slashActive && e.key === 'Enter' && !e.shiftKey) {
-      return
-    }
+    if (slashActive && ['ArrowUp', 'ArrowDown', 'Tab', 'Escape'].includes(e.key)) return
+    if (slashActive && e.key === 'Enter' && !e.shiftKey) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
@@ -403,7 +435,7 @@ export function ChatPanel({
               onChange={handleChange}
               onKeyDown={handleKey}
               onPaste={handlePaste}
-              placeholder={features.slashMenu ? "Type a message... (/ for commands)" : "Talk to actor..."}
+              placeholder={features.slashMenu ? 'Type a message... (/ for commands)' : 'Type a message...'}
               autoFocus
               rows={1}
               className="chatInput chatTextarea"

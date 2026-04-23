@@ -32,22 +32,26 @@ function GenericRenderer({ state }: { state: any }) {
 }
 
 function renderPanel(comp: HudComponentState) {
-  // Chat panel
+  // Root chat docked panel — app hardcodes sessionId "main" here (only place
+  // outside HudRenderer that does so). For any other ChatPanel, piece data
+  // carries sessionId and the core renderer path handles it.
   if (comp.id === 'chat-output' || comp.id === 'chat-input') {
-    return (
-      <ChatPanel
-        streamUrl="/chat-stream"
-        sendUrl="/chat/send"
-        abortUrl="/chat/abort"
-        assistantLabel="JARVIS"
-      />
-    )
+    return <ChatPanel sessionId="main" assistantLabel="JARVIS" />
   }
 
   // Built-in renderer
   const BuiltinRenderer = renderers[comp.id]
   if (BuiltinRenderer) {
     return <BuiltinRenderer state={comp} />
+  }
+
+  // Core renderer — piece declares { plugin: null, file: 'ChatPanel' | ... }
+  if (comp.renderer && comp.renderer.plugin === null) {
+    const registry = (window as any).__JARVIS_COMPONENTS ?? {}
+    // Prefer the HUD adapter when available, else fall back to the raw component.
+    const CoreRenderer = registry[`${comp.renderer.file}HudAdapter`] ?? registry[comp.renderer.file]
+    if (CoreRenderer) return <CoreRenderer state={comp} />
+    return <GenericRenderer state={comp} />
   }
 
   // Plugin renderer

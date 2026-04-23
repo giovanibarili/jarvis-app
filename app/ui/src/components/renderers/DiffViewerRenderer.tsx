@@ -62,12 +62,14 @@ interface ViewerTab {
 }
 
 // ─── Send ai.request to the backend ───
-
-function sendAiRequest(prompt: string) {
+// DiffViewer replies always target the session that opened the diff. The
+// piece publishes `data.sessionId` on the HUD state; this helper forwards it.
+function sendAiRequest(sessionId: string, prompt: string) {
+  if (!sessionId) return
   fetch('/chat/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ sessionId, prompt }),
   }).catch(() => {})
 }
 
@@ -416,6 +418,10 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
   const [activeTabIdx, setActiveTabIdx] = useState(0)
   const [viewMode, setViewMode] = useState<'inline' | 'side-by-side'>('side-by-side')
 
+  // Session that opened each tab — used to route Accept/Reject/Dismiss replies
+  // back to the correct chat. Piece publishes data.sessionId per tab.
+  const tabSessions = useRef(new Map<string, string>())
+
   // Accumulate new data as tabs — each new hud.update adds a tab
   useEffect(() => {
     if (!data) return
@@ -428,8 +434,12 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
       ?? (data.diffs?.[0]?.path?.split('/').pop())
       ?? 'View'
 
+    const tabId = `tab-${++tabIdCounter}`
+    if ((data as any).sessionId) {
+      tabSessions.current.set(tabId, String((data as any).sessionId))
+    }
     const newTab: ViewerTab = {
-      id: `tab-${++tabIdCounter}`,
+      id: tabId,
       title,
       data,
       interactive: data.interactive ?? false,
@@ -472,7 +482,9 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
       const paths = tab.data.diffs?.map(d => d.path).join(', ')
         ?? tab.data.file?.path
         ?? tab.title
-      sendAiRequest(`[SYSTEM] User dismissed diff viewer tab "${tab.title}" (${paths}) without accepting or rejecting.`)
+      const sid = tabSessions.current.get(tab.id) ?? ''
+      sendAiRequest(sid, `[SYSTEM] User dismissed diff viewer tab "${tab.title}" (${paths}) without accepting or rejecting.`)
+      tabSessions.current.delete(tab.id)
     }
 
     removeTab(idx)
@@ -486,9 +498,11 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
       ?? tab.data.file?.path
       ?? tab.title
     const fileCount = tab.data.diffs?.length ?? 1
-    sendAiRequest(
+    const sid = tabSessions.current.get(tab.id) ?? ''
+    sendAiRequest(sid,
       `[SYSTEM] User ACCEPTED the changes in diff "${tab.title}" (${fileCount} file(s): ${paths}). Proceed with these changes.`
     )
+    tabSessions.current.delete(tab.id)
 
     removeTab(idx)
   }, [tabs, removeTab])
@@ -501,9 +515,11 @@ export function DiffViewerRenderer({ state }: { state: HudComponentState }) {
       ?? tab.data.file?.path
       ?? tab.title
     const fileCount = tab.data.diffs?.length ?? 1
-    sendAiRequest(
+    const sid = tabSessions.current.get(tab.id) ?? ''
+    sendAiRequest(sid,
       `[SYSTEM] User REJECTED the changes in diff "${tab.title}" (${fileCount} file(s): ${paths}). Please revert or propose alternatives.`
     )
+    tabSessions.current.delete(tab.id)
 
     removeTab(idx)
   }, [tabs, removeTab])
