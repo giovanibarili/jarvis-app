@@ -626,14 +626,92 @@ When hud_compare_files is called with two file paths
 Then a side-by-side comparison should appear
 ```
 
+## Feature: MCP Manager
+
+### Scenario: Canonical config path
+
+```gherkin
+Given JARVIS is installed
+When the McpManager starts with no explicit configPath argument
+Then it reads `~/.jarvis/mcp.json` (user home), NOT `<cwd>/mcp.json`
+And the user-override file is `~/.jarvis/mcp.user.json`
+```
+
+### Scenario: mcp_refresh adds a new server
+
+```gherkin
+Given ~/.jarvis/mcp.json lists [prometheus-mcp, clojure]
+When the user edits the file to add a new server "foo" and calls mcp_refresh
+Then the tool returns a string including "Added: foo"
+And mcp_list shows "foo" with status:"disconnected"
+And if foo has autoConnect:true, the server auto-connects after refresh
+```
+
+### Scenario: mcp_refresh removes a deleted server
+
+```gherkin
+Given a connected server "bar" exists in memory
+When the user removes "bar" from ~/.jarvis/mcp.json and calls mcp_refresh
+Then the tool returns a string including "Removed: bar"
+And mcp_list no longer contains "bar"
+And if the server had an open client, it is closed gracefully
+```
+
+### Scenario: mcp_refresh detects CHANGED config (new)
+
+```gherkin
+Given a server "prometheus-mcp" exists with command:"uv" and args:["run","python","-m","x"]
+And the server is currently connected
+When the user edits the config to command:"/path/to/run_stdio.sh" and args:[]
+And calls mcp_refresh
+Then the tool returns a string including "Updated: prometheus-mcp"
+And the in-memory server.config.command is now "/path/to/run_stdio.sh"
+And the previous client is closed
+And auto-reconnect fires: server transitions through disconnected → connecting → (connected | error)
+And server.toolNames is reset to [] before reconnect completes
+```
+
+### Scenario: mcp_refresh is a no-op when only whitespace changes
+
+```gherkin
+Given a server "alpha" exists in config
+When the user re-saves mcp.json with pretty-printed indentation but same values
+And calls mcp_refresh
+Then the tool returns "No changes. Total: N servers"
+And no reconnect is triggered
+```
+
+### Scenario: configsEqual semantics
+
+```gherkin
+Given two McpServerConfig objects
+Then configsEqual treats them as equal when they have the same top-level keys and values,
+     regardless of key ORDER (top-level or nested env/headers)
+And unequal when args order differs (args is meaningful-order)
+And unequal when command, url, type, or autoConnect differ
+And equal when one has an explicit `env: undefined` and the other omits `env`
+```
+
+### Scenario: autoConnect=true is picked up on refresh
+
+```gherkin
+Given a disconnected server "beta" with autoConnect:false
+When the user flips autoConnect to true in config and calls mcp_refresh
+Then "beta" is reported as "Updated: beta"
+And an auto-connect attempt fires without manual mcp_connect
+```
+
 ## Feature: Choice Prompt (jarvis_ask_choice)
 
-### Scenario: Tool is registered
+### Scenario: Tool is registered (dual shape — single + multi-question)
 
 ```gherkin
 Given the choice-prompt piece is running
 When session_get_tools filter="jarvis_ask_choice"
-Then the tool is listed with schema containing question, options, multi, allow_other
+Then the tool is listed with schema containing BOTH shapes:
+  - Single: question, options, multi, allow_other (legacy, backward-compat)
+  - Multi: questions[] with nested {question, options, multi, allow_other}
+And the tool description documents both the single and multi response formats
 ```
 
 ### Scenario: Single-choice card renders inline in chat
@@ -723,12 +801,54 @@ And the card re-renders with the italic quoted free text
 ### Scenario: Invalid input returns error
 
 ```gherkin
-Given the AI calls jarvis_ask_choice with empty question
-Then the tool returns { ok:false, error:"question is required" }
+Given the AI calls jarvis_ask_choice with neither `question` nor `questions`
+Then the tool returns { ok:false, error: /must provide either/ }
 And no SSE choice event is broadcast
 
-Given the AI calls jarvis_ask_choice with empty options array
-Then the tool returns { ok:false, error:"at least one option is required" }
+Given the AI calls jarvis_ask_choice with a `question` but empty `options` array
+Then the tool returns { ok:false, error: /must provide either/ }
+
+Given the AI calls jarvis_ask_choice with `questions:[]` (empty array)
+Then the tool returns { ok:false, error: /must provide either/ }
+
+Given the AI calls jarvis_ask_choice with `questions:[{question:"", options:[...]}]`
+Then the empty-question item is filtered out and, if none remain, error is returned
+```
+
+### Scenario: Enter key confirms the card
+
+```gherkin
+Given a single-question card with a selection made (any option clicked)
+When the user presses Enter (focus anywhere in the card except a textarea)
+Then the card submits as if CONFIRM was clicked
+And the prompt "[choice] <question> → <label>" is sent to /chat/send
+
+Given the user has selected "Other" and typed text in the textarea
+When the user presses Enter inside the textarea (without Shift)
+Then the card submits immediately with the free-text answer
+```
+
+### Scenario: Multi-question card (NEW)
+
+```gherkin
+Given the AI calls jarvis_ask_choice with `questions: [{question:"Q1", options:[...]}, {question:"Q2", options:[...], multi:true}]`
+Then ONE SSE event type:"choice" is broadcast with questions[] containing 2 items
+And the ChatPanel renders a single card with header "CHOICE · 2 QUESTIONS"
+And each question has its own radio/checkbox group separated by a dashed divider
+And CONFIRM is disabled until BOTH questions have a valid selection
+When the user picks one option for Q1 and checks 2 options for Q2, then presses Enter
+Then POST /chat/send is called with a multi-line prompt:
+  "[choice]\nQ1 → <label>\nQ2 → <labelA>, <labelB>"
+And the card becomes answered with per-question summaries "→ ..." below each group
+```
+
+### Scenario: Multi-question persistence survives reload
+
+```gherkin
+Given the user completed a 2-question choice
+When GET /chat/history?sessionId=main is fetched
+Then the choice entry has kind:"choice" with questions[] (2 items) and answers[] (2 items)
+And the "[choice]\n..." user message is NOT emitted as a separate entry
 ```
 
 ### Scenario: Session scoping — choice only reaches the caller session

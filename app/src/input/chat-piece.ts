@@ -281,50 +281,125 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
 /** Parse raw session messages into chat timeline entries. Pure helper.
  *
  * Special handling for jarvis_ask_choice:
- *   - tool_use(jarvis_ask_choice, {question, options, multi, allow_other})
- *     → entry kind:'choice'
- *   - If the NEXT user message starts with "[choice] <same question> → ...",
- *     that message is consumed as the answer (not emitted as its own entry)
- *     and the choice is marked answered with parsed values.
+ *   - tool_use(jarvis_ask_choice, input) → entry kind:'choice' with questions[]
+ *     Input shapes supported:
+ *       (a) { question, options, multi?, allow_other? } → 1 question
+ *       (b) { questions: [{ question, options, multi?, allow_other? }, ...] }
+ *   - If the NEXT user message matches "[choice] ..." the answer(s) are
+ *     consumed and the choice entry is marked answered.
+ *       Single-question response:  "[choice] <q> → <labels>"
+ *       Multi-question response:   "[choice]\n<q1> → <a1>\n<q2> → <a2>\n..."
  */
 export function parseMessagesToHistory(rawMessages: any[]): any[] {
   const entries: any[] = [];
 
-  // Pending choices waiting for their answer (indexed by question for matching)
-  let pendingChoice: { entryIdx: number; question: string; options: Array<{ value: string; label: string }> } | null = null;
+  interface PendingChoiceQuestion {
+    question: string;
+    options: Array<{ value: string; label: string }>;
+  }
+  interface PendingChoice {
+    entryIdx: number;
+    questions: PendingChoiceQuestion[];
+  }
+  // FIFO queue: multiple choices can be awaiting answers out-of-order.
+  // Without this, a later tool_use overwrites an earlier pending choice and
+  // its answer is never consumed.
+  const pendingQueue: PendingChoice[] = [];
 
   const OTHER_VALUE = "__other__";
 
-  const consumeChoiceAnswer = (text: string): boolean => {
-    if (!pendingChoice) return false;
-    // Format: "[choice] <question> → <labels>"
-    const m = text.match(/^\[choice\]\s+(.+?)\s+→\s+(.+)$/s);
-    if (!m) return false;
-    const q = m[1].trim();
-    const answerStr = m[2].trim();
-    if (q !== pendingChoice.question) return false;
-
-    // Map labels back to values. Split by ", " for multi.
-    const labels = answerStr.split(/,\s+/).map(s => s.trim()).filter(Boolean);
+  /** Map an answer string back to option values for ONE question.
+   *  Greedy longest-label-first matching so labels containing ", " (e.g.
+   *  "C) Card único, 1 submit final") aren't split incorrectly.
+   *  Anything that doesn't match a known label falls through as a single
+   *  "Other" free-text chunk.
+   */
+  const mapAnswerToValues = (
+    answerStr: string,
+    q: PendingChoiceQuestion,
+  ): { values: string[]; otherText?: string } => {
+    const labels = q.options.map(o => o.label).sort((a, b) => b.length - a.length);
     const values: string[] = [];
     let otherText: string | undefined;
-    const knownLabels = new Set(pendingChoice.options.map(o => o.label));
-    for (const lbl of labels) {
-      if (knownLabels.has(lbl)) {
-        const opt = pendingChoice.options.find(o => o.label === lbl);
-        if (opt) values.push(opt.value);
-      } else {
-        // Unknown label → treat as "Other" free-text
+
+    let rest = answerStr.trim();
+    while (rest.length > 0) {
+      let matched = false;
+      for (const lbl of labels) {
+        // Match label at start, followed by end-of-string OR ", " delimiter.
+        if (rest === lbl) {
+          const opt = q.options.find(o => o.label === lbl);
+          if (opt) values.push(opt.value);
+          rest = "";
+          matched = true;
+          break;
+        }
+        if (rest.startsWith(lbl + ", ")) {
+          const opt = q.options.find(o => o.label === lbl);
+          if (opt) values.push(opt.value);
+          rest = rest.slice(lbl.length + 2);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        // No known label at this position → treat the remaining string as free-text "Other".
         values.push(OTHER_VALUE);
-        otherText = lbl;
+        otherText = rest;
+        rest = "";
       }
     }
-    const entry = entries[pendingChoice.entryIdx];
-    if (entry && entry.kind === "choice") {
-      entry.answer = values;
-      if (otherText) entry.other_text = otherText;
+    return { values, otherText };
+  };
+
+  const consumeChoiceAnswer = (text: string): boolean => {
+    if (pendingQueue.length === 0) return false;
+    if (!text.startsWith("[choice]")) return false;
+
+    const trimmed = text.replace(/^\[choice\]\s*/, "");
+    const hasNewlines = /\n/.test(trimmed);
+
+    // Extract the first question text from the answer to find which pending choice it targets.
+    // - Multi-line: each line is "<q> → <a>". Use the FIRST line's question to match.
+    // - Single-line: "<q> → <a>".
+    const firstQMatch = hasNewlines
+      ? trimmed.split(/\n+/, 1)[0]?.match(/^(.+?)\s+→\s+(.+)$/s)
+      : trimmed.match(/^(.+?)\s+→\s+(.+)$/s);
+    if (!firstQMatch) return false;
+    const firstQ = firstQMatch[1].trim();
+
+    // Find the pending choice whose first question matches firstQ.
+    const targetIdx = pendingQueue.findIndex(p => p.questions[0]?.question === firstQ);
+    if (targetIdx === -1) return false;
+    const target = pendingQueue[targetIdx];
+
+    const entry = entries[target.entryIdx];
+    if (!entry || entry.kind !== "choice") return false;
+
+    if (hasNewlines || target.questions.length > 1) {
+      // Multi-question answer
+      const lines = trimmed.split(/\n+/).map(l => l.trim()).filter(Boolean);
+      const answersByQ: Record<string, { values: string[]; otherText?: string }> = {};
+      for (const line of lines) {
+        const m = line.match(/^(.+?)\s+→\s+(.+)$/s);
+        if (!m) continue;
+        const q = m[1].trim();
+        const ansStr = m[2].trim();
+        const pending = target.questions.find(pq => pq.question === q);
+        if (!pending) continue;
+        answersByQ[q] = mapAnswerToValues(ansStr, pending);
+      }
+      if (Object.keys(answersByQ).length === 0) return false;
+      entry.answers = target.questions.map(pq => answersByQ[pq.question] ?? { values: [] });
+      pendingQueue.splice(targetIdx, 1);
+      return true;
     }
-    pendingChoice = null;
+
+    // Single-question: entire text is "<q> → <labels>"
+    const ansStr = firstQMatch[2].trim();
+    const pending = target.questions[0];
+    entry.answers = [mapAnswerToValues(ansStr, pending)];
+    pendingQueue.splice(targetIdx, 1);
     return true;
   };
 
@@ -358,21 +433,45 @@ export function parseMessagesToHistory(rawMessages: any[]): any[] {
       for (const tu of toolUses) {
         if (tu.name === "jarvis_ask_choice" && tu.input && typeof tu.input === "object") {
           const input = tu.input as any;
-          const question = String(input.question ?? "");
-          const options = Array.isArray(input.options)
-            ? input.options.filter((o: any) => o && typeof o.value === "string" && typeof o.label === "string")
-                .map((o: any) => ({ value: String(o.value), label: String(o.label), description: o.description }))
-            : [];
+
+          // Normalize to questions[]
+          const parseOne = (raw: any): { question: string; options: any[]; multi: boolean; allow_other: boolean } | null => {
+            if (!raw || typeof raw !== "object") return null;
+            const question = String(raw.question ?? "").trim();
+            if (!question) return null;
+            const options = Array.isArray(raw.options)
+              ? raw.options
+                  .filter((o: any) => o && typeof o.value === "string" && typeof o.label === "string")
+                  .map((o: any) => ({ value: String(o.value), label: String(o.label), description: o.description }))
+              : [];
+            if (options.length === 0) return null;
+            return {
+              question,
+              options,
+              multi: raw.multi === true,
+              allow_other: raw.allow_other !== false,
+            };
+          };
+
+          let questions: Array<{ question: string; options: any[]; multi: boolean; allow_other: boolean }> = [];
+          if (Array.isArray(input.questions)) {
+            questions = input.questions.map(parseOne).filter((q: any) => q !== null);
+          } else {
+            const single = parseOne(input);
+            if (single) questions = [single];
+          }
+          if (questions.length === 0) continue;
+
           const choiceEntry: any = {
             kind: "choice",
             choice_id: tu.id ?? `choice-${entries.length}`,
-            question,
-            options,
-            multi: input.multi === true,
-            allow_other: input.allow_other !== false,
+            questions,
           };
           entries.push(choiceEntry);
-          pendingChoice = { entryIdx: entries.length - 1, question, options };
+          pendingQueue.push({
+            entryIdx: entries.length - 1,
+            questions: questions.map(q => ({ question: q.question, options: q.options })),
+          });
           continue;
         }
         entries.push({

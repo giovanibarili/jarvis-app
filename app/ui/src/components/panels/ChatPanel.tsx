@@ -248,7 +248,7 @@ export function ChatPanel({
           setIsStreaming(false)
           setIsThinking(false)
           break
-        case 'choice':
+        case 'choice': {
           setIsThinking(false)
           setIsStreaming(false)
           setStreamingText(prev => {
@@ -257,15 +257,27 @@ export function ChatPanel({
             }
             return ''
           })
+          // Normalize: prefer `questions[]`, fall back to legacy single-question fields
+          const questions = Array.isArray(data.questions) && data.questions.length > 0
+            ? data.questions.map((q: any) => ({
+                question: String(q.question ?? ''),
+                options: Array.isArray(q.options) ? q.options : [],
+                multi: !!q.multi,
+                allow_other: q.allow_other !== false,
+              }))
+            : [{
+                question: String(data.question ?? ''),
+                options: Array.isArray(data.options) ? data.options : [],
+                multi: !!data.multi,
+                allow_other: data.allow_other !== false,
+              }]
           setEntries(prev => [...prev, {
             kind: 'choice',
             choice_id: data.choice_id,
-            question: data.question,
-            options: data.options ?? [],
-            multi: !!data.multi,
-            allow_other: data.allow_other !== false,
+            questions,
           }])
           break
+        }
       }
     }
 
@@ -405,32 +417,52 @@ export function ChatPanel({
     setImages(prev => prev.filter(i => i.label !== label))
   }
 
-  const handleChoiceSubmit = useCallback((index: number, values: string[], otherText?: string) => {
-    let question = ''
-    let options: { value: string; label: string }[] = []
-    let multi = false
+  const handleChoiceSubmit = useCallback((index: number, answers: { values: string[]; otherText?: string }[]) => {
+    // Build prompt from captured questions+answers BEFORE mutating state
+    let questionsSnapshot: Array<{ question: string; options: { value: string; label: string }[]; multi: boolean }> = []
 
     setEntries(prev => {
       const target = prev[index]
       if (!target || target.kind !== 'choice') return prev
-      question = target.question
-      options = target.options
-      multi = target.multi
+      // Snapshot questions (prefer new shape, fall back to legacy fields)
+      if (Array.isArray(target.questions) && target.questions.length > 0) {
+        questionsSnapshot = target.questions.map(q => ({
+          question: q.question,
+          options: q.options,
+          multi: q.multi,
+        }))
+      } else if (target.question) {
+        questionsSnapshot = [{
+          question: target.question,
+          options: target.options ?? [],
+          multi: !!target.multi,
+        }]
+      }
       return prev.map((e, i) => {
         if (i !== index) return e
         if (e.kind !== 'choice') return e
-        return { ...e, answer: values, other_text: otherText }
+        return { ...e, answers }
       })
     })
 
-    if (!question) return
+    if (questionsSnapshot.length === 0) return
 
-    const labels = values.map(v => {
-      if (v === '__other__') return otherText ?? '(other)'
-      return options.find(o => o.value === v)?.label ?? v
-    })
-    const joined = multi ? labels.join(', ') : (labels[0] ?? '')
-    const prompt = `[choice] ${question} → ${joined}`
+    // Serialize: "[choice] q → answer" (single) or "[choice]\nq1 → a1\nq2 → a2" (multi)
+    const lineFor = (qi: number): string => {
+      const q = questionsSnapshot[qi]
+      const a = answers[qi]
+      if (!q || !a) return ''
+      const labels = a.values.map(v => {
+        if (v === '__other__') return a.otherText ?? '(other)'
+        return q.options.find(o => o.value === v)?.label ?? v
+      })
+      const joined = q.multi ? labels.join(', ') : (labels[0] ?? '')
+      return `${q.question} → ${joined}`
+    }
+
+    const prompt = questionsSnapshot.length === 1
+      ? `[choice] ${lineFor(0)}`
+      : `[choice]\n${questionsSnapshot.map((_, i) => lineFor(i)).filter(Boolean).join('\n')}`
 
     fetch(sendUrl, {
       method: 'POST',

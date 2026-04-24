@@ -1,6 +1,7 @@
 // src/mcp/manager.ts
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -16,7 +17,7 @@ import { graphRegistry } from "../core/graph-registry.js";
 // NOTE: PieceManager is responsible for registering this piece as a core graph node.
 // This piece only enriches its node with children (MCP servers) and updates meta.
 
-interface McpServerConfig {
+export interface McpServerConfig {
   type: "http" | "sse" | "stdio";
   url?: string;
   headers?: Record<string, string>;
@@ -43,6 +44,25 @@ interface McpServerState {
   connectPromise?: Promise<string>;
 }
 
+/** Deep-compare two MCP server configs with key-order-insensitive JSON. */
+export function configsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
+  return stableStringify(a) === stableStringify(b);
+}
+
+/** Recursively stringify with sorted keys so key order doesn't affect equality.
+ *  Arrays keep their order (meaningful for `args`); plain objects are key-sorted.
+ *  Keys whose value is `undefined` are skipped (matches JSON.stringify semantics),
+ *  so `{x:1}` and `{x:1, y:undefined}` compare equal.
+ */
+function stableStringify(value: unknown): string {
+  if (value === undefined) return "null"; // shouldn't reach here top-level; safe fallback
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(v => v === undefined ? "null" : stableStringify(v)).join(",") + "]";
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).filter(k => obj[k] !== undefined).sort();
+  return "{" + keys.map(k => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
+}
+
 export class McpManager implements Piece {
   readonly id = "mcp-manager";
   readonly name = "MCP Manager";
@@ -65,7 +85,8 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
 
   constructor(registry: CapabilityRegistry, configPath?: string) {
     this.registry = registry;
-    this.configPath = configPath ?? join(process.cwd(), "mcp.json");
+    // Canonical path: ~/.jarvis/mcp.json (user config). Fallback to cwd for tests/custom setups.
+    this.configPath = configPath ?? join(homedir(), ".jarvis", "mcp.json");
   }
 
   async start(bus: EventBus): Promise<void> {
@@ -389,12 +410,38 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
     const configs = this.loadConfig();
     const added: string[] = [];
     const removed: string[] = [];
+    const changed: string[] = [];
+    const reconnectTargets: string[] = [];
 
     // Add new servers
     for (const [name, config] of Object.entries(configs)) {
       if (!this.servers.has(name)) {
         this.servers.set(name, { name, config, status: "disconnected", toolNames: [] });
         added.push(name);
+      }
+    }
+
+    // Detect changed configs on existing servers — disconnect + replace config.
+    // Uses a stable JSON snapshot to compare (order-independent at top level via sort).
+    for (const [name, server] of this.servers) {
+      if (!(name in configs)) continue;
+      const newCfg = configs[name];
+      if (configsEqual(server.config, newCfg)) continue;
+
+      const wasConnected = server.status === "connected";
+      if (server.client) {
+        try { await server.client.close(); } catch { /* ignore */ }
+      }
+      server.client = undefined;
+      server.transport = undefined;
+      server.connectPromise = undefined;
+      server.config = newCfg;
+      server.status = "disconnected";
+      server.toolNames = [];
+      server.error = undefined;
+      changed.push(name);
+      if (wasConnected || newCfg.autoConnect === true) {
+        reconnectTargets.push(name);
       }
     }
 
@@ -409,12 +456,32 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
       }
     }
 
-    log.info({ added, removed }, "McpManager: config refreshed");
+    // Auto-reconnect: (a) previously-connected servers whose config changed,
+    // (b) any server (new or existing) with autoConnect=true that isn't connected,
+    // so a config edit that flips autoConnect=true also takes effect.
+    const autoConnectNames = new Set<string>(reconnectTargets);
+    for (const [name, server] of this.servers) {
+      if (server.config.autoConnect === true && server.status !== "connected") {
+        autoConnectNames.add(name);
+      }
+    }
+    if (autoConnectNames.size > 0) {
+      // Fire-and-forget — don't block refresh on reconnect results.
+      for (const name of autoConnectNames) {
+        this.connectServer(name).catch(err => {
+          log.warn({ name, err: String(err) }, "McpManager: auto-reconnect after refresh failed");
+        });
+      }
+    }
+
+    log.info({ added, removed, changed }, "McpManager: config refreshed");
     const parts: string[] = [];
     if (added.length) parts.push(`Added: ${added.join(", ")}`);
+    if (changed.length) parts.push(`Updated: ${changed.join(", ")}`);
     if (removed.length) parts.push(`Removed: ${removed.join(", ")}`);
     if (!parts.length) parts.push("No changes");
     parts.push(`Total: ${this.servers.size} servers`);
+    this.publishHudUpdate();
     return parts.join(". ");
   }
 

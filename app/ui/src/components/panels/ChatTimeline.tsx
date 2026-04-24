@@ -13,12 +13,38 @@ export interface ChoiceOption {
   description?: string
 }
 
+export interface ChoiceQuestion {
+  question: string
+  options: ChoiceOption[]
+  multi: boolean
+  allow_other: boolean
+}
+
+export interface ChoiceAnswer {
+  values: string[]
+  otherText?: string
+}
+
 export type ChatEntry =
   | { kind: 'message'; role: 'user' | 'assistant'; text: string; images?: ChatImage[]; source?: string; session?: string; aborted?: boolean }
   | { kind: 'capability'; name: string; id: string; args?: string; status: 'running' | 'done' | 'cancelled'; ms?: number; output?: string; expanded?: boolean }
   | { kind: 'compaction'; engine: 'api' | 'fallback'; tokensBefore: number; tokensAfter: number; summary: string; expanded?: boolean }
   | { kind: 'bash_result'; command: string; output: string; exitCode: number; ms: number; expanded?: boolean }
-  | { kind: 'choice'; choice_id: string; question: string; options: ChoiceOption[]; multi: boolean; allow_other: boolean; answer?: string[]; other_text?: string }
+  | {
+      kind: 'choice'
+      choice_id: string
+      /** New: one card, many questions */
+      questions: ChoiceQuestion[]
+      /** Per-question answers when submitted */
+      answers?: ChoiceAnswer[]
+      /** @deprecated legacy single-question fields (still read for backward compat) */
+      question?: string
+      options?: ChoiceOption[]
+      multi?: boolean
+      allow_other?: boolean
+      answer?: string[]
+      other_text?: string
+    }
 
 interface Props {
   entries: ChatEntry[]
@@ -33,8 +59,8 @@ interface Props {
   /** Colors for assistant labels */
   assistantLabelColor?: string
   onToggleExpand: (index: number) => void
-  /** Submit a choice answer. values = selected option values; otherText = free-text from "Other" field (if any). */
-  onChoiceSubmit?: (index: number, values: string[], otherText?: string) => void
+  /** Submit a choice answer — one answer per question. */
+  onChoiceSubmit?: (index: number, answers: ChoiceAnswer[]) => void
 }
 
 // ─── Choice card (inline prompt with radio / checkbox + free-text "Other") ───
@@ -44,53 +70,127 @@ const OTHER_VALUE = '__other__'
 interface ChoiceCardProps {
   index: number
   entry: Extract<ChatEntry, { kind: 'choice' }>
-  onSubmit?: (index: number, values: string[], otherText?: string) => void
+  onSubmit?: (index: number, answers: ChoiceAnswer[]) => void
   assistantLabel: string
   assistantLabelColor: string
 }
 
+/** Normalize an entry to questions[] — handles legacy single-question entries
+ *  coming from older SSE payloads or persisted history. */
+function getQuestions(entry: Extract<ChatEntry, { kind: 'choice' }>): ChoiceQuestion[] {
+  if (Array.isArray(entry.questions) && entry.questions.length > 0) return entry.questions
+  if (entry.question && Array.isArray(entry.options)) {
+    return [{
+      question: entry.question,
+      options: entry.options,
+      multi: !!entry.multi,
+      allow_other: entry.allow_other !== false,
+    }]
+  }
+  return []
+}
+
+/** Normalize answers — supports both new `answers` and legacy `answer`/`other_text`. */
+function getAnswers(entry: Extract<ChatEntry, { kind: 'choice' }>): ChoiceAnswer[] | null {
+  if (Array.isArray(entry.answers) && entry.answers.length > 0) return entry.answers
+  if (Array.isArray(entry.answer) && entry.answer.length > 0) {
+    return [{ values: entry.answer, otherText: entry.other_text }]
+  }
+  return null
+}
+
 function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColor }: ChoiceCardProps) {
-  const answered = Array.isArray(entry.answer) && entry.answer.length > 0
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [otherText, setOtherText] = useState('')
+  const questions = getQuestions(entry)
+  const persistedAnswers = getAnswers(entry)
+  const answered = persistedAnswers !== null
 
-  const otherChecked = selected.has(OTHER_VALUE)
+  // One state slot per question
+  const [selectedByQ, setSelectedByQ] = useState<Array<Set<string>>>(
+    () => questions.map(() => new Set<string>())
+  )
+  const [otherTextByQ, setOtherTextByQ] = useState<string[]>(
+    () => questions.map(() => '')
+  )
 
-  const toggle = useCallback((value: string) => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      if (entry.multi) {
-        if (next.has(value)) next.delete(value)
-        else next.add(value)
+  const cardRef = useRef<HTMLDivElement>(null)
+
+  // Auto-focus first option when card appears
+  useEffect(() => {
+    if (answered) return
+    const node = cardRef.current?.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')
+    node?.focus()
+  }, [answered])
+
+  const toggle = useCallback((qIdx: number, value: string) => {
+    setSelectedByQ(prev => {
+      const next = prev.slice()
+      const curr = new Set(prev[qIdx])
+      const q = questions[qIdx]
+      if (q?.multi) {
+        if (curr.has(value)) curr.delete(value)
+        else curr.add(value)
       } else {
-        next.clear()
-        next.add(value)
+        curr.clear()
+        curr.add(value)
       }
+      next[qIdx] = curr
       return next
     })
-  }, [entry.multi])
+  }, [questions])
 
-  const canSubmit = !answered && (
-    (selected.size > 0 && !otherChecked) ||
-    (otherChecked && otherText.trim().length > 0)
-  ) && (entry.multi || selected.size === 1 || otherChecked)
+  const setOtherText = useCallback((qIdx: number, text: string) => {
+    setOtherTextByQ(prev => {
+      const next = prev.slice()
+      next[qIdx] = text
+      return next
+    })
+  }, [])
+
+  // Each question must have at least one valid answer (value chosen, OR 'other' + text)
+  const questionAnswered = (qIdx: number): boolean => {
+    const sel = selectedByQ[qIdx]
+    if (!sel || sel.size === 0) return false
+    const hasOther = sel.has(OTHER_VALUE)
+    if (hasOther && otherTextByQ[qIdx].trim().length === 0) return false
+    return true
+  }
+
+  const canSubmit = !answered && questions.length > 0 && questions.every((_, i) => questionAnswered(i))
 
   const handleSubmit = useCallback(() => {
     if (!canSubmit || !onSubmit) return
-    const values = Array.from(selected)
-    onSubmit(index, values, otherChecked ? otherText.trim() : undefined)
-  }, [canSubmit, onSubmit, index, selected, otherChecked, otherText])
-
-  const renderAnswerSummary = () => {
-    if (!answered) return null
-    const labels = entry.answer!.map(v => {
-      if (v === OTHER_VALUE) return entry.other_text ?? '(other)'
-      return entry.options.find(o => o.value === v)?.label ?? v
+    const answers: ChoiceAnswer[] = questions.map((_, i) => {
+      const values = Array.from(selectedByQ[i])
+      const hasOther = values.includes(OTHER_VALUE)
+      return { values, otherText: hasOther ? otherTextByQ[i].trim() : undefined }
     })
+    onSubmit(index, answers)
+  }, [canSubmit, onSubmit, index, questions, selectedByQ, otherTextByQ])
+
+  // Global Enter → submit, unless the active element is a textarea (Other field handles its own Enter)
+  const onKeyDownCard = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter' || e.shiftKey) return
+    const active = document.activeElement
+    if (active && active.tagName === 'TEXTAREA') return
+    if (!canSubmit) return
+    e.preventDefault()
+    handleSubmit()
+  }, [canSubmit, handleSubmit])
+
+  const renderAnswerSummaryFor = (qIdx: number) => {
+    if (!answered || !persistedAnswers) return null
+    const ans = persistedAnswers[qIdx]
+    if (!ans) return null
+    const q = questions[qIdx]
+    const labels = ans.values.map(v => {
+      if (v === OTHER_VALUE) return ans.otherText ?? '(other)'
+      return q?.options.find(o => o.value === v)?.label ?? v
+    })
+    if (labels.length === 0) return null
     return (
       <div style={{
-        marginTop: '6px',
-        padding: '4px 8px',
+        marginTop: '4px',
+        padding: '3px 8px',
         background: 'rgba(68,170,255,0.08)',
         borderLeft: '2px solid #4af',
         borderRadius: '0 3px 3px 0',
@@ -103,41 +203,82 @@ function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColo
     )
   }
 
-  return (
-    <div style={{
-      marginBottom: '8px',
-      padding: '8px 10px',
-      background: '#11151e',
-      border: '1px solid #2a3040',
-      borderLeft: '3px solid #4af',
-      borderRadius: '4px',
-      opacity: answered ? 0.75 : 1,
-    }}>
-      <div style={{
-        color: assistantLabelColor,
-        fontFamily: 'var(--font-display)',
-        fontSize: '9px',
-        fontWeight: 600,
-        marginBottom: '4px',
-        letterSpacing: '0.5px',
-      }}>
-        {assistantLabel} · CHOICE{entry.multi ? ' · MULTI' : ''}
-      </div>
-      <div style={{
-        color: 'var(--chat-jarvis)',
-        fontSize: '13px',
-        lineHeight: '1.4',
-        marginBottom: '6px',
-      }}>
-        {entry.question}
-      </div>
+  const renderQuestion = (q: ChoiceQuestion, qIdx: number) => {
+    const sel = selectedByQ[qIdx] ?? new Set<string>()
+    const otherChecked = sel.has(OTHER_VALUE)
+    const persisted = persistedAnswers?.[qIdx]
+    const persistedValues = new Set(persisted?.values ?? [])
+    const nameAttr = `choice-${entry.choice_id}-q${qIdx}`
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-        {entry.options.map(opt => {
-          const checked = selected.has(opt.value) || (answered && entry.answer!.includes(opt.value))
-          return (
+    return (
+      <div
+        key={qIdx}
+        style={{
+          marginTop: qIdx === 0 ? 0 : '10px',
+          paddingTop: qIdx === 0 ? 0 : '8px',
+          borderTop: qIdx === 0 ? 'none' : '1px dashed #2a3040',
+        }}
+      >
+        <div style={{
+          color: 'var(--chat-jarvis)',
+          fontSize: '13px',
+          lineHeight: '1.4',
+          marginBottom: '4px',
+          fontWeight: questions.length > 1 ? 500 : 400,
+        }}>
+          {questions.length > 1 && (
+            <span style={{ color: assistantLabelColor, marginRight: '6px', fontSize: '10px', fontFamily: 'var(--font-display)' }}>
+              Q{qIdx + 1}
+            </span>
+          )}
+          {q.question}
+          {q.multi && (
+            <span style={{ marginLeft: '6px', fontSize: '9px', color: '#6a7a8a', letterSpacing: '0.5px' }}>· MULTI</span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+          {q.options.map(opt => {
+            const checked = sel.has(opt.value) || (answered && persistedValues.has(opt.value))
+            return (
+              <label
+                key={opt.value}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '8px',
+                  padding: '4px 6px',
+                  borderRadius: '3px',
+                  cursor: answered ? 'default' : 'pointer',
+                  background: checked ? 'rgba(68,170,255,0.08)' : 'transparent',
+                  border: checked ? '1px solid rgba(68,170,255,0.3)' : '1px solid transparent',
+                  fontSize: '12px',
+                  color: 'var(--chat-jarvis)',
+                  transition: 'all 0.12s',
+                }}
+                onMouseEnter={e => { if (!answered && !checked) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.03)' }}
+                onMouseLeave={e => { if (!answered && !checked) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+              >
+                <input
+                  type={q.multi ? 'checkbox' : 'radio'}
+                  name={nameAttr}
+                  checked={checked}
+                  disabled={answered}
+                  onChange={() => toggle(qIdx, opt.value)}
+                  style={{ marginTop: '2px', accentColor: '#4af' }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500 }}>{opt.label}</div>
+                  {opt.description && (
+                    <div style={{ fontSize: '10px', color: '#6a7a8a', marginTop: '1px' }}>{opt.description}</div>
+                  )}
+                </div>
+              </label>
+            )
+          })}
+
+          {q.allow_other && (
             <label
-              key={opt.value}
               style={{
                 display: 'flex',
                 alignItems: 'flex-start',
@@ -145,102 +286,107 @@ function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColo
                 padding: '4px 6px',
                 borderRadius: '3px',
                 cursor: answered ? 'default' : 'pointer',
-                background: checked ? 'rgba(68,170,255,0.08)' : 'transparent',
-                border: checked ? '1px solid rgba(68,170,255,0.3)' : '1px solid transparent',
+                background: otherChecked || (answered && persistedValues.has(OTHER_VALUE))
+                  ? 'rgba(68,170,255,0.08)'
+                  : 'transparent',
+                border: otherChecked || (answered && persistedValues.has(OTHER_VALUE))
+                  ? '1px solid rgba(68,170,255,0.3)'
+                  : '1px solid transparent',
                 fontSize: '12px',
                 color: 'var(--chat-jarvis)',
-                transition: 'all 0.12s',
               }}
-              onMouseEnter={e => { if (!answered && !checked) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.03)' }}
-              onMouseLeave={e => { if (!answered && !checked) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
             >
               <input
-                type={entry.multi ? 'checkbox' : 'radio'}
-                name={`choice-${entry.choice_id}`}
-                checked={checked}
+                type={q.multi ? 'checkbox' : 'radio'}
+                name={nameAttr}
+                checked={otherChecked || (answered && persistedValues.has(OTHER_VALUE))}
                 disabled={answered}
-                onChange={() => toggle(opt.value)}
+                onChange={() => toggle(qIdx, OTHER_VALUE)}
                 style={{ marginTop: '2px', accentColor: '#4af' }}
               />
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500 }}>{opt.label}</div>
-                {opt.description && (
-                  <div style={{ fontSize: '10px', color: '#6a7a8a', marginTop: '1px' }}>{opt.description}</div>
+                <div style={{ fontWeight: 500, fontStyle: 'italic', opacity: 0.85 }}>Other (write your own)</div>
+                {(otherChecked && !answered) && (
+                  <textarea
+                    value={otherTextByQ[qIdx] ?? ''}
+                    onChange={e => setOtherText(qIdx, e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleSubmit()
+                      }
+                    }}
+                    placeholder="Type your answer..."
+                    autoFocus
+                    rows={2}
+                    style={{
+                      width: '100%',
+                      marginTop: '4px',
+                      padding: '4px 6px',
+                      background: '#0a0e14',
+                      color: 'var(--chat-jarvis)',
+                      border: '1px solid #2a3040',
+                      borderRadius: '3px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '12px',
+                      resize: 'vertical',
+                      outline: 'none',
+                    }}
+                  />
+                )}
+                {answered && persistedValues.has(OTHER_VALUE) && persisted?.otherText && (
+                  <div style={{ fontSize: '11px', color: '#8cf', marginTop: '2px', fontStyle: 'italic' }}>
+                    "{persisted.otherText}"
+                  </div>
                 )}
               </div>
             </label>
-          )
-        })}
+          )}
+        </div>
 
-        {entry.allow_other && (
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: '8px',
-              padding: '4px 6px',
-              borderRadius: '3px',
-              cursor: answered ? 'default' : 'pointer',
-              background: otherChecked || (answered && entry.answer!.includes(OTHER_VALUE))
-                ? 'rgba(68,170,255,0.08)'
-                : 'transparent',
-              border: otherChecked || (answered && entry.answer!.includes(OTHER_VALUE))
-                ? '1px solid rgba(68,170,255,0.3)'
-                : '1px solid transparent',
-              fontSize: '12px',
-              color: 'var(--chat-jarvis)',
-            }}
-          >
-            <input
-              type={entry.multi ? 'checkbox' : 'radio'}
-              name={`choice-${entry.choice_id}`}
-              checked={otherChecked || (answered && entry.answer!.includes(OTHER_VALUE))}
-              disabled={answered}
-              onChange={() => toggle(OTHER_VALUE)}
-              style={{ marginTop: '2px', accentColor: '#4af' }}
-            />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 500, fontStyle: 'italic', opacity: 0.85 }}>Other (write your own)</div>
-              {(otherChecked && !answered) && (
-                <textarea
-                  value={otherText}
-                  onChange={e => setOtherText(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      handleSubmit()
-                    }
-                  }}
-                  placeholder="Type your answer..."
-                  autoFocus
-                  rows={2}
-                  style={{
-                    width: '100%',
-                    marginTop: '4px',
-                    padding: '4px 6px',
-                    background: '#0a0e14',
-                    color: 'var(--chat-jarvis)',
-                    border: '1px solid #2a3040',
-                    borderRadius: '3px',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '12px',
-                    resize: 'vertical',
-                    outline: 'none',
-                  }}
-                />
-              )}
-              {answered && entry.answer!.includes(OTHER_VALUE) && entry.other_text && (
-                <div style={{ fontSize: '11px', color: '#8cf', marginTop: '2px', fontStyle: 'italic' }}>
-                  "{entry.other_text}"
-                </div>
-              )}
-            </div>
-          </label>
-        )}
+        {renderAnswerSummaryFor(qIdx)}
+      </div>
+    )
+  }
+
+  if (questions.length === 0) return null
+
+  const headerLabel = questions.length > 1 ? `CHOICE · ${questions.length} QUESTIONS` : `CHOICE${questions[0].multi ? ' · MULTI' : ''}`
+
+  return (
+    <div
+      ref={cardRef}
+      tabIndex={-1}
+      onKeyDown={onKeyDownCard}
+      style={{
+        marginBottom: '8px',
+        padding: '8px 10px',
+        background: '#11151e',
+        border: '1px solid #2a3040',
+        borderLeft: '3px solid #4af',
+        borderRadius: '4px',
+        opacity: answered ? 0.75 : 1,
+        outline: 'none',
+      }}
+    >
+      <div style={{
+        color: assistantLabelColor,
+        fontFamily: 'var(--font-display)',
+        fontSize: '9px',
+        fontWeight: 600,
+        marginBottom: '6px',
+        letterSpacing: '0.5px',
+      }}>
+        {assistantLabel} · {headerLabel}
       </div>
 
+      {questions.map((q, i) => renderQuestion(q, i))}
+
       {!answered && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
+          <div style={{ fontSize: '10px', color: '#4a5a6a', fontFamily: 'var(--font-mono)' }}>
+            ⏎ to confirm
+          </div>
           <button
             onClick={handleSubmit}
             disabled={!canSubmit}
@@ -261,8 +407,6 @@ function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColo
           </button>
         </div>
       )}
-
-      {renderAnswerSummary()}
     </div>
   )
 }
