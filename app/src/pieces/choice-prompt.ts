@@ -1,20 +1,27 @@
 // src/pieces/choice-prompt.ts
 // Choice Prompt piece — registers jarvis_ask_choice capability.
 //
-// Flow:
-//   1. LLM calls jarvis_ask_choice(question, options, multi?, allow_other?)
-//   2. Handler broadcasts an SSE event type:"choice" to the caller's session.
-//      The ChatPanel renders an inline card with radio/checkbox + optional
-//      "Other" free-text input and a Confirm button.
-//   3. Handler returns immediately { ok: true, choice_id } — the user's
-//      answer will arrive as a NEW ai.request in the next turn, formatted as
-//      `[choice] <question> → <value(s)>`. The LLM simply reads the next
-//      user message to continue.
+// Supports TWO shapes in the same tool (backward-compatible):
+//   1. SINGLE question:
+//      { question, options, multi?, allow_other? }
+//   2. MULTIPLE questions (one card, one submit):
+//      { questions: [{ question, options, multi?, allow_other? }, ...] }
 //
-// Persistence: the tool_use block (with {question, options, multi, choice_id})
-// stays in the session history naturally. The frontend reconstructs the
-// kind:'choice' entry from history via parseMessagesToHistory — marking it
-// answered if a subsequent user message matches the "[choice]" prefix.
+// Flow:
+//   1. LLM calls jarvis_ask_choice(...)
+//   2. Handler normalizes to `questions[]` (single → array of 1)
+//      and broadcasts SSE event type:"choice" to the caller's session.
+//      The ChatPanel renders ONE inline card with ALL questions + single
+//      Confirm. Pressing Enter also confirms (unless focus is in textarea).
+//   3. Handler returns immediately { ok: true, choice_id, pending: true }.
+//      The user's answer arrives as a NEW ai.request in the next turn:
+//        Single question  → "[choice] <question> → <value(s)>"
+//        Multi questions  → "[choice]\n<q1> → <a1>\n<q2> → <a2>\n..."
+//
+// Persistence: the tool_use block (with {questions}|{question,options,...})
+// stays in the session history. The frontend reconstructs the kind:'choice'
+// entry from history via parseMessagesToHistory — marking it answered if a
+// subsequent user message matches the "[choice]" prefix (single or multi).
 
 import type { EventBus } from "../core/bus.js";
 import type { Piece } from "../core/piece.js";
@@ -28,12 +35,62 @@ export interface ChoiceOption {
   description?: string;
 }
 
-export interface ChoicePromptData {
-  choice_id: string;
+export interface ChoiceQuestion {
   question: string;
   options: ChoiceOption[];
   multi: boolean;
   allow_other: boolean;
+}
+
+export interface ChoicePromptData {
+  choice_id: string;
+  questions: ChoiceQuestion[];
+  /** @deprecated kept for SSE backward-compat with older frontends */
+  question?: string;
+  /** @deprecated kept for SSE backward-compat with older frontends */
+  options?: ChoiceOption[];
+  /** @deprecated kept for SSE backward-compat with older frontends */
+  multi?: boolean;
+  /** @deprecated kept for SSE backward-compat with older frontends */
+  allow_other?: boolean;
+}
+
+// ─── Pure helpers (exported for tests) ────────────────────────────────────
+
+/** Normalize raw tool input into a validated list of questions.
+ *  Returns [] if nothing usable was provided.
+ */
+export function normalizeQuestions(input: any): ChoiceQuestion[] {
+  const parseOne = (raw: any): ChoiceQuestion | null => {
+    if (!raw || typeof raw !== "object") return null;
+    const question = String(raw.question ?? "").trim();
+    if (!question) return null;
+    const rawOpts = Array.isArray(raw.options) ? raw.options : [];
+    const options: ChoiceOption[] = rawOpts
+      .filter((o: any) => o && typeof o.value === "string" && typeof o.label === "string")
+      .map((o: any) => ({
+        value: String(o.value),
+        label: String(o.label),
+        description: o.description ? String(o.description) : undefined,
+      }));
+    if (options.length === 0) return null;
+    return {
+      question,
+      options,
+      multi: raw.multi === true,
+      allow_other: raw.allow_other !== false, // default true
+    };
+  };
+
+  // Shape 1: { questions: [...] }
+  if (Array.isArray(input?.questions)) {
+    return input.questions
+      .map(parseOne)
+      .filter((q: ChoiceQuestion | null): q is ChoiceQuestion => q !== null);
+  }
+  // Shape 2: { question, options, ... }
+  const single = parseOne(input);
+  return single ? [single] : [];
 }
 
 export class ChoicePromptPiece implements Piece {
@@ -69,17 +126,19 @@ export class ChoicePromptPiece implements Piece {
     this.registry.register({
       name: "jarvis_ask_choice",
       description:
-        "Ask the user to choose between options in the chat. Renders an inline card with radio buttons (single) or checkboxes (multi) plus an optional free-text field. The user's answer arrives as the NEXT user message formatted as `[choice] <question> → <value(s)>` — just continue from there. Use when you need a structured decision from the user (which approach, which files, yes/no, etc.) instead of free-form follow-up. The tool returns immediately; do NOT call it again for the same question.",
+        "Ask the user to choose between options in the chat. Renders an inline card with radio buttons (single) or checkboxes (multi), plus an optional 'Other' free-text field. The user confirms the entire card at once — Enter submits. Supports BOTH shapes: (a) a single question: {question, options, multi?, allow_other?} — answer arrives as `[choice] <question> → <value(s)>`; or (b) multiple questions in one card: {questions: [{question, options, multi?, allow_other?}, ...]} — answer arrives as `[choice]\\n<q1> → <a1>\\n<q2> → <a2>\\n...`. Use when you need structured decisions from the user (single pick, multi pick, or a small batch of related questions). The tool returns immediately; do NOT call it again for the same question(s).",
       input_schema: {
         type: "object",
         properties: {
+          // ─── Single-question shape (backward-compatible) ─────────────
           question: {
             type: "string",
-            description: "The question shown to the user above the options.",
+            description:
+              "The question shown to the user above the options. Use this for a single-question card. For multiple questions, use `questions` instead.",
           },
           options: {
             type: "array",
-            description: "List of options the user can pick from.",
+            description: "Options for the single-question shape (required if `question` is set).",
             items: {
               type: "object",
               properties: {
@@ -99,57 +158,86 @@ export class ChoicePromptPiece implements Piece {
             type: "boolean",
             description: "If true, include an 'Other (write your own)' option that opens a free-text field. Default: true.",
           },
+          // ─── Multi-question shape (new) ──────────────────────────────
+          questions: {
+            type: "array",
+            description:
+              "List of questions to render in ONE card. Use this instead of the top-level `question`/`options` when you need multiple decisions in a single round-trip. The user confirms all questions together with one submit.",
+            items: {
+              type: "object",
+              properties: {
+                question: { type: "string", description: "The question shown to the user." },
+                options: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      value: { type: "string" },
+                      label: { type: "string" },
+                      description: { type: "string" },
+                    },
+                    required: ["value", "label"],
+                  },
+                  minItems: 1,
+                },
+                multi: { type: "boolean", description: "Multi-select (checkboxes) for this question." },
+                allow_other: { type: "boolean", description: "Allow 'Other' free-text for this question. Default: true." },
+              },
+              required: ["question", "options"],
+            },
+            minItems: 1,
+          },
         },
-        required: ["question", "options"],
+        // Note: we don't declare `required` because either `question` OR `questions` is valid.
+        // Validation happens in the handler.
       },
       handler: async (input) => {
-        const question = String(input.question ?? "").trim();
-        const rawOptions = Array.isArray(input.options) ? input.options : [];
-        const options: ChoiceOption[] = rawOptions
-          .filter((o: any) => o && typeof o.value === "string" && typeof o.label === "string")
-          .map((o: any) => ({
-            value: String(o.value),
-            label: String(o.label),
-            description: o.description ? String(o.description) : undefined,
-          }));
-
-        if (!question) {
-          return { ok: false, error: "question is required" };
-        }
-        if (options.length === 0) {
-          return { ok: false, error: "at least one option is required" };
-        }
-
         const sessionId = input.__sessionId as string | undefined;
         if (!sessionId) {
           return { ok: false, error: "no session context (internal error)" };
         }
 
-        const multi = input.multi === true;
-        const allowOther = input.allow_other !== false; // default true
+        const questions = normalizeQuestions(input);
+        if (questions.length === 0) {
+          return {
+            ok: false,
+            error:
+              "must provide either (a) `question` + `options`, or (b) `questions: [{question, options, ...}]`",
+          };
+        }
+
         const choiceId = this.nextId();
 
+        // SSE payload: include `questions` (new) AND legacy single-question
+        // fields (question/options/multi/allow_other) when there's exactly
+        // one question — older frontend versions still work.
         const data: ChoicePromptData = {
           choice_id: choiceId,
-          question,
-          options,
-          multi,
-          allow_other: allowOther,
+          questions,
         };
+        if (questions.length === 1) {
+          data.question = questions[0].question;
+          data.options = questions[0].options;
+          data.multi = questions[0].multi;
+          data.allow_other = questions[0].allow_other;
+        }
 
-        // Push the choice card into the chat SSE stream of the caller's session.
         this.chatPiece.broadcastEvent(sessionId, {
           type: "choice",
           ...data,
           session: sessionId,
         });
 
-        log.info({ sessionId, choiceId, multi, options: options.length }, "ChoicePrompt: published choice");
+        log.info(
+          { sessionId, choiceId, questions: questions.length },
+          "ChoicePrompt: published choice",
+        );
 
         return {
           ok: true,
           choice_id: choiceId,
           pending: true,
+          questions: questions.length,
           message: "Choice shown to user. Their answer will arrive as the next user message.",
         };
       },

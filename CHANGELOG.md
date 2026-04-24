@@ -5,6 +5,22 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-04-24
+
+### Added
+
+- **Choice Prompt — multi-question cards.** `jarvis_ask_choice` now accepts `{ questions: [{ question, options, multi?, allow_other? }, ...] }` in addition to the legacy single-question shape. Renders one inline card with all questions and a single Confirm. Answer comes back as `[choice]\n<q1> → <a1>\n<q2> → <a2>\n...`. History rehydration (`parseMessagesToHistory`) now uses a FIFO queue so multiple pending choices don't overwrite each other, and label-to-value mapping uses greedy longest-match so labels containing `, ` (e.g. `"C) Card único, 1 submit final"`) parse correctly.
+- **MCP Manager — config change detection on refresh.** `mcp_refresh` now detects CHANGED server configs (not just added/removed), disconnects the old client, replaces the in-memory config, and auto-reconnects when the server was previously connected or has `autoConnect: true`. Returns `Added: / Updated: / Removed:` in the tool output. Exposed `configsEqual(a, b)` with order-insensitive key comparison (args keep meaningful order).
+- **MCP Manager — canonical config path.** `McpManager` now defaults to `~/.jarvis/mcp.json` instead of `<cwd>/mcp.json`. Constructor override still works for tests and custom setups.
+- Unit tests: `src/input/chat-piece.test.ts` (10 tests covering single/multi choice parsing, greedy label match, queue ordering) and `src/mcp/manager.test.ts` (14 tests covering `configsEqual` semantics and refresh diff behavior).
+- Functional-test scenarios for MCP Manager (canonical path, add/remove/update refresh, no-op on whitespace change, autoConnect flip) and multi-question choice cards.
+
+### Changed
+
+- `ChoicePromptData` SSE payload now carries `questions: ChoiceQuestion[]` as the primary shape; legacy `question` / `options` / `multi` / `allow_other` fields remain for backward-compatibility with older frontends.
+- `ChatTimeline` choice card: one card renders all questions, single Confirm submits all answers at once; `onChoiceSubmit(index, answers[])` replaces the old `(index, values, otherText)` signature. Legacy single-question entries from persisted history still render via a normalization shim.
+- `ChatPanel` publishes a single `ai.request` with the multi-line `[choice]` format when multiple questions are answered.
+
 ## [0.2.0] - 2026-04-23
 
 ### Added
