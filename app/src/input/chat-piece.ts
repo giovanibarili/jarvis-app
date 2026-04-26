@@ -190,7 +190,7 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
         const slashCmd = this.registry.getSlashCommand(cmdName);
         if (slashCmd) {
           this.broadcast(sid, { type: "user", text: prompt, source: "chat", session: sid });
-          slashCmd.handler(cmdArgs?.trim() ?? "").then((result) => {
+          slashCmd.handler(cmdArgs?.trim() ?? "", { sessionId: sid }).then((result) => {
             if (result.message) this.broadcast(sid, { type: "done", fullText: result.message, source: "system", session: sid });
             if (result.inject) log.info({ cmd: cmdName, injectLength: result.inject.length }, "ChatPiece: slash command injected content");
           }).catch((err) => {

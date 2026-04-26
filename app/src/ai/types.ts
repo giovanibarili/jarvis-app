@@ -80,4 +80,10 @@ export interface AISessionFactory {
   create(options?: { label?: string; restoreMessages?: unknown[] }): AISession;
   createWithPrompt(options: CreateWithPromptOptions): AISession;
   getToolDefinitions(): Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
+  /**
+   * Optional: attach the EventBus so sessions created by the factory can publish
+   * provider-specific telemetry (e.g. per-session usage). Providers that do not
+   * emit usage events on the bus may leave this unimplemented.
+   */
+  setBus?(bus: import("../core/bus.js").EventBus): void;
 }

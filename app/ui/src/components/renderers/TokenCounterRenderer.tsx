@@ -33,6 +33,30 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
   const streamingStartMs = data?.streamingStartMs ?? 0
   const streamingOutputChars = data?.streamingOutputChars ?? 0
   const requestHistory: RequestSnapshot[] = data?.requestHistory ?? []
+  const scope: string = data?.scope ?? 'ALL'
+  const availableScopes: string[] = data?.availableScopes ?? []
+
+  const [scopeMenuOpen, setScopeMenuOpen] = useState(false)
+
+  const setScope = async (next: string) => {
+    setScopeMenuOpen(false)
+    if (next === scope) return
+    try {
+      await fetch('/providers/anthropic/scope', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: next }),
+      })
+    } catch { /* backend will ignore invalid scopes, silent is fine */ }
+  }
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    if (!scopeMenuOpen) return
+    const onDocClick = () => setScopeMenuOpen(false)
+    document.addEventListener('click', onDocClick)
+    return () => document.removeEventListener('click', onDocClick)
+  }, [scopeMenuOpen])
 
   // Compute elapsed locally via requestAnimationFrame — no backend pushes needed
   const [elapsedMs, setElapsedMs] = useState(0)
@@ -364,9 +388,102 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
 
   }, [sessionInputTotal, sessionOutputTokens, contextTokens, cachePct, contextPct, maxContext, model, requestCount, systemTokens, toolsTokens, messagesTokens, streaming, streamingVerb, elapsedMs, streamingOutputChars, requestHistory])
 
+  // Pretty label for the scope pill
+  const scopeLabel = scope === 'ALL' ? 'ALL' : scope
+
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-      <canvas ref={canvasRef} width={300} height={420} />
+    <div style={{ position: 'relative', height: '100%' }}>
+      {/* Scope pill — overlay on top, absolute so it doesn't shift canvas layout */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 4,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 2,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          pointerEvents: 'none',
+        }}
+      >
+        <span
+          onClick={(e) => { e.stopPropagation(); setScopeMenuOpen(v => !v) }}
+          title="Switch session scope"
+          style={{
+            pointerEvents: 'auto',
+            cursor: 'pointer',
+            padding: '2px 10px',
+            borderRadius: 10,
+            border: '1px solid rgba(68,170,255,0.4)',
+            background: 'rgba(15,20,32,0.85)',
+            color: '#4af',
+            fontSize: 9,
+            fontFamily: 'JetBrains Mono, monospace',
+            whiteSpace: 'nowrap',
+            maxWidth: 220,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            userSelect: 'none',
+          }}
+        >
+          {scopeMenuOpen ? '▾' : '▸'} {scopeLabel}
+        </span>
+        {scopeMenuOpen && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              pointerEvents: 'auto',
+              marginTop: 4,
+              minWidth: 160,
+              maxHeight: 220,
+              overflowY: 'auto',
+              background: 'rgba(15,20,32,0.95)',
+              border: '1px solid rgba(68,170,255,0.4)',
+              borderRadius: 6,
+              padding: 4,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+            }}
+          >
+            <ScopeOption value="ALL" label="ALL — all sessions" active={scope === 'ALL'} onPick={setScope} />
+            {availableScopes.length > 0 && (
+              <div style={{ height: 1, background: 'rgba(68,170,255,0.2)', margin: '4px 0' }} />
+            )}
+            {availableScopes.map((sid) => (
+              <ScopeOption key={sid} value={sid} label={sid} active={scope === sid} onPick={setScope} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+        <canvas ref={canvasRef} width={300} height={420} />
+      </div>
+    </div>
+  )
+}
+
+// Single-row entry in the scope dropdown.
+function ScopeOption({ value, label, active, onPick }: { value: string; label: string; active: boolean; onPick: (s: string) => void }) {
+  return (
+    <div
+      onClick={() => onPick(value)}
+      style={{
+        padding: '4px 8px',
+        cursor: 'pointer',
+        fontSize: 10,
+        fontFamily: 'JetBrains Mono, monospace',
+        color: active ? '#4af' : '#cfd6e2',
+        background: active ? 'rgba(68,170,255,0.12)' : 'transparent',
+        borderRadius: 3,
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+      }}
+      onMouseEnter={(e) => { if (!active) (e.currentTarget as HTMLDivElement).style.background = 'rgba(68,170,255,0.06)' }}
+      onMouseLeave={(e) => { if (!active) (e.currentTarget as HTMLDivElement).style.background = 'transparent' }}
+    >
+      {active ? '● ' : '○ '}{label}
     </div>
   )
 }

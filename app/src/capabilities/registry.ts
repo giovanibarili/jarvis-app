@@ -13,12 +13,23 @@ export interface CapabilityDefinition {
 
 export type CapabilityExecutionListener = (toolName: string, isError: boolean, timeMs: number) => void;
 
+/**
+ * Context provided to a slash command handler at invocation time.
+ * Plumbed through from whoever dispatches the command (e.g. ChatPiece)
+ * so handlers can act on the session that typed the slash, instead of
+ * hardcoding "main".
+ */
+export interface SlashCommandContext {
+  /** Session that issued the command ("main", "actor-alice", etc). */
+  sessionId?: string;
+}
+
 export interface SlashCommand {
   name: string;
   description: string;
   hint?: string;
   source: string;
-  handler: (args: string) => Promise<SlashCommandResult>;
+  handler: (args: string, ctx?: SlashCommandContext) => Promise<SlashCommandResult>;
 }
 
 export interface SlashCommandResult {

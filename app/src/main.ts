@@ -27,6 +27,20 @@ import { HudCoreNodePiece } from "./core/hud-core-node.js";
 import { DiffViewerPiece } from "./pieces/diff-viewer.js";
 import { ChoicePromptPiece } from "./pieces/choice-prompt.js";
 import { ensureUiBuildIntegrity } from "./server.js";
+import type { IncomingMessage } from "node:http";
+
+/** Read the full request body and JSON-parse it. Rejects on malformed JSON. */
+function readJsonBody(req: IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.on("data", (chunk) => { raw += chunk; });
+    req.on("end", () => {
+      if (!raw) { resolve({}); return; }
+      try { resolve(JSON.parse(raw)); } catch (e) { reject(e); }
+    });
+    req.on("error", reject);
+  });
+}
 
 async function main() {
   // Verify UI build integrity before anything else — if assets are stale, rebuild
@@ -70,6 +84,7 @@ async function main() {
 
   // SessionManager — factory set after provider activation
   const sessions = new SessionManager(null as any);
+  sessions.setBus(bus);
   jarvisCore.setSessions(sessions);
   chatPiece.setSessions(sessions);
 
@@ -130,14 +145,22 @@ async function main() {
     },
   });
 
-  // /compact slash command — force context compaction (Engine B) on the main session
+  // /compact slash command — force context compaction (Engine B) on the CALLING session.
+  // Handler receives ctx.sessionId from ChatPiece, so it acts on whichever session
+  // typed the slash (main, actor-X, etc) instead of hardcoding "main".
   capabilityRegistry.registerSlashCommand({
     name: "compact",
     description: "Force context compaction — summarizes conversation to free tokens",
     hint: "Compacts the current session context (Engine B)",
     source: "system",
-    handler: async () => {
-      const managed = sessions.get("main");
+    handler: async (_args, ctx) => {
+      const sessionId = ctx?.sessionId ?? "main";
+
+      if (!sessions.has(sessionId)) {
+        return { message: `⚠️ Session not found: ${sessionId}` };
+      }
+
+      const managed = sessions.get(sessionId);
       if (!managed.session.forceCompact) {
         return { message: "⚠️ Current provider does not support forced compaction." };
       }
@@ -145,9 +168,7 @@ async function main() {
         return { message: "⚠️ Session is busy — wait for it to finish before compacting." };
       }
 
-      // Slash command /compact only has meaning for the root chat session ("main").
-      // For other sessions, clients call POST /chat/compact with { sessionId }.
-      chatPiece.broadcastEvent("main", { type: "system", text: "⏳ Compacting context…", session: "main" });
+      chatPiece.broadcastEvent(sessionId, { type: "system", text: "⏳ Compacting context…", session: sessionId });
 
       const stream = managed.session.forceCompact();
       for await (const event of stream) {
@@ -156,7 +177,7 @@ async function main() {
           bus.publish({
             channel: "ai.stream",
             source: "jarvis-core",
-            target: "main",
+            target: sessionId,
             event: "compaction",
             compaction: event.compaction,
           } as any);
@@ -166,7 +187,7 @@ async function main() {
             source: "jarvis-core",
             event: "compaction",
             data: {
-              sessionId: "main",
+              sessionId,
               engine: event.compaction.engine,
               tokensBefore: event.compaction.tokensBefore,
               tokensAfter: event.compaction.tokensAfter,
@@ -176,10 +197,10 @@ async function main() {
         }
       }
 
-      // Save the compacted session
-      sessions.save("main");
+      // Save the compacted session (skips ephemeral)
+      sessions.save(sessionId);
 
-      return { message: "✅ Context compacted successfully." };
+      return { message: `✅ Context compacted successfully (${sessionId}).` };
     },
   });
 
@@ -284,6 +305,48 @@ async function main() {
     chatPiece.broadcastEvent(sessionId, { type: "system", text: "✅ Context compacted.", session: sessionId });
   });
   pluginManager.setHttpServer(server);
+
+  // ─── Provider-scoped HUD scope routes ───
+  // POST /providers/anthropic/scope { scope: "ALL" | "<sessionId>" }
+  //   → switches which session the Anthropic Usage HUD renders.
+  // GET  /providers/anthropic/scope
+  //   → returns current scope + available sessionIds (for UI dropdown).
+  server.registerRoute("POST", "/providers/anthropic/scope", async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const scope = typeof body?.scope === "string" ? body.scope : null;
+      if (!scope) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Missing 'scope' string in body" }));
+        return;
+      }
+      const active = providerRouter.getActiveProvider();
+      const hud = active?.metricsPiece as { setScope?: (s: string) => void; getScope?: () => string; getAvailableScopes?: () => string[] } | undefined;
+      if (!hud?.setScope) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Active provider metrics HUD does not support scope switching" }));
+        return;
+      }
+      hud.setScope(scope);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, scope: hud.getScope?.(), available: hud.getAvailableScopes?.() ?? [] }));
+    } catch (err: any) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(err?.message ?? err) }));
+    }
+  });
+
+  server.registerRoute("GET", "/providers/anthropic/scope", async (_req, res) => {
+    const active = providerRouter.getActiveProvider();
+    const hud = active?.metricsPiece as { getScope?: () => string; getAvailableScopes?: () => string[] } | undefined;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      ok: true,
+      provider: active?.name ?? null,
+      scope: hud?.getScope?.() ?? null,
+      available: hud?.getAvailableScopes?.() ?? [],
+    }));
+  });
 
   await pieceManager.startAll();
 

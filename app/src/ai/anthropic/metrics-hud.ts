@@ -22,7 +22,28 @@ interface RequestSnapshot {
   cacheCreation: number;
 }
 
-const MAX_REQUEST_HISTORY = 50;
+/**
+ * Per-sessionId bucket — holds accumulated usage stats and a ring buffer of
+ * request snapshots. One bucket is created on first observed usage event for
+ * a given sessionId, and dropped on `session.closed`.
+ */
+interface SessionBucket {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreation: number;
+  cacheRead: number;
+  requestCount: number;
+  lastRequestTokens: number;
+  lastCacheRead: number;
+  lastCacheCreate: number;
+  requestHistory: RequestSnapshot[];
+}
+
+/** Ring buffer size per session — renderer displays last 25 bars. */
+const MAX_REQUEST_HISTORY_PER_SESSION = 25;
+
+/** Special scope value = aggregate of every bucket. Default. */
+const SCOPE_ALL = "ALL";
 
 export class AnthropicMetricsHud implements Piece {
   readonly id = "token-counter";
@@ -30,20 +51,20 @@ export class AnthropicMetricsHud implements Piece {
 
   private bus!: EventBus;
   private unsubs: Array<() => void> = [];
-  private inputTokens = 0;
-  private outputTokens = 0;
-  private cacheCreation = 0;
-  private cacheRead = 0;
-  private requestCount = 0;
-  private lastRequestTokens = 0;
-  private lastCacheRead = 0;
-  private lastCacheCreate = 0;
+
+  /** Per-session buckets. Key = sessionId ("main", "actor-alice", etc). */
+  private buckets = new Map<string, SessionBucket>();
+
+  /** Current HUD scope: "ALL" (aggregate) or a specific sessionId. */
+  private currentScope: string = SCOPE_ALL;
+
+  /** Compaction stats — global (not per-session) for now. */
   private compactionCount = 0;
   private lastCompactionEngine: string | null = null;
-  private factory: AnthropicSessionFactory;
-  private requestHistory: RequestSnapshot[] = [];
 
-  // Streaming state
+  private factory: AnthropicSessionFactory;
+
+  // Streaming state (main session only — visual feedback for the chat)
   private streamingActive = false;
   private streamingStartMs = 0;
   private streamingVerb = "";
@@ -57,40 +78,26 @@ export class AnthropicMetricsHud implements Piece {
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
 
+    // Primary telemetry channel — Anthropic-specific, sessionId-scoped.
+    // Emitted by AnthropicSession.streamFromAPI after every API response.
     this.unsubs.push(this.bus.subscribe<SystemEventMessage>("system.event", (msg) => {
-      if (msg.event !== "api.usage") return;
-      const d = msg.data;
-      const reqInput = (d.input_tokens as number) ?? 0;
-      const reqCacheCreate = (d.cache_creation_input_tokens as number) ?? 0;
-      const reqCacheRead = (d.cache_read_input_tokens as number) ?? 0;
-      this.inputTokens += reqInput;
-      this.outputTokens += (d.output_tokens as number) ?? 0;
-      this.cacheCreation += reqCacheCreate;
-      this.cacheRead += reqCacheRead;
-      this.lastRequestTokens = reqInput + reqCacheCreate + reqCacheRead;
-      this.lastCacheRead = reqCacheRead;
-      this.lastCacheCreate = reqCacheCreate;
-      this.requestCount++;
+      if (msg.event !== "api.anthropic.usage") return;
+      const sessionId = (msg.data.sessionId as string) ?? "main";
+      this.recordUsage(sessionId, msg.data);
+    }));
 
-      // Track per-request history
-      this.requestHistory.push({
-        seq: this.requestCount,
-        timestamp: Date.now(),
-        inputTokens: reqInput,
-        outputTokens: (d.output_tokens as number) ?? 0,
-        cacheRead: reqCacheRead,
-        cacheCreation: reqCacheCreate,
-      });
-      if (this.requestHistory.length > MAX_REQUEST_HISTORY) {
-        this.requestHistory.shift();
+    // Eviction — SessionManager publishes this when a session is closed.
+    // We drop the bucket so it disappears from dropdowns and memory.
+    this.unsubs.push(this.bus.subscribe<SystemEventMessage>("system.event", (msg) => {
+      if (msg.event !== "session.closed") return;
+      const sessionId = msg.data.sessionId as string;
+      if (!sessionId) return;
+      if (this.buckets.delete(sessionId)) {
+        log.info({ sessionId }, "AnthropicMetrics: bucket evicted");
+        // If the current scope just disappeared, fall back to ALL.
+        if (this.currentScope === sessionId) this.currentScope = SCOPE_ALL;
+        this.pushHudUpdate();
       }
-
-      log.debug({
-        in: d.input_tokens, out: d.output_tokens,
-        cacheNew: d.cache_creation_input_tokens, cacheHit: d.cache_read_input_tokens,
-      }, "AnthropicMetrics: recorded");
-
-      this.pushHudUpdate();
     }));
 
     this.unsubs.push(this.bus.subscribe<SystemEventMessage>("system.event", (msg) => {
@@ -101,7 +108,7 @@ export class AnthropicMetricsHud implements Piece {
       this.pushHudUpdate();
     }));
 
-    // Track streaming state from ai.stream events (main session only)
+    // Track streaming state from ai.stream events (main session only — visual feedback)
     this.unsubs.push(this.bus.subscribe<AIStreamMessage>("ai.stream", (msg) => {
       if (msg.target !== "main") return;
 
@@ -161,6 +168,7 @@ export class AnthropicMetricsHud implements Piece {
     this.stopStreamingTimer();
     for (const unsub of this.unsubs) unsub();
     this.unsubs = [];
+    this.buckets.clear();
     this.bus.publish({
       channel: "hud.update",
       source: this.id,
@@ -168,6 +176,88 @@ export class AnthropicMetricsHud implements Piece {
       pieceId: this.id,
     });
     log.info("AnthropicMetricsHud: stopped");
+  }
+
+  /**
+   * Change the HUD scope (ALL or a specific sessionId). Re-publishes the
+   * panel data immediately so the UI updates.
+   */
+  setScope(scope: string): void {
+    if (scope !== SCOPE_ALL && !this.buckets.has(scope)) {
+      log.warn({ scope, available: [...this.buckets.keys()] }, "AnthropicMetrics: unknown scope, ignoring");
+      return;
+    }
+    this.currentScope = scope;
+    log.info({ scope }, "AnthropicMetrics: scope changed");
+    this.pushHudUpdate();
+  }
+
+  getScope(): string {
+    return this.currentScope;
+  }
+
+  /** List sessionIds that have at least one bucket with data. */
+  getAvailableScopes(): string[] {
+    return [...this.buckets.keys()].sort();
+  }
+
+  private getOrCreateBucket(sessionId: string): SessionBucket {
+    let b = this.buckets.get(sessionId);
+    if (!b) {
+      b = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreation: 0,
+        cacheRead: 0,
+        requestCount: 0,
+        lastRequestTokens: 0,
+        lastCacheRead: 0,
+        lastCacheCreate: 0,
+        requestHistory: [],
+      };
+      this.buckets.set(sessionId, b);
+    }
+    return b;
+  }
+
+  private recordUsage(sessionId: string, d: Record<string, unknown>): void {
+    const reqInput = (d.input_tokens as number) ?? 0;
+    const reqOutput = (d.output_tokens as number) ?? 0;
+    const reqCacheCreate = (d.cache_creation_input_tokens as number) ?? 0;
+    const reqCacheRead = (d.cache_read_input_tokens as number) ?? 0;
+
+    const b = this.getOrCreateBucket(sessionId);
+    b.inputTokens += reqInput;
+    b.outputTokens += reqOutput;
+    b.cacheCreation += reqCacheCreate;
+    b.cacheRead += reqCacheRead;
+    b.lastRequestTokens = reqInput + reqCacheCreate + reqCacheRead;
+    b.lastCacheRead = reqCacheRead;
+    b.lastCacheCreate = reqCacheCreate;
+    b.requestCount++;
+
+    b.requestHistory.push({
+      seq: b.requestCount,
+      timestamp: Date.now(),
+      inputTokens: reqInput,
+      outputTokens: reqOutput,
+      cacheRead: reqCacheRead,
+      cacheCreation: reqCacheCreate,
+    });
+    if (b.requestHistory.length > MAX_REQUEST_HISTORY_PER_SESSION) {
+      b.requestHistory.shift();
+    }
+
+    log.debug({
+      sessionId,
+      in: reqInput, out: reqOutput,
+      cacheNew: reqCacheCreate, cacheHit: reqCacheRead,
+    }, "AnthropicMetrics: recorded");
+
+    // Only push HUD update if this event affects the current scope view.
+    if (this.currentScope === SCOPE_ALL || this.currentScope === sessionId) {
+      this.pushHudUpdate();
+    }
   }
 
   private startStreamingTimer(): void {
@@ -195,15 +285,20 @@ export class AnthropicMetricsHud implements Piece {
     });
   }
 
+  /**
+   * Build the renderer payload for the current scope.
+   * Shape is IDENTICAL to the pre-refactor getData() so TokenCounterRenderer
+   * continues to work without changes. The new fields (scope, availableScopes)
+   * are additive and consumed only by the scope selector in the renderer.
+   */
   getData(): Record<string, unknown> {
+    const view = this.computeScopeView();
     const maxContext = getMaxContext();
-    const cachePct = this.lastRequestTokens > 0 ? this.lastCacheRead / this.lastRequestTokens : 0;
-    const contextPct = this.lastRequestTokens / maxContext;
+    const cachePct = view.lastRequestTokens > 0 ? view.lastCacheRead / view.lastRequestTokens : 0;
+    const contextPct = view.lastRequestTokens / maxContext;
 
-    // With automatic caching, messages are also cached — so cache_read includes
-    // system + tools + messages. Use char-ratio heuristic for system/tools split,
-    // and derive messages as the remainder.
-    const totalInputTokens = this.lastRequestTokens; // input + cacheRead + cacheCreate
+    // Static system/tools breakdown — same for every session in this provider.
+    const totalInputTokens = view.lastRequestTokens;
     const breakdown = this.factory.getTokenBreakdown();
     const systemTokens = breakdown.systemTokens;
     const toolsTokens = breakdown.toolsTokens;
@@ -212,19 +307,19 @@ export class AnthropicMetricsHud implements Piece {
 
     return {
       model: config.model,
-      // Session accumulated totals
-      inputTokens: this.inputTokens,
-      outputTokens: this.outputTokens,
-      sessionInputTokens: this.inputTokens,
-      sessionOutputTokens: this.outputTokens,
-      cacheCreation: this.cacheCreation,
-      cacheRead: this.cacheRead,
+      // Session accumulated totals (in-scope)
+      inputTokens: view.inputTokens,
+      outputTokens: view.outputTokens,
+      sessionInputTokens: view.inputTokens,
+      sessionOutputTokens: view.outputTokens,
+      cacheCreation: view.cacheCreation,
+      cacheRead: view.cacheRead,
       cachePct,
       // Context snapshot (current window usage from last request)
-      contextTokens: this.lastRequestTokens,
+      contextTokens: view.lastRequestTokens,
       contextPct,
       maxContext,
-      requestCount: this.requestCount,
+      requestCount: view.requestCount,
       systemTokens,
       toolsTokens,
       messagesTokens,
@@ -236,7 +331,64 @@ export class AnthropicMetricsHud implements Piece {
       streamingStartMs: this.streamingActive ? this.streamingStartMs : 0,
       streamingOutputChars: this.streamingOutputChars,
       // Per-request history for sparkline
-      requestHistory: this.requestHistory,
+      requestHistory: view.requestHistory,
+      // NEW: scope selector state
+      scope: this.currentScope,
+      availableScopes: this.getAvailableScopes(),
+    };
+  }
+
+  /**
+   * Return the bucket (or aggregate) currently being displayed.
+   * For SCOPE_ALL, sums every bucket and merges histories sorted by timestamp.
+   */
+  private computeScopeView(): SessionBucket {
+    if (this.currentScope !== SCOPE_ALL) {
+      return this.buckets.get(this.currentScope) ?? this.emptyBucket();
+    }
+    return this.aggregateAll();
+  }
+
+  private aggregateAll(): SessionBucket {
+    const agg = this.emptyBucket();
+    const allHistory: RequestSnapshot[] = [];
+
+    for (const b of this.buckets.values()) {
+      agg.inputTokens += b.inputTokens;
+      agg.outputTokens += b.outputTokens;
+      agg.cacheCreation += b.cacheCreation;
+      agg.cacheRead += b.cacheRead;
+      agg.requestCount += b.requestCount;
+      allHistory.push(...b.requestHistory);
+    }
+
+    // Merge all histories sorted by timestamp, re-sequence, keep the most recent window.
+    allHistory.sort((a, b) => a.timestamp - b.timestamp);
+    const sliced = allHistory.slice(-MAX_REQUEST_HISTORY_PER_SESSION);
+    agg.requestHistory = sliced.map((snap, i) => ({ ...snap, seq: i + 1 }));
+
+    // "Last request" in ALL scope = most recent snapshot across all sessions.
+    const last = sliced[sliced.length - 1];
+    if (last) {
+      agg.lastRequestTokens = last.inputTokens + last.cacheRead + last.cacheCreation;
+      agg.lastCacheRead = last.cacheRead;
+      agg.lastCacheCreate = last.cacheCreation;
+    }
+
+    return agg;
+  }
+
+  private emptyBucket(): SessionBucket {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreation: 0,
+      cacheRead: 0,
+      requestCount: 0,
+      lastRequestTokens: 0,
+      lastCacheRead: 0,
+      lastCacheCreate: 0,
+      requestHistory: [],
     };
   }
 }
