@@ -2,7 +2,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, ContentBlockParam, ToolResultBlockParam, TextBlockParam } from "@anthropic-ai/sdk/resources/messages";
 import type { AISession, AIStreamEvent, CapabilityCall, CapabilityResult, ImageBlock } from "../types.js";
+import type { EventBus } from "../../core/bus.js";
 import { log } from "../../logger/index.js";
+import { config } from "../../config/index.js";
 import { cleanupAbortedToolMessages } from "./cleanup-aborted-tools.js";
 import { sanitizeMessages } from "./sanitize-messages.js";
 import { load as loadSettings, getCompactionSettings } from "../../core/settings.js";
@@ -21,6 +23,7 @@ export class AnthropicSession implements AISession {
   private label: string;
   private abortController?: AbortController;
   private contextInjector?: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>;
+  private bus?: EventBus;
   private betaDisabledUntil = 0;
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
   private consecutiveFallbacks = 0;
@@ -32,6 +35,7 @@ export class AnthropicSession implements AISession {
     systemPrompt: string | (() => SystemPrompt);
     getTools: () => CapabilityDef[];
     label: string;
+    bus?: EventBus;
   }) {
     this.sessionId = crypto.randomUUID();
     this.client = opts.client;
@@ -42,7 +46,35 @@ export class AnthropicSession implements AISession {
       : () => opts.systemPrompt as SystemPrompt;
     this.getTools = opts.getTools;
     this.label = opts.label;
+    this.bus = opts.bus;
     log.info({ label: this.label, sessionId: this.sessionId }, "AnthropicSession: created");
+  }
+
+  /**
+   * Publish Anthropic-specific usage telemetry keyed by sessionId (= this.label).
+   * Consumed by AnthropicMetricsHud which buckets metrics per session.
+   * Emits on every API response that carries a `message.usage` payload.
+   */
+  private emitAnthropicUsage(usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+  }): void {
+    if (!this.bus) return;
+    this.bus.publish({
+      channel: "system.event",
+      source: "anthropic-session",
+      event: "api.anthropic.usage",
+      data: {
+        sessionId: this.label,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens,
+        model: config.model,
+      },
+    });
   }
 
   setContextInjector(injector: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
@@ -452,6 +484,11 @@ export class AnthropicSession implements AISession {
         cache_read_input_tokens: (message.usage as any).cache_read_input_tokens ?? 0,
         ...(iterations ? { iterations } : {}),
       } : undefined;
+
+      // Emit provider-specific, sessionId-scoped usage telemetry.
+      // This is the primary channel for Anthropic metrics going forward;
+      // the generic `api.usage` (published by JarvisCore) remains for backcompat.
+      if (usage) this.emitAnthropicUsage(usage);
 
       yield {
         type: "message_complete",

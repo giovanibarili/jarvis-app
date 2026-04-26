@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import type { TextBlockParam } from "@anthropic-ai/sdk/resources/messages";
 import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../types.js";
+import type { EventBus } from "../../core/bus.js";
 import { AnthropicSession } from "./session.js";
 import { config } from "../../config/index.js";
 import { log } from "../../logger/index.js";
@@ -18,6 +19,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
   private getPluginInstructions: () => string[];
   private getPluginContext: (sessionId?: string) => string[];
   private getInstructions: () => string;
+  private bus?: EventBus;
   private sessionCounter = 0;
 
   constructor(
@@ -35,6 +37,11 @@ export class AnthropicSessionFactory implements AISessionFactory {
     this.getPluginContext = getPluginContext ?? (() => []);
     this.getInstructions = getInstructions ?? (() => "");
     log.info({ model: config.model, basePromptLength: this.basePrompt.length }, "AnthropicSessionFactory: initialized");
+  }
+
+  /** Attach the EventBus so new sessions can publish per-session usage telemetry. */
+  setBus(bus: EventBus): void {
+    this.bus = bus;
   }
 
   /**
@@ -102,6 +109,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
       systemPrompt: blockBuilder,
       getTools: this.getTools,
       label,
+      bus: this.bus,
     });
   }
 
@@ -172,6 +180,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
       systemPrompt: () => this.buildSystemBlocks(label),
       getTools: this.getTools,
       label,
+      bus: this.bus,
     });
 
     if (options?.restoreMessages && options.restoreMessages.length > 0) {

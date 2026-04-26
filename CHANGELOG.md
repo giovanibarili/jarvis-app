@@ -5,6 +5,23 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-04-26
+
+### Added
+
+- **Per-session usage metrics** in the Anthropic HUD. `AnthropicMetricsHud` now buckets input/output/cache tokens, request count and per-request history (ring buffer, last 25) by `sessionId`. A new "scope" pill on top of the HUD lets the user pick `ALL` (aggregate, default) or any individual session (`main`, `actor-*`, `grpc-*`). Buckets are evicted when the session closes.
+- **`AnthropicSession.emitAnthropicUsage()`** publishes `system.event` with `event: "api.anthropic.usage"` and `data.sessionId` after every API response. This is the primary telemetry channel for Anthropic going forward; the generic `api.usage` (published by `JarvisCore`) remains for backcompat.
+- **`AISessionFactory.setBus?(bus)`** optional method on the public factory contract. `ProviderRouter` now plumbs the EventBus into the active provider's factory after activation, so factory-created sessions can publish provider-specific telemetry. Implemented for Anthropic; other providers may opt in.
+- **`SessionManager.setBus(bus)`** + `session.closed` event. Every `close()` and `closeAll()` now emits `system.event { event: "session.closed", data: { sessionId } }` so downstream pieces (metrics HUDs, plugins) can evict per-session state. Wired up in `main.ts` immediately after construction.
+- **`/providers/anthropic/scope` HTTP endpoints**: `POST` (`{ scope: string }`) switches the HUD scope, `GET` returns `{ provider, scope, available[] }`. Used by `TokenCounterRenderer` for the scope dropdown.
+- **`SlashCommandContext`** new exported type from `capabilities/registry`. Slash command handlers now receive `(args, ctx?: { sessionId? })`. `ChatPiece` plumbs `ctx.sessionId` from whoever typed the slash.
+
+### Changed
+
+- **`/compact` is now session-aware.** The slash handler reads `ctx.sessionId` and acts on the calling session (`main`, `actor-*`, etc) instead of hardcoded `"main"`. `ChatPiece` broadcasts the system message and ai.stream `compaction` event back to the originating session. `sessions.save(sessionId)` correctly skips ephemeral sessions.
+- **`jarvis_ask_choice` description rewritten** to be more imperative: forbids dumping options as plain text, lists explicit triggers (do you want A or B / which one / confirm-cancel / pick N), and tells the LLM to stop and call the tool when about to type `1) ... 2) ... which?`. Goal: stop the model from "asking with markdown bullets" instead of using the choice card.
+- **`jarvis-system.md` rewritten for brevity** — same rules and architecture, denser prose, shorter sentences, less filler. Net −83 lines.
+
 ## [0.2.1] - 2026-04-24
 
 ### Added

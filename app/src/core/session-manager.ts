@@ -1,5 +1,6 @@
 // src/core/session-manager.ts
 import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../ai/types.js";
+import type { EventBus } from "./bus.js";
 import { log } from "../logger/index.js";
 import {
   saveConversation,
@@ -31,6 +32,7 @@ export class SessionManager {
   private currentProvider: string = "anthropic";
   private autoSaveTimer?: ReturnType<typeof setInterval>;
   private ephemeralSessions = new Set<string>();
+  private bus?: EventBus;
   private static AUTO_SAVE_INTERVAL_MS = 30_000; // save every 30s
 
   /**
@@ -41,6 +43,15 @@ export class SessionManager {
 
   constructor(factory: AISessionFactory) {
     this.factory = factory;
+  }
+
+  /**
+   * Attach the EventBus so the manager can publish lifecycle events
+   * (session.closed) that downstream pieces rely on for eviction.
+   * Call once during app bootstrap — all subsequent close() calls will emit.
+   */
+  setBus(bus: EventBus): void {
+    this.bus = bus;
   }
 
   /** Set current provider name (needed for save/restore compatibility checks) */
@@ -217,6 +228,7 @@ export class SessionManager {
       this.creationOptions.delete(sessionId);
       this.ephemeralSessions.delete(sessionId);
       log.info({ sessionId }, "SessionManager: closed");
+      this.emitClosed(sessionId);
     }
   }
 
@@ -234,15 +246,29 @@ export class SessionManager {
   closeAll(): void {
     // Save all before closing
     this.saveAll();
+    const closedIds: string[] = [];
     for (const [id] of this.sessions) {
       const managed = this.sessions.get(id);
       if (managed) {
         managed.session.close();
         this.sessions.delete(id);
+        closedIds.push(id);
       }
     }
     this.creationOptions.clear();
     this.ephemeralSessions.clear();
+    for (const id of closedIds) this.emitClosed(id);
+  }
+
+  /** Publish session.closed on the bus so downstream pieces can evict per-session state. */
+  private emitClosed(sessionId: string): void {
+    if (!this.bus) return;
+    this.bus.publish({
+      channel: "system.event",
+      source: "session-manager",
+      event: "session.closed",
+      data: { sessionId },
+    });
   }
 
   /** List saved session labels from disk (e.g. ["main", "actor-alice", "actor-bob"]) */
