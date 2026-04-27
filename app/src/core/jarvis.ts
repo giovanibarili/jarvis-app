@@ -249,14 +249,38 @@ export class JarvisCore implements Piece {
       this.pendingReplyTo.delete(sessionId);
     }
 
+    // Session is idle — this prompt is about to be sent to the API.
+    // Emit prompt_dispatched so the timeline renders it as a user entry
+    // NOW (not when the request first arrived). Single message → single event.
+    this.broadcastPromptDispatched(sessionId, [{
+      text,
+      source: msg.source,
+      images: msg.images,
+    }]);
+
+    await this.dispatchToSession(sessionId, text, msg.images);
+  }
+
+  /**
+   * Send a prompt to the AI session and consume its stream. Extracted from
+   * handlePrompt so drainQueue can reuse it without re-running the queue
+   * branch and without re-emitting prompt_dispatched (drain emits its own,
+   * one event per original queued message).
+   */
+  private async dispatchToSession(
+    sessionId: string,
+    text: string,
+    msgImages?: AIRequestMessage["images"],
+  ): Promise<void> {
+    const managed = this.sessions.get(sessionId);
     this.sessions.setState(sessionId, "processing");
     this.setSessionState(sessionId, "processing");
     this.updateHud();
     const t0 = Date.now();
-    log.info({ sessionId, prompt: text.slice(0, 80), images: msg.images?.length ?? 0, replyTo: msg.replyTo }, "JarvisCore: processing");
+    log.info({ sessionId, prompt: text.slice(0, 80), images: msgImages?.length ?? 0 }, "JarvisCore: processing");
 
     try {
-      const images = msg.images?.map(i => ({ label: i.label, base64: i.base64, mediaType: i.mediaType }));
+      const images = msgImages?.map(i => ({ label: i.label, base64: i.base64, mediaType: i.mediaType }));
       const stream = managed.session.sendAndStream(text, images);
       await this.consumeStream(sessionId, stream);
     } catch (err) {
@@ -480,24 +504,64 @@ export class JarvisCore implements Piece {
     const queue = this.pendingPrompts.get(sessionId);
     if (!queue || queue.length === 0) return;
 
-    // Take all queued messages — combine text and collect images
-    const combined = queue.map(m => m.text ?? "").join("\n\n");
-    const allImages = queue.flatMap(m => (m as any).images ?? []);
+    // Snapshot the original queued messages BEFORE combining, so the
+    // timeline can render one user entry per original message (preserving
+    // each message's source/label). The backend still combines them into
+    // a single API call to save tokens.
+    const items = queue.map(m => ({
+      text: m.text ?? "",
+      source: m.source,
+      images: (m as any).images,
+    }));
+    const combined = items.map(i => i.text).join("\n\n");
+    const allImages = items.flatMap(i => i.images ?? []);
     queue.length = 0;
     this.broadcastPendingQueue(sessionId);
 
-    log.info({ sessionId, combinedLength: combined.length, images: allImages.length }, "JarvisCore: draining queued prompts");
+    log.info({ sessionId, items: items.length, combinedLength: combined.length, images: allImages.length }, "JarvisCore: draining queued prompts");
 
-    // Process as a new prompt (async, fire and forget)
-    this.handlePrompt({
-      id: crypto.randomUUID(),
-      timestamp: Date.now(),
-      channel: "ai.request",
-      source: "queue-drain",
+    // Emit one prompt_dispatched per original queued message — the timeline
+    // renders each as its own user entry with its own source label.
+    this.broadcastPromptDispatched(sessionId, items);
+
+    // Send the combined prompt to the AI. We bypass handlePrompt because
+    // (a) the queue branch would re-queue (session is still flipping out
+    // of processing), and (b) prompt_dispatched was already emitted above
+    // for the original items.
+    void this.dispatchToSession(sessionId, combined, allImages.length > 0 ? allImages : undefined);
+  }
+
+  /**
+   * Announce that one or more prompts are about to be sent to the AI for
+   * this session. Frontend renders one user entry per item, using each
+   * preserved source so labels (chat, actor-*, grpc, etc.) stay accurate.
+   *
+   * Emitted from two places:
+   *  - handlePrompt() when the session was idle: a single item.
+   *  - drainQueue() when previously-queued messages are about to ship: one
+   *    item per originally-queued message (NOT one item for the combined
+   *    text — preserving source-per-message is the whole point).
+   *
+   * The event name `prompt_dispatched` is intentionally NOT in the public
+   * AIStreamMessage event union; we publish via cast and ChatPiece reads
+   * via cast, keeping the public type surface stable for plugins.
+   */
+  private broadcastPromptDispatched(
+    sessionId: string,
+    items: Array<{ text: string; source?: string; images?: AIRequestMessage["images"] }>,
+  ): void {
+    if (items.length === 0) return;
+    this.bus.publish({
+      channel: "ai.stream",
+      source: "jarvis-core",
       target: sessionId,
-      text: combined,
-      ...(allImages.length > 0 ? { images: allImages } : {}),
-    } as AIRequestMessage);
+      event: "prompt_dispatched",
+      items: items.map(i => ({
+        text: i.text,
+        source: i.source,
+        images: i.images,
+      })),
+    } as any);
   }
 
   /**
