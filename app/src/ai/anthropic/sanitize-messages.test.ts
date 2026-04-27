@@ -180,4 +180,134 @@ describe("sanitizeMessages", () => {
     sanitizeMessages(messages);
     expect(messages).toEqual(original);
   });
+
+  // ─── Orphan tool_use tests (the case that broke jarvis-brain) ──────────
+
+  it("injects synthetic tool_result when next msg is a string user prompt", () => {
+    // The bug from the field: assistant emits tool_use, but the very next
+    // turn is a fresh string-content user message ("onde paramos?") with no
+    // tool_result for the pending tool_use id.
+    const messages: MessageParam[] = [
+      { role: "user", content: "do something" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "let me check" },
+          { type: "tool_use", id: "tool_X", name: "jarvis_eval", input: { code: "1+1" } },
+        ],
+      },
+      { role: "user", content: "onde paramos?" },
+    ];
+    const result = sanitizeMessages(messages);
+    expect(result).toHaveLength(4);
+    // Original assistant tool_use kept intact
+    expect(result[1]).toEqual(messages[1]);
+    // Synthetic tool_result inserted between assistant and the new user prompt
+    expect(result[2]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool_X",
+          content: "[Interrupted — tool was cancelled before completing. Synthetic placeholder injected by sanitizer.]",
+          is_error: true,
+        },
+      ],
+    });
+    expect(result[3]).toEqual(messages[2]);
+  });
+
+  it("injects synthetic tool_result when assistant tool_use is at the end of history", () => {
+    // No next message at all — happens when persistence captured a session
+    // mid-tool-call. Sanitizer must close the loop so the API accepts
+    // the next user prompt that arrives after restart.
+    const messages: MessageParam[] = [
+      { role: "user", content: "list files" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t_end", name: "list_dir", input: { path: "/" } }],
+      },
+    ];
+    const result = sanitizeMessages(messages);
+    expect(result).toHaveLength(3);
+    expect(result[2]).toEqual({
+      role: "user",
+      content: [
+        expect.objectContaining({
+          type: "tool_result",
+          tool_use_id: "t_end",
+          is_error: true,
+        }),
+      ],
+    });
+  });
+
+  it("injects synthetic tool_result when next msg is another assistant turn", () => {
+    // Edge case: history corrupted such that two assistant messages stack
+    // without the user/tool_result between them.
+    const messages: MessageParam[] = [
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t_skip", name: "bash", input: { command: "ls" } }],
+      },
+      { role: "assistant", content: "I think it worked" },
+    ];
+    const result = sanitizeMessages(messages);
+    // Should be: original-user, original-assistant-with-tool_use, synthetic-user-tool_result, original-assistant-text
+    expect(result).toHaveLength(4);
+    expect(result[2]).toMatchObject({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t_skip", is_error: true }],
+    });
+    expect(result[3]).toEqual(messages[2]);
+  });
+
+  it("handles parallel tool_use where some ids are satisfied and some aren't", () => {
+    const messages: MessageParam[] = [
+      { role: "user", content: "two tasks" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tA", name: "bash", input: { command: "ls" } },
+          { type: "tool_use", id: "tB", name: "read_file", input: { path: "/x" } },
+        ],
+      },
+      // Only tA gets a result — tB is the orphan
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tA", content: "files" }],
+      },
+    ];
+    const result = sanitizeMessages(messages);
+    // Pass A: this message has a tool_result whose id matches tA in the prev
+    // assistant message — `allMatched` is true (every result id has a use).
+    // So Pass A leaves it alone. Pass B then sees the assistant with tB
+    // unsatisfied and inserts a synthetic for tB before the partial-match user.
+    expect(result).toHaveLength(4);
+    expect(result[2]).toMatchObject({
+      role: "user",
+      content: [
+        expect.objectContaining({ type: "tool_result", tool_use_id: "tB", is_error: true }),
+      ],
+    });
+    // Original partial-match user message remains
+    expect(result[3]).toEqual(messages[2]);
+  });
+
+  it("does not inject when tool_use is fully satisfied by next msg", () => {
+    const messages: MessageParam[] = [
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tOK", name: "bash", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tOK", content: "ok" }],
+      },
+    ];
+    const result = sanitizeMessages(messages);
+    expect(result).toEqual(messages);
+  });
 });
