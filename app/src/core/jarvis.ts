@@ -200,6 +200,7 @@ export class JarvisCore implements Piece {
     this.pendingPrompts.delete(sessionId);
     this.setSessionState(sessionId, "idle");
     this.updateHud();
+    this.broadcastPendingQueue(sessionId);
 
     if (wasWaitingTools && pendingTools) {
       for (const tc of pendingTools) {
@@ -237,6 +238,7 @@ export class JarvisCore implements Piece {
       }
       this.pendingPrompts.get(sessionId)!.push(msg);
       log.info({ sessionId, state: managed.state, queueSize: this.pendingPrompts.get(sessionId)!.length }, "JarvisCore: queued prompt (session busy)");
+      this.broadcastPendingQueue(sessionId);
       return;
     }
 
@@ -482,6 +484,7 @@ export class JarvisCore implements Piece {
     const combined = queue.map(m => m.text ?? "").join("\n\n");
     const allImages = queue.flatMap(m => (m as any).images ?? []);
     queue.length = 0;
+    this.broadcastPendingQueue(sessionId);
 
     log.info({ sessionId, combinedLength: combined.length, images: allImages.length }, "JarvisCore: draining queued prompts");
 
@@ -495,6 +498,27 @@ export class JarvisCore implements Piece {
       text: combined,
       ...(allImages.length > 0 ? { images: allImages } : {}),
     } as AIRequestMessage);
+  }
+
+  /**
+   * Broadcast the current pending queue snapshot for a session over the SSE
+   * channel. Frontend uses this to render the "queued messages" list under
+   * the JARVIS thinking indicator.
+   */
+  private broadcastPendingQueue(sessionId: string): void {
+    const queue = this.pendingPrompts.get(sessionId) ?? [];
+    const items = queue.map(msg => ({
+      text: (msg.text ?? "").slice(0, 280),
+      source: msg.source,
+      hasImages: Array.isArray((msg as any).images) && (msg as any).images.length > 0,
+    }));
+    this.bus.publish({
+      channel: "ai.stream",
+      source: "jarvis-core",
+      target: sessionId,
+      event: "pending_queue",
+      items,
+    } as any);
   }
 
   /** Derive global state from all tracked per-session states */
