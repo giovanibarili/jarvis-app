@@ -5,6 +5,18 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-04-27
+
+### Fixed
+
+- **Anthropic: sanitize orphan `tool_use` without matching `tool_result`.** `sanitizeMessages` already covered the inverse case (orphan `tool_result` without preceding `tool_use`), but missed assistant messages ending in `tool_use` blocks whose ids are not satisfied by the next message — exactly what happens after an interrupted tool call (process restart, abort that did not run `cleanupAbortedTools`, crash mid-execution) followed by a fresh user prompt. Real-world repro: `actor-jarvis-brain` session got stuck after a `jarvis_eval` was interrupted; every subsequent prompt failed with HTTP 400 `tool_use ids were found without tool_result blocks immediately after`. New second pass injects a synthetic `user` turn with placeholder `tool_result` blocks (`is_error: true`) for every orphan id, mirroring the shape `cleanupAbortedTools` produces. Idempotent — running it again adds nothing. Auto-applied on every session restore (`SessionManager.restore() → factory.create({ restoreMessages }) → setMessages → sanitizeMessages`), so historical sessions self-heal on the next boot. PR #36.
+- **Chat: mirror `type:"user"` immediately for plugin-owned sessions.** Commit `ca11a57` (0.2.4) made `ChatPiece` stop broadcasting `type:"user"` on POST `/chat/send` and rely on `JarvisCore.broadcastPromptDispatched` to emit the timeline entry at the moment the prompt is actually sent. This fixed duplication for sessions JarvisCore owns (`main`, `grpc-*`) but broke sessions owned by plugins — notably `actor-*` sessions managed by `jarvis-plugin-actors`, which never receive `prompt_dispatched` because the actor-runner subscribes to `ai.request` directly. Symptom: user typed in an actor's `ChatPanel`, the message reached the actor (visible response) but never appeared in the panel timeline. `ChatPiece` now asks "is this session owned by JarvisCore?" via a matcher set at boot. Owned → don't mirror; JarvisCore handles it. Not owned → broadcast `type:"user"` immediately so the panel renders what the user typed. Safe default: matcher unset → mirror always (better than dropping input). PR #37.
+
+### Added
+
+- **`JarvisCore.isSessionOwned(sessionId)`** — public matcher exposing the existing `ownedPatterns` check (`main`, `grpc-*`, plus any plugin-registered patterns) so other pieces can decide whether to defer to JarvisCore for timeline mirroring.
+- **`ChatPiece.setOwnedSessionMatcher(fn)`** — boot-time wiring so ChatPiece can route `type:"user"` broadcasts conditionally based on session ownership.
+
 ## [0.2.4] - 2026-04-27
 
 ### Changed
