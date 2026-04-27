@@ -93,6 +93,18 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
             session: msg.target,
           });
           break;
+        // pending_queue is published by JarvisCore.broadcastPendingQueue.
+        // Not declared in AIStreamMessage.event union (intentionally — kept
+        // out of the public type surface to avoid forcing plugin updates),
+        // so we read it via cast.
+        case "pending_queue" as any:
+          this.broadcast(msg.target, {
+            type: "pending_queue",
+            items: (msg as any).items ?? [],
+            source,
+            session: msg.target,
+          });
+          break;
       }
     });
 

@@ -5,6 +5,22 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-04-27
+
+### Added
+
+- **Pending prompt queue surfaced in the UI.** When the user sends additional messages while a turn is still busy, the backend already queued them in `JarvisCore.pendingPrompts`. Now `JarvisCore.broadcastPendingQueue(sessionId)` publishes a snapshot over `ai.stream` as `event: "pending_queue"` carrying `{ items: [{ text, source, hasImages }] }` (text truncated to 280 chars). Triggered on enqueue, on drain, and on session reset (idle transition emits an empty array). `ChatPiece` forwards it to the SSE stream as `{ type: "pending_queue", items, source, session }`. The event is intentionally not added to the public `AIStreamMessage` union to keep the type surface stable for plugins; `ChatPiece` reads it via cast.
+- **`ChatPanel` renders queued user messages** as faint dashed cards directly under the thinking indicator, with a pulsing dot and a paperclip indicator when `hasImages` is true. They become real user messages once the backend drains the queue. Buffer cleared on session change and on `session_cleared`.
+- **Sticky-bottom scroll in `ChatTimeline`.** Track distance from bottom on scroll; auto-scroll only while sticky (within 32px). If the user scrolled up to read older messages, new content streams silently without yanking the viewport. Exception: a freshly-arrived user message ALWAYS snaps to bottom, because sending a new message implies wanting to see the answer.
+
+### Changed
+
+- **Choice cards are now buffered until the turn settles.** `ChatPanel` accumulates `kind: "choice"` entries in a ref while the assistant is still streaming, and flushes them on `done` / `error` / `aborted`. Result: the card always lands at the very bottom of the assistant turn, never injected mid-stream. Streaming text is no longer cleared when a choice arrives — the model can keep talking and the card lands after the final text. Edge case: if neither streaming nor thinking is active when the choice arrives (deferred capability outside a normal turn), the card is flushed immediately. `isStreamingRef` / `isThinkingRef` mirror state so the SSE callback (closes over initial state) reads live values.
+
+### Fixed
+
+- **Anthropic compaction: sanitize `compaction` blocks from message history.** Engine A (API-native `compact-2026-01-12`) returns content with a `compaction`-typed block that is valid as API OUTPUT but rejected as INPUT on the next request, causing every post-compaction turn to fail with HTTP 400. Filter `compaction` blocks before storing the assistant message in `this.messages`. If filtering leaves no blocks, fall back to a synthetic text block carrying the compaction summary so the session never ends up with empty content.
+
 ## [0.2.2] - 2026-04-26
 
 ### Added

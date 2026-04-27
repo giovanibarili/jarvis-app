@@ -92,6 +92,32 @@ export function ChatPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toolStartTimes = useRef(new Map<string, number>())
 
+  // Pending choice cards — buffered while a turn is still streaming, so the
+  // card always lands at the END of the assistant turn instead of being
+  // injected mid-stream. Flushed on `done`/`error`/`aborted` or when the
+  // turn settles (no streaming text and no running capability).
+  const pendingChoices = useRef<Array<Extract<ChatEntry, { kind: 'choice' }>>>([])
+
+  // Queued user messages — sent by the user while the session was busy,
+  // mirrored from the backend's pendingPrompts queue via SSE `pending_queue`.
+  // They render as faint cards under the JARVIS thinking indicator until the
+  // backend drains them and they materialize as real user messages.
+  const [pendingQueue, setPendingQueue] = useState<Array<{ text: string; source?: string; hasImages?: boolean }>>([])
+
+  // Mirror of streaming/thinking state read inside the SSE callback — that
+  // useEffect closes over initial values, so reading state directly there
+  // would be stale. Refs stay current.
+  const isStreamingRef = useRef(false)
+  const isThinkingRef = useRef(false)
+
+  /** Append all buffered choice cards to entries. Safe to call multiple times. */
+  const flushPendingChoices = useCallback(() => {
+    if (pendingChoices.current.length === 0) return
+    const toAppend = pendingChoices.current
+    pendingChoices.current = []
+    setEntries(prev => [...prev, ...toAppend])
+  }, [])
+
   // Reset conversation state when sessionId changes (panels reused across sessions)
   useEffect(() => {
     setEntries([])
@@ -99,7 +125,13 @@ export function ChatPanel({
     setIsStreaming(false)
     setIsThinking(false)
     toolStartTimes.current.clear()
+    pendingChoices.current = []
+    setPendingQueue([])
   }, [sessionId])
+
+  // Keep refs in sync so the SSE callback below can read the live values.
+  useEffect(() => { isStreamingRef.current = isStreaming }, [isStreaming])
+  useEffect(() => { isThinkingRef.current = isThinking }, [isThinking])
 
   // Auto-resize textarea
   const autoResize = useCallback(() => {
@@ -170,12 +202,17 @@ export function ChatPanel({
             }
             return ''
           })
+          // Turn finished — choice cards captured during the turn now land
+          // at the very end of the conversation, AFTER any final assistant text.
+          flushPendingChoices()
           break
         case 'error':
           setIsStreaming(false)
           setIsThinking(false)
           setEntries(prev => [...prev, { kind: 'message', role: 'assistant', text: `[Error: ${data.error}]`, source: data.source }])
           setStreamingText('')
+          // Even on error, surface the buffered cards so the user isn't blocked.
+          flushPendingChoices()
           break
         case 'tool_start':
           // Skip jarvis_ask_choice — the choice card (kind:'choice') replaces
@@ -223,6 +260,7 @@ export function ChatPanel({
             }
             return ''
           })
+          flushPendingChoices()
           break
         case 'compaction':
           if (!features.compaction) break
@@ -247,16 +285,22 @@ export function ChatPanel({
           setStreamingText('')
           setIsStreaming(false)
           setIsThinking(false)
+          // Drop any buffered cards — they belonged to the wiped session.
+          pendingChoices.current = []
+          setPendingQueue([])
+          break
+        case 'pending_queue':
+          // Backend snapshot of the user-message queue for this session.
+          // Empty array clears the UI list (drained or aborted).
+          setPendingQueue(Array.isArray(data.items) ? data.items : [])
           break
         case 'choice': {
-          setIsThinking(false)
-          setIsStreaming(false)
-          setStreamingText(prev => {
-            if (prev) {
-              setEntries(msgs => [...msgs, { kind: 'message', role: 'assistant', text: prev, source: data.source, session: data.session }])
-            }
-            return ''
-          })
+          // DO NOT clear streaming state here — we want the assistant text
+          // that's currently mid-flight to keep streaming and finish naturally.
+          // The card itself is BUFFERED and only flushed when the turn ends
+          // (`done` / `error` / `aborted`), so it always lands at the bottom,
+          // never injected mid-stream.
+
           // Normalize: prefer `questions[]`, fall back to legacy single-question fields
           const questions = Array.isArray(data.questions) && data.questions.length > 0
             ? data.questions.map((q: any) => ({
@@ -271,18 +315,29 @@ export function ChatPanel({
                 multi: !!data.multi,
                 allow_other: data.allow_other !== false,
               }]
-          setEntries(prev => [...prev, {
+
+          const card: Extract<ChatEntry, { kind: 'choice' }> = {
             kind: 'choice',
             choice_id: data.choice_id,
             questions,
-          }])
+          }
+          pendingChoices.current.push(card)
+
+          // Edge case: if the turn isn't streaming AND nothing is thinking
+          // when the choice arrives (e.g. a deferred capability triggered it
+          // outside of a normal turn flow), flush immediately so the card
+          // doesn't get stuck in the buffer. Use refs because state read
+          // inside this SSE callback would be stale.
+          if (!isStreamingRef.current && !isThinkingRef.current) {
+            flushPendingChoices()
+          }
           break
         }
       }
     }
 
     return () => source.close()
-  }, [streamUrl, features.compaction])
+  }, [streamUrl, features.compaction, flushPendingChoices])
 
   // Track focus on this chat panel
   useEffect(() => {
@@ -493,6 +548,7 @@ export function ChatPanel({
           userLabelColor={getUserLabelColor}
           onToggleExpand={toggleExpand}
           onChoiceSubmit={handleChoiceSubmit}
+          pendingQueue={pendingQueue}
         />
       </div>
 
