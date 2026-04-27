@@ -1,7 +1,7 @@
 // src/ai/types.ts
 
 export interface AIStreamEvent {
-  type: 'text_delta' | 'tool_use' | 'message_complete' | 'error' | 'compaction';
+  type: 'text_delta' | 'tool_use' | 'message_complete' | 'error' | 'compaction' | 'retry';
   text?: string;
   toolUse?: { id: string; name: string; input: Record<string, unknown> };
   stopReason?: 'end_turn' | 'tool_use' | 'max_tokens' | 'compaction';
@@ -17,6 +17,18 @@ export interface AIStreamEvent {
     engine: 'api' | 'fallback';
     tokensBefore: number;
     tokensAfter: number;
+  };
+  /**
+   * Emitted when the API call failed with a transient error (overloaded,
+   * rate-limited, network blip) and the session is about to retry. The UI
+   * should show a banner like "Retrying (1/3, ~2s)…" and clear it on the
+   * next text_delta or terminal event.
+   */
+  retry?: {
+    attempt: number;       // 1-indexed
+    maxAttempts: number;   // total attempts allowed
+    delayMs: number;       // delay before this retry
+    reason: string;        // human-readable, e.g. "overloaded_error", "rate_limit (429)", "ECONNRESET"
   };
 }
 

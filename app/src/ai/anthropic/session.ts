@@ -13,6 +13,97 @@ import { getMaxContext, getMaxOutput } from "../../config/index.js";
 type CapabilityDef = { name: string; description: string; input_schema: Record<string, unknown> };
 type SystemPrompt = string | TextBlockParam[];
 
+/** Total number of retries on transient errors before giving up. */
+export const MAX_RETRIES = 10;
+
+/**
+ * Classify an error from the Anthropic SDK or underlying HTTP/network stack.
+ * Returns a short reason string if the error is transient (retryable),
+ * or null if it should propagate immediately.
+ *
+ * Retryable cases:
+ *   - 529 overloaded_error  (provider sobrecarregado)
+ *   - 503 service_unavailable
+ *   - 502 bad_gateway
+ *   - 500 api_error
+ *   - 429 rate_limit_error
+ *   - Network errors: ECONNRESET, ECONNREFUSED, ETIMEDOUT, EAI_AGAIN, ENOTFOUND, EPIPE
+ *   - APIConnectionError / APIConnectionTimeoutError from the SDK
+ *
+ * Non-retryable cases (caller must surface):
+ *   - 400 invalid_request_error  (our payload is broken — retry won't fix it)
+ *   - 401 / 403 authentication_error / permission_error
+ *   - 404 not_found_error
+ *   - any "Could not process image" (handled separately upstream)
+ *   - User abort (handled separately upstream)
+ */
+export function classifyTransientError(err: any): string | null {
+  if (!err) return null;
+  const status: number | undefined = err?.status ?? err?.response?.status;
+  const apiType: string | undefined = err?.error?.type ?? err?.error?.error?.type;
+  const code: string | undefined = err?.code ?? err?.cause?.code;
+  const name: string | undefined = err?.name ?? err?.constructor?.name;
+  const msg = String(err?.message ?? err ?? "");
+
+  // SDK-typed connection errors
+  if (name === "APIConnectionError" || name === "APIConnectionTimeoutError") {
+    return name;
+  }
+
+  // Status-based classification
+  if (status === 529) return "overloaded_error (529)";
+  if (status === 503) return "service_unavailable (503)";
+  if (status === 502) return "bad_gateway (502)";
+  if (status === 500) return "api_error (500)";
+  if (status === 429) return "rate_limit_error (429)";
+
+  // Anthropic error type field
+  if (apiType === "overloaded_error") return "overloaded_error";
+  if (apiType === "rate_limit_error") return "rate_limit_error";
+  if (apiType === "api_error") return "api_error";
+
+  // Node network errors
+  const NET_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EPIPE"]);
+  if (code && NET_CODES.has(code)) return code;
+  for (const c of NET_CODES) {
+    if (msg.includes(c)) return c;
+  }
+
+  // Loose message-based fallback for overloaded_error (defensive — Anthropic
+  // sometimes returns it with status undefined when streaming)
+  if (msg.includes("overloaded_error") || msg.includes('"type":"overloaded_error"')) {
+    return "overloaded_error";
+  }
+
+  return null;
+}
+
+/**
+ * Sleep for `ms`, but resolve early if the abort signal fires. Returns true
+ * if the sleep was aborted, false if it completed normally.
+ */
+export function sleepInterruptible(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      resolve(true);
+    };
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class AnthropicSession implements AISession {
   readonly sessionId: string;
   private client: Anthropic;
@@ -28,6 +119,12 @@ export class AnthropicSession implements AISession {
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
   private consecutiveFallbacks = 0;
   private static MAX_CONSECUTIVE_FALLBACKS = 2;
+  /**
+   * Counts retries within a single streamFromAPI invocation chain. Reset
+   * to 0 on successful completion or when retries are exhausted, so a
+   * subsequent user prompt always gets a fresh budget.
+   */
+  private retryAttempt = 0;
 
   constructor(opts: {
     client: Anthropic;
@@ -551,9 +648,58 @@ export class AnthropicSession implements AISession {
         log.warn({ label: this.label }, "AnthropicSession: no images found to strip despite image error");
       }
 
+      // Transient errors → exponential backoff with jitter, up to 10 retries.
+      // Examples: 529 overloaded_error, 503 service_unavailable, 502 bad_gateway,
+      // 429 rate_limit_error, 500 api_error, network errors (ECONNRESET / ETIMEDOUT / EAI_AGAIN).
+      const transient = classifyTransientError(err);
+      if (transient && this.retryAttempt < MAX_RETRIES) {
+        this.retryAttempt += 1;
+        const baseDelayMs = 1000 * Math.pow(2, this.retryAttempt - 1); // 1s, 2s, 4s, ..., 512s
+        // ±20% jitter
+        const jitter = (Math.random() * 0.4 - 0.2) * baseDelayMs;
+        const delayMs = Math.max(0, Math.round(baseDelayMs + jitter));
+        log.warn({
+          label: this.label,
+          attempt: this.retryAttempt,
+          maxAttempts: MAX_RETRIES,
+          delayMs,
+          reason: transient,
+          err: errMsg,
+        }, "AnthropicSession: transient error, retrying with backoff");
+        yield {
+          type: "retry",
+          retry: {
+            attempt: this.retryAttempt,
+            maxAttempts: MAX_RETRIES,
+            delayMs,
+            reason: transient,
+          },
+        };
+        // Sleep with abort awareness
+        const aborted = await sleepInterruptible(delayMs, this.abortController?.signal);
+        if (aborted) {
+          log.info({ label: this.label }, "AnthropicSession: retry sleep aborted by user");
+          yield { type: "error", error: "aborted" };
+          return;
+        }
+        // Recurse — the retry counter ensures we cap at MAX_RETRIES total
+        yield* this.streamFromAPI();
+        return;
+      }
+
+      // Either non-transient or retries exhausted — surface as a real error.
+      // Reset retry counter so a new user prompt can retry afresh.
+      if (this.retryAttempt >= MAX_RETRIES) {
+        log.error({ label: this.label, attempts: this.retryAttempt }, "AnthropicSession: retries exhausted");
+      }
+      this.retryAttempt = 0;
       log.error({ label: this.label, err }, "AnthropicSession: API error");
       yield { type: "error", error: String(err) };
+      return;
     }
+
+    // Successful run — reset retry counter so subsequent prompts start fresh
+    this.retryAttempt = 0;
   }
 
   /**

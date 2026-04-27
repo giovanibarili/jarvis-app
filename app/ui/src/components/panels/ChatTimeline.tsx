@@ -71,6 +71,10 @@ interface Props {
   /** Pending user messages waiting in queue while the current turn finishes.
    *  Rendered as small cards under the JARVIS thinking indicator. */
   pendingQueue?: PendingQueueItem[]
+  /** Retry banner shown when the AI session is waiting between attempts
+   *  on a transient error (overloaded, rate-limit, network blip).
+   *  Cleared by the parent on the next stream event. */
+  retryBanner?: { attempt: number; maxAttempts: number; reason: string; deadline: number } | null
 }
 
 // ─── Choice card (inline prompt with radio / checkbox + free-text "Other") ───
@@ -81,6 +85,10 @@ interface ChoiceCardProps {
   index: number
   entry: Extract<ChatEntry, { kind: 'choice' }>
   onSubmit?: (index: number, answers: ChoiceAnswer[]) => void
+  /** Optional: dismiss the card without picking any option. The handler is
+   *  expected to serialize a `[choice] <question> → closed` prompt back to
+   *  the LLM so it knows the user opted out. */
+  onIgnore?: (index: number) => void
   assistantLabel: string
   assistantLabelColor: string
 }
@@ -109,7 +117,7 @@ function getAnswers(entry: Extract<ChatEntry, { kind: 'choice' }>): ChoiceAnswer
   return null
 }
 
-function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColor }: ChoiceCardProps) {
+export function ChoiceCard({ index, entry, onSubmit, onIgnore, assistantLabel, assistantLabelColor }: ChoiceCardProps) {
   const questions = getQuestions(entry)
   const persistedAnswers = getAnswers(entry)
   const answered = persistedAnswers !== null
@@ -397,26 +405,117 @@ function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColo
           <div style={{ fontSize: '10px', color: '#4a5a6a', fontFamily: 'var(--font-mono)' }}>
             ⏎ to confirm
           </div>
-          <button
-            onClick={handleSubmit}
-            disabled={!canSubmit}
-            style={{
-              padding: '4px 14px',
-              fontSize: '11px',
-              fontWeight: 600,
-              letterSpacing: '0.5px',
-              border: `1px solid ${canSubmit ? '#4af' : '#2a3040'}`,
-              borderRadius: '3px',
-              background: canSubmit ? 'rgba(68,170,255,0.15)' : 'transparent',
-              color: canSubmit ? '#4af' : '#4a5a6a',
-              cursor: canSubmit ? 'pointer' : 'not-allowed',
-              transition: 'all 0.15s',
-            }}
-          >
-            CONFIRM
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {onIgnore && (
+              <button
+                onClick={() => onIgnore(index)}
+                title="Dismiss this choice — assistant is notified the question was closed"
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '10px',
+                  fontWeight: 500,
+                  letterSpacing: '0.4px',
+                  border: '1px solid #2a3040',
+                  borderRadius: '3px',
+                  background: 'transparent',
+                  color: '#6a7a8a',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => {
+                  ;(e.currentTarget as HTMLButtonElement).style.color = '#aab'
+                  ;(e.currentTarget as HTMLButtonElement).style.borderColor = '#3a4050'
+                }}
+                onMouseLeave={e => {
+                  ;(e.currentTarget as HTMLButtonElement).style.color = '#6a7a8a'
+                  ;(e.currentTarget as HTMLButtonElement).style.borderColor = '#2a3040'
+                }}
+              >
+                IGNORE
+              </button>
+            )}
+            <button
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              style={{
+                padding: '4px 14px',
+                fontSize: '11px',
+                fontWeight: 600,
+                letterSpacing: '0.5px',
+                border: `1px solid ${canSubmit ? '#4af' : '#2a3040'}`,
+                borderRadius: '3px',
+                background: canSubmit ? 'rgba(68,170,255,0.15)' : 'transparent',
+                color: canSubmit ? '#4af' : '#4a5a6a',
+                cursor: canSubmit ? 'pointer' : 'not-allowed',
+                transition: 'all 0.15s',
+              }}
+            >
+              CONFIRM
+            </button>
+          </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Retry banner ───────────────────────────────────────────────────────────
+//
+// Shown while the AI session is sleeping between attempts on a transient
+// error. Live countdown to the retry deadline, then a "retrying…" state
+// once the timer hits zero (we keep the banner up until the next stream
+// event clears it from the parent — covers cases where the retry call
+// itself takes a few hundred ms to start producing tokens).
+
+interface RetryBannerProps {
+  banner: { attempt: number; maxAttempts: number; reason: string; deadline: number }
+}
+
+function RetryBanner({ banner }: RetryBannerProps) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(id)
+  }, [])
+  const remainingMs = Math.max(0, banner.deadline - now)
+  const remainingS = Math.ceil(remainingMs / 1000)
+  const label = remainingMs > 0
+    ? `retrying in ${remainingS}s`
+    : 'retrying now…'
+  return (
+    <div
+      style={{
+        marginTop: '6px',
+        marginBottom: '8px',
+        padding: '8px 12px',
+        background: 'rgba(255, 180, 80, 0.08)',
+        border: '1px solid rgba(255, 180, 80, 0.25)',
+        borderRadius: '6px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px',
+        fontFamily: 'var(--font-display)',
+        fontSize: '11px',
+        color: 'rgba(255, 200, 130, 0.95)',
+      }}
+    >
+      <span style={{
+        display: 'inline-block',
+        width: '8px',
+        height: '8px',
+        borderRadius: '50%',
+        background: 'rgba(255, 180, 80, 0.7)',
+        animation: 'pulse 1.2s infinite',
+      }} />
+      <span style={{ letterSpacing: '0.5px', textTransform: 'uppercase', fontSize: '9px', opacity: 0.7 }}>
+        retry · {banner.attempt}/{banner.maxAttempts}
+      </span>
+      <span style={{ flex: 1, fontStyle: 'italic' }}>
+        {banner.reason}
+      </span>
+      <span style={{ opacity: 0.85, fontVariantNumeric: 'tabular-nums' }}>
+        {label}
+      </span>
     </div>
   )
 }
@@ -433,6 +532,7 @@ export const ChatTimeline = React.memo(function ChatTimeline({
   onToggleExpand,
   onChoiceSubmit,
   pendingQueue = [],
+  retryBanner = null,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -729,6 +829,8 @@ export const ChatTimeline = React.memo(function ChatTimeline({
           </div>
         )
       })()}
+
+      {retryBanner && <RetryBanner banner={retryBanner} />}
 
       {streamingText && (
         <div style={{ color: 'var(--chat-jarvis)', whiteSpace: 'pre-wrap', lineHeight: '1.5', marginBottom: '4px' }}>

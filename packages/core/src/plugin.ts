@@ -51,6 +51,13 @@ export interface PluginContext {
   unregisterSlashCommand: (name: string) => void;
   /** Scoped graph handle for registering children on the piece's graph node (added in 0.3.0) */
   graphHandle?: (pieceId: string) => GraphHandle;
+  /**
+   * Chat anchor registry — plant UI elements above the chat input that
+   * stay visible across AI turns (added in 0.4.0). Optional: older
+   * plugins that don't need anchors don't have to use it. See
+   * `ChatAnchorRegistry` and `ChatAnchorSpec`.
+   */
+  chatAnchors?: import("./chat-anchors.js").ChatAnchorRegistry;
 }
 
 export interface JarvisPlugin {

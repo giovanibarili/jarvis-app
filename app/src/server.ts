@@ -101,6 +101,7 @@ export class HttpServer {
   private onClearSession?: (sessionId: string) => void;
   private onCompact?: (sessionId: string) => Promise<void>;
   private onHudRemove?: (pieceId: string) => void;
+  private chatAnchors?: import("./chat/anchor-registry.js").ChatAnchorRegistry;
 
   constructor(port: number, chatPiece: ChatPiece, getHudState: HudStateProvider, onAbort?: (sessionId: string) => void, getCapabilities?: CapabilitiesProvider) {
     this.port = port;
@@ -126,6 +127,11 @@ export class HttpServer {
 
   setOnHudRemove(handler: (pieceId: string) => void): void {
     this.onHudRemove = handler;
+  }
+
+  /** Wire the ChatAnchorRegistry. Enables /chat/anchors and /chat/anchor-action. */
+  setChatAnchors(registry: import("./chat/anchor-registry.js").ChatAnchorRegistry): void {
+    this.chatAnchors = registry;
   }
 
   registerRoute(method: string, path: string, handler: RouteHandler): void {
@@ -192,6 +198,20 @@ export class HttpServer {
 
     if (req.url?.startsWith("/chat/history") && req.method === "GET") {
       this.chatPiece.handleHistory(req, res);
+      return;
+    }
+
+    // ─── Chat anchor zone — slot above the input that any Piece can plant
+    //     UI into. Long-poll: GET resolves immediately if version > since,
+    //     otherwise waits up to ~25s for a mutation. POST dispatches an
+    //     action to the owning Piece's onAction handler.
+    if (req.url?.startsWith("/chat/anchors") && req.method === "GET") {
+      this.handleAnchorsList(req, res);
+      return;
+    }
+
+    if (req.url === "/chat/anchor-action" && req.method === "POST") {
+      this.handleAnchorAction(req, res);
       return;
     }
 
@@ -543,10 +563,30 @@ export class HttpServer {
     try {
       const esbuild = await import("esbuild");
       // Externalize React — the app exposes it via window globals
+      // We bundle each renderer as an IIFE wrapped in a tiny ESM shim:
+      //
+      //   <banner — top-level scope>
+      //   var __jarvis_renderer = (() => { ...bundle... })();
+      //   <footer — re-exports default>
+      //
+      // Why IIFE: heavy bundles like neovis.js + vis-network include
+      // core-js polyfills that declare `var createElement` at the top
+      // level of their module. With format:"esm" everything lands in
+      // the same module scope as the banner's `const createElement`
+      // from window.__JARVIS_REACT, triggering "Identifier 'createElement'
+      // has already been declared" SyntaxError. The IIFE wrap pushes the
+      // bundle's locals into a nested function scope, eliminating the
+      // collision while keeping the banner identifiers reachable via
+      // closure. The ESM `export default` is preserved by reading
+      // `__jarvis_renderer.default` from the IIFE return value.
+      //
+      // Public API: see packages/core/COMPATIBILITY.md — esbuild output
+      // format and globalName are part of the renderer contract.
       const result = await esbuild.build({
         entryPoints: [filePath],
         bundle: true,
-        format: "esm",
+        format: "iife",
+        globalName: "__jarvis_renderer",
         target: "esnext",
         jsx: "transform",
         jsxFactory: "__jarvis_jsx",
@@ -555,6 +595,9 @@ export class HttpServer {
         external: ["@jarvis/core"],
         banner: {
           js: `const { createElement: __jarvis_jsx, createElement, Fragment: __jarvis_Fragment, Fragment, useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } = window.__JARVIS_REACT;\nconst { useHudState, useHudPiece, useHudReactor } = window.__JARVIS_HUD_HOOKS || {};`,
+        },
+        footer: {
+          js: `export default __jarvis_renderer.default;`,
         },
       });
 
@@ -648,6 +691,119 @@ export class HttpServer {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
       } catch (err: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err?.message ?? String(err) }));
+      }
+    });
+  }
+
+  /**
+   * GET /chat/anchors?sessionId=…&since=<version>&timeoutMs=<ms>
+   *
+   * Returns the current snapshot for `sessionId`. If `since` is provided
+   * and is equal to the current version, blocks (long-poll) for up to
+   * `timeoutMs` (default 25s, max 60s) until a mutation bumps the
+   * version, then returns the new snapshot. The frontend re-issues
+   * immediately with the new `since` to maintain a sticky connection.
+   */
+  private handleAnchorsList(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.chatAnchors) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "anchor registry not wired" }));
+      return;
+    }
+    const url = new URL(req.url ?? "", "http://localhost");
+    const sessionId = (url.searchParams.get("sessionId") ?? "").trim();
+    if (!sessionId) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "sessionId is required" }));
+      return;
+    }
+    const sinceParam = url.searchParams.get("since");
+    const since = sinceParam !== null ? Number.parseInt(sinceParam, 10) || 0 : -1;
+    const timeoutMsParam = url.searchParams.get("timeoutMs");
+    const timeoutMs = Math.min(60_000, Math.max(0, Number.parseInt(timeoutMsParam ?? "", 10) || 25_000));
+
+    const respond = () => {
+      const anchors = this.chatAnchors!.list(sessionId).map((a) => ({
+        id: a.id,
+        source: a.source,
+        renderer: a.renderer,
+        data: a.data,
+        version: a.version,
+        order: a.order,
+      }));
+      const version = this.chatAnchors!.version(sessionId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ version, anchors }));
+    };
+
+    // since omitted → return immediately (initial snapshot)
+    if (since < 0) { respond(); return; }
+
+    // since matches → long-poll
+    const currentVersion = this.chatAnchors.version(sessionId);
+    if (currentVersion > since) { respond(); return; }
+
+    // Wait. Bail early if client disconnects.
+    let settled = false;
+    const onClose = () => { settled = true; };
+    req.on("close", onClose);
+    this.chatAnchors.waitForChange(sessionId, since, timeoutMs).then(() => {
+      req.off("close", onClose);
+      if (settled) return;
+      settled = true;
+      respond();
+    }).catch(() => {
+      req.off("close", onClose);
+      if (settled) return;
+      settled = true;
+      respond();
+    });
+  }
+
+  /**
+   * POST /chat/anchor-action
+   * body: { sessionId, id, payload? }
+   *
+   * Dispatches `payload` to the anchor's `onAction` handler. Returns 404
+   * if the anchor does not exist (e.g. raced with a clear). 500 on
+   * handler error.
+   */
+  private handleAnchorAction(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.chatAnchors) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "anchor registry not wired" }));
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", async () => {
+      let parsed: any;
+      try { parsed = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Invalid JSON: ${e}` }));
+        return;
+      }
+      const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId.trim() : "";
+      const id = typeof parsed.id === "string" ? parsed.id : "";
+      if (!sessionId || !id) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "sessionId and id are required" }));
+        return;
+      }
+      try {
+        const dispatched = await this.chatAnchors!.invokeAction(sessionId, id, parsed.payload);
+        if (!dispatched) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "anchor not found" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err: any) {
+        log.error({ err, sessionId, id }, "HttpServer: anchor action handler failed");
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: err?.message ?? String(err) }));
       }

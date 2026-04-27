@@ -4,6 +4,57 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-04-27
+
+### Changed — Plugin renderer bundle format
+
+Renderer endpoint `GET /plugins/:name/renderers/:file.js` now emits an IIFE-wrapped ESM shim instead of a plain ESM module. Output structure:
+
+```js
+const { createElement, ... } = window.__JARVIS_REACT;        // banner — top-level
+const { useHudState, ... } = window.__JARVIS_HUD_HOOKS || {};
+var __jarvis_renderer = (() => { /* ...bundle... */ })();    // IIFE wrap
+export default __jarvis_renderer.default;                    // footer — re-export
+```
+
+### Why
+
+Heavy renderer bundles like `neovis.js` + `vis-network` include core-js polyfills that declare `var createElement` at the bundle's top level. Under `format: "esm"` that var collided with the banner's `const createElement` from `window.__JARVIS_REACT`, throwing `Identifier 'createElement' has already been declared` and crashing the renderer at parse time. The IIFE wrap pushes bundle locals into a nested function scope while keeping banner identifiers reachable via closure, eliminating the collision without changing the runtime contract.
+
+### Compatibility
+
+- **Backwards compatible.** The HTTP endpoint still returns valid ESM (the IIFE is wrapped in a tiny ESM shim that re-exports `default`). Frontend continues to use `import("/plugins/.../renderers/X.js")` and reads `module.default`.
+- All 8 existing plugin renderers (jarvis-plugin-actors, jarvis-plugin-canvas, jarvis-plugin-mnemosyne ×5, jarvis-plugin-tasks) tested: bundle + parse OK.
+- Banner identifiers (`createElement`, `Fragment`, `useEffect`, etc.) and HUD hooks (`useHudState`, `useHudPiece`, `useHudReactor`) remain accessible from inside the IIFE via closure — plugin code that imports nothing and uses bare globals (per the renderer convention) keeps working unchanged.
+- New: bundles tolerate transitive deps that declare top-level `var <name>` shadowing banner identifiers.
+
+### Public API contract
+
+- `format: "iife"` + `globalName: "__jarvis_renderer"` + `footer: "export default __jarvis_renderer.default;"` is now the documented bundle format. Plugins should not depend on this implementation detail; consume only the ESM `default` export.
+
+## [0.3.0] — 2026-04-27
+
+### Added — Chat Anchor Registry
+
+New optional `PluginContext.chatAnchors` exposes a `ChatAnchorRegistry` for planting UI elements in a fixed slot above the chat input. Anchors persist across AI turns and never scroll away with the timeline.
+
+- `ChatAnchorRegistry.set(spec)` — plants an anchor; returns a `ChatAnchorHandle` for `update()` / `setRenderer()` / `clear()`.
+- `ChatAnchorRegistry.list(sessionId)` — read-only snapshot.
+- `ChatAnchorRegistry.clearSession(sessionId)` — wipe all anchors for a session.
+- Renderer can be a built-in (`{ builtin: "choice-card" }`) or a plugin-bundled React component (`{ plugin, file }`).
+- Backend `onAction(payload)` handler is invoked when the frontend POSTs to `/chat/anchor-action`.
+
+Transport is pure HTTP (long-poll) — no bus events. Endpoints:
+- `GET  /chat/anchors?sessionId=…&since=<version>&timeoutMs=<ms>`
+- `POST /chat/anchor-action`
+
+The field is **optional** — older plugins that don't need anchors continue to work unchanged.
+
+### Compatibility
+
+- Backwards compatible: existing `PluginContext` consumers keep working.
+- New types exported: `ChatAnchorRegistry`, `ChatAnchorSpec`, `ChatAnchorHandle`, `ChatAnchorRenderer`, `ChatAnchorRendererBuiltin`, `ChatAnchorRendererPlugin`.
+
 ## [0.2.2] — 2026-04-23
 
 ### Breaking Changes — Unified Chat Refactor

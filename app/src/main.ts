@@ -10,6 +10,7 @@ import { McpManager } from "./mcp/manager.js";
 import { ChatPiece } from "./input/chat-piece.js";
 import { GrpcPiece } from "./input/grpc-piece.js";
 import { HttpServer } from "./server.js";
+import { ChatAnchorRegistry } from "./chat/anchor-registry.js";
 import { PieceManager } from "./core/piece-manager.js";
 import { PluginManager } from "./core/plugin-manager.js";
 import { CronPiece } from "./core/cron-piece.js";
@@ -54,6 +55,10 @@ async function main() {
   // sessions wired later after SessionManager is created
   const jarvisCore = new JarvisCore();
 
+  // Chat anchor registry — slot above input; pieces and plugins plant
+  // anchors here that survive across AI turns and never scroll away.
+  const chatAnchors = new ChatAnchorRegistry();
+
   const pieces: Piece[] = [
     jarvisCore,
     new CapabilityExecutor(capabilityRegistry),
@@ -87,13 +92,6 @@ async function main() {
   sessions.setBus(bus);
   jarvisCore.setSessions(sessions);
   chatPiece.setSessions(sessions);
-
-  // Tell ChatPiece which sessions JarvisCore owns. For owned sessions
-  // (main, grpc-*, etc.), JarvisCore emits prompt_dispatched and ChatPiece
-  // stays out of the timeline-mirroring business. For non-owned sessions
-  // (e.g. actor-* handled by the actors plugin), ChatPiece must mirror
-  // user-typed input as type:"user" SSE immediately so the panel renders it.
-  chatPiece.setOwnedSessionMatcher((sid) => jarvisCore.isSessionOwned(sid));
 
   // Model management tools — now provider-aware
   capabilityRegistry.register({
@@ -218,7 +216,9 @@ async function main() {
   pieces.push(new DiffViewerPiece(capabilityRegistry));
 
   // Choice Prompt — inline chat choice cards (radio / checkbox / other)
-  pieces.push(new ChoicePromptPiece(capabilityRegistry, chatPiece));
+  const choicePrompt = new ChoicePromptPiece(capabilityRegistry, chatPiece);
+  choicePrompt.setChatAnchors(chatAnchors);
+  pieces.push(choicePrompt);
 
   // Cron scheduler
   pieces.push(new CronPiece(capabilityRegistry));
@@ -253,6 +253,7 @@ async function main() {
     (sessionId: string) => jarvisCore.abortSession(sessionId),
     () => capabilityRegistry.getSlashCommands(),
   );
+  server.setChatAnchors(chatAnchors);
   server.setHudStreamHandler((_req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
     // Send full snapshot first so client has complete state
@@ -268,6 +269,10 @@ async function main() {
     jarvisCore.abortSession(sessionId);
     sessions.close(sessionId);
     sessions.clearSaved(sessionId);
+    // Drop any anchors plugged into this session — they belong to the
+    // wiped conversation. Pieces that need them back will re-register
+    // as part of their normal flow.
+    chatAnchors.clearSession(sessionId);
     // Tell only the SSE pool of this session to clear its timeline
     chatPiece.broadcastEvent(sessionId, { type: "session_cleared", session: sessionId });
   });
@@ -312,6 +317,7 @@ async function main() {
     chatPiece.broadcastEvent(sessionId, { type: "system", text: "✅ Context compacted.", session: sessionId });
   });
   pluginManager.setHttpServer(server);
+  pluginManager.setChatAnchors(chatAnchors);
 
   // ─── Provider-scoped HUD scope routes ───
   // POST /providers/anthropic/scope { scope: "ALL" | "<sessionId>" }

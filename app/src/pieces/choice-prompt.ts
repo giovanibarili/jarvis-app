@@ -27,6 +27,7 @@ import type { EventBus } from "../core/bus.js";
 import type { Piece } from "../core/piece.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { ChatPiece } from "../input/chat-piece.js";
+import type { ChatAnchorRegistry, ChatAnchorHandle } from "../chat/anchor-registry.js";
 import { log } from "../logger/index.js";
 
 export interface ChoiceOption {
@@ -100,11 +101,24 @@ export class ChoicePromptPiece implements Piece {
   private bus!: EventBus;
   private readonly registry: CapabilityRegistry;
   private readonly chatPiece: ChatPiece;
+  private chatAnchors?: ChatAnchorRegistry;
+  /** Track open anchors per session so we can clear stale ones. */
+  private openAnchors = new Map<string, ChatAnchorHandle>();
   private counter = 0;
 
   constructor(registry: CapabilityRegistry, chatPiece: ChatPiece) {
     this.registry = registry;
     this.chatPiece = chatPiece;
+  }
+
+  /**
+   * Wire the ChatAnchorRegistry. When set, choice cards are planted as
+   * anchors in the slot above the input (sticky, never scroll away). If
+   * not set (e.g. tests), the piece falls back to legacy SSE
+   * `type:"choice"` broadcast.
+   */
+  setChatAnchors(registry: ChatAnchorRegistry): void {
+    this.chatAnchors = registry;
   }
 
   async start(bus: EventBus): Promise<void> {
@@ -114,6 +128,11 @@ export class ChoicePromptPiece implements Piece {
   }
 
   async stop(): Promise<void> {
+    // Clear any open anchors so they don't outlive the piece
+    for (const h of this.openAnchors.values()) {
+      try { h.clear(); } catch { /* ignore */ }
+    }
+    this.openAnchors.clear();
     log.info("ChoicePrompt: stopped");
   }
 
@@ -222,14 +241,58 @@ export class ChoicePromptPiece implements Piece {
           data.allow_other = questions[0].allow_other;
         }
 
-        this.chatPiece.broadcastEvent(sessionId, {
-          type: "choice",
-          ...data,
-          session: sessionId,
-        });
+        // Preferred path: plant an anchor. The card stays in the slot
+        // above the input until the user submits, then we clear it and
+        // inject the [choice] prompt back into the chat.
+        if (this.chatAnchors) {
+          // Clear any stale anchor for this session — the LLM may call
+          // jarvis_ask_choice again before the user answered the previous
+          // one. We keep the latest only (matches the "[choice] prefix"
+          // convention; only one in-flight choice at a time).
+          const stale = this.openAnchors.get(sessionId);
+          if (stale) { try { stale.clear(); } catch { /* ignore */ } }
+
+          const handle = this.chatAnchors.set({
+            id: choiceId,
+            sessionId,
+            source: this.id,
+            renderer: { builtin: "choice-card" },
+            data: data as unknown as Record<string, unknown>,
+            onAction: (payload: any) => {
+              // payload = { prompt: string }, where `prompt` is the
+              // serialized "[choice]\n…" string the frontend built from
+              // the user's selections. We:
+              //   1. Clear the anchor so the slot frees up
+              //   2. Forget our handle
+              //   3. Inject a new ai.request so the LLM sees the answer
+              //      as the next user message in this session.
+              try { handle.clear(); } catch { /* ignore */ }
+              if (this.openAnchors.get(sessionId) === handle) {
+                this.openAnchors.delete(sessionId);
+              }
+              const prompt = typeof payload?.prompt === "string" ? payload.prompt : "";
+              if (!prompt) return;
+              this.bus.publish({
+                channel: "ai.request",
+                source: this.id,
+                target: sessionId,
+                text: prompt,
+              });
+            },
+          });
+          this.openAnchors.set(sessionId, handle);
+        } else {
+          // Fallback: legacy SSE broadcast for environments without the
+          // anchor registry (e.g. unit tests, embedded headless usage).
+          this.chatPiece.broadcastEvent(sessionId, {
+            type: "choice",
+            ...data,
+            session: sessionId,
+          });
+        }
 
         log.info(
-          { sessionId, choiceId, questions: questions.length },
+          { sessionId, choiceId, questions: questions.length, mode: this.chatAnchors ? "anchor" : "legacy" },
           "ChoicePrompt: published choice",
         );
 

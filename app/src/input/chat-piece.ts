@@ -39,25 +39,12 @@ export class ChatPiece implements Piece {
   /** SSE clients keyed by sessionId. Events only reach matching pools. */
   private streamClients = new Map<string, Set<ServerResponse>>();
 
-  /**
-   * Predicate that returns true if a sessionId belongs to JarvisCore.
-   * Set via setOwnedSessionMatcher() at boot. When true, user-typed
-   * messages are mirrored into the timeline by JarvisCore.prompt_dispatched.
-   * When false (plugin-owned sessions like actors), this piece must mirror
-   * type:"user" itself so the panel's timeline reflects what the user typed.
-   */
-  private ownedSessionMatcher?: (sid: string) => boolean;
-
   setRegistry(registry: CapabilityRegistry): void {
     this.registry = registry;
   }
 
   setSessions(sessions: SessionManager): void {
     this.sessions = sessions;
-  }
-
-  setOwnedSessionMatcher(matcher: (sid: string) => boolean): void {
-    this.ownedSessionMatcher = matcher;
   }
 
   systemContext(): string {
@@ -106,6 +93,27 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
             session: msg.target,
           });
           break;
+
+        // retry is published when the AI session hits a transient error
+        // (overloaded, rate-limited, network blip) and is sleeping before
+        // retrying. The chat panel shows a banner with attempt/maxAttempts
+        // and the delay. Cleared automatically on the next text_delta or
+        // terminal event. Not in the public AIStreamMessage union — read
+        // via cast.
+        case "retry" as any: {
+          const retry = (msg as any).retry as
+            | { attempt: number; maxAttempts: number; delayMs: number; reason: string }
+            | undefined;
+          if (retry) {
+            this.broadcast(msg.target, {
+              type: "retry",
+              retry,
+              source,
+              session: msg.target,
+            });
+          }
+          break;
+        }
         // pending_queue is published by JarvisCore.broadcastPendingQueue.
         // Not declared in AIStreamMessage.event union (intentionally — kept
         // out of the public type surface to avoid forcing plugin updates),
@@ -255,35 +263,25 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
       }
     }
 
-    // Normal message routing:
+    // Normal message — DO NOT broadcast type:"user" here.
     //
-    // For sessions OWNED by JarvisCore (main, grpc-*, plus any patterns
-    // plugins register), we DO NOT broadcast type:"user" here — JarvisCore
-    // emits prompt_dispatched when the prompt is actually sent to the API,
-    // which is when we want the user entry to appear in the timeline.
-    // Until then, queued prompts show as cards in pending_queue.
+    // ChatPiece is a pure renderer of `ai.stream` flow events. It MUST NOT
+    // decide when a message becomes a timeline entry vs a queue card —
+    // that depends on whether the session's owner dispatched the prompt
+    // or enqueued it, which is information ChatPiece does not have and
+    // should not infer from observable state (state is a status, not a
+    // flow guarantee — race-prone).
     //
-    // For sessions NOT owned by JarvisCore (e.g. actor-* sessions handled
-    // by the actors plugin's actor-runner), no prompt_dispatched event is
-    // ever emitted because the plugin doesn't know about that protocol —
-    // it only consumes ai.request and dispatches to its own AI session.
-    // Without an immediate type:"user" broadcast here, the user's typed
-    // message never appears in the panel's timeline. So for those sessions
-    // we mirror ai.request → type:"user" SSE the moment the user sends it.
+    // The owner of the session (JarvisCore for main/grpc-*, actor-runner
+    // for actor-*, any future plugin for its own sessions) is responsible
+    // for publishing on `ai.stream`:
+    //   - `prompt_dispatched` when the prompt is actually sent to the AI
+    //     → ChatPiece renders as type:"user" entry
+    //   - `pending_queue` when the prompt is enqueued because the session
+    //     is busy → ChatPiece renders as a queue card
     //
-    // The check uses the same ownership check JarvisCore uses internally,
-    // exposed via getOwnedSessionMatcher so this piece doesn't import core.
-    const isOwnedByCore = this.ownedSessionMatcher?.(sid) ?? false;
-    if (!isOwnedByCore) {
-      this.broadcast(sid, {
-        type: "user",
-        text: prompt,
-        images,
-        source: "chat",
-        session: sid,
-      });
-    }
-
+    // ChatPiece subscribes to both above (see start()) and forwards them
+    // to the SSE pool. No owner-specific logic lives here.
     this.bus.publish({
       channel: "ai.request",
       source: "chat-input",
