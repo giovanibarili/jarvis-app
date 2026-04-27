@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback, type KeyboardEvent, type ChangeEvent, type ClipboardEvent } from 'react'
 import { ChatTimeline, type ChatEntry } from './ChatTimeline'
+import { AnchorSlot } from './AnchorSlot'
+import { useChatAnchors } from '../../hooks/useChatAnchors'
 import { SlashMenu } from './SlashMenu'
 
 interface PendingImage {
@@ -79,6 +81,10 @@ export function ChatPanel({
   const getUserLabel = useMemo(() => userLabelProp ?? defaultUserLabel, [userLabelProp])
   const getUserLabelColor = useMemo(() => userLabelColorProp ?? defaultUserLabelColor, [userLabelColorProp])
 
+  // Anchor zone — sticky UI elements above the input. Long-poll keeps it
+  // in sync with the backend ChatAnchorRegistry.
+  const anchors = useChatAnchors('', sessionId)
+
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -104,6 +110,15 @@ export function ChatPanel({
   // backend drains them and they materialize as real user messages.
   const [pendingQueue, setPendingQueue] = useState<Array<{ text: string; source?: string; hasImages?: boolean }>>([])
 
+  // Retry banner state. Set on `retry` SSE, cleared on the next `delta` /
+  // `done` / `error` / `aborted` (the AI's next attempt either succeeds or
+  // surfaces a terminal event). `deadline` is computed once and used by
+  // the renderer to display the live countdown.
+  const [retryBanner, setRetryBanner] = useState<
+    | { attempt: number; maxAttempts: number; reason: string; deadline: number }
+    | null
+  >(null)
+
   // Mirror of streaming/thinking state read inside the SSE callback — that
   // useEffect closes over initial values, so reading state directly there
   // would be stale. Refs stay current.
@@ -127,6 +142,7 @@ export function ChatPanel({
     toolStartTimes.current.clear()
     pendingChoices.current = []
     setPendingQueue([])
+    setRetryBanner(null)
   }, [sessionId])
 
   // Keep refs in sync so the SSE callback below can read the live values.
@@ -192,10 +208,13 @@ export function ChatPanel({
           setIsThinking(false)
           setIsStreaming(true)
           setStreamingText(prev => prev + data.text)
+          // First successful chunk after a retry → clear the banner
+          setRetryBanner(null)
           break
         case 'done':
           setIsStreaming(false)
           setIsThinking(false)
+          setRetryBanner(null)
           setStreamingText(prev => {
             if (prev) {
               setEntries(msgs => [...msgs, { kind: 'message', role: 'assistant', text: prev, source: data.source, session: data.session }])
@@ -209,6 +228,7 @@ export function ChatPanel({
         case 'error':
           setIsStreaming(false)
           setIsThinking(false)
+          setRetryBanner(null)
           setEntries(prev => [...prev, { kind: 'message', role: 'assistant', text: `[Error: ${data.error}]`, source: data.source }])
           setStreamingText('')
           // Even on error, surface the buffered cards so the user isn't blocked.
@@ -254,6 +274,7 @@ export function ChatPanel({
         case 'aborted':
           setIsStreaming(false)
           setIsThinking(false)
+          setRetryBanner(null)
           setStreamingText(prev => {
             if (prev) {
               setEntries(msgs => [...msgs, { kind: 'message', role: 'assistant', text: prev, source: data.source, session: data.session, aborted: true }])
@@ -262,6 +283,26 @@ export function ChatPanel({
           })
           flushPendingChoices()
           break
+        case 'retry': {
+          // AI session hit a transient error (529/503/429/network) and is
+          // sleeping before retrying. Show a banner with the current
+          // attempt and a live countdown until the retry fires. Cleared
+          // on the next delta / done / error / aborted.
+          const r = data.retry as { attempt: number; maxAttempts: number; delayMs: number; reason: string } | undefined
+          if (r) {
+            setRetryBanner({
+              attempt: r.attempt,
+              maxAttempts: r.maxAttempts,
+              reason: r.reason,
+              deadline: Date.now() + r.delayMs,
+            })
+            // While sleeping the actor is neither streaming nor thinking
+            // (the call hasn't restarted yet). Keep `isThinking` true so
+            // the user sees something animated; the banner sits next to it.
+            setIsThinking(true)
+          }
+          break
+        }
         case 'compaction':
           if (!features.compaction) break
           setIsThinking(false)
@@ -288,6 +329,7 @@ export function ChatPanel({
           // Drop any buffered cards — they belonged to the wiped session.
           pendingChoices.current = []
           setPendingQueue([])
+          setRetryBanner(null)
           break
         case 'pending_queue':
           // Backend snapshot of the user-message queue for this session.
@@ -295,13 +337,16 @@ export function ChatPanel({
           setPendingQueue(Array.isArray(data.items) ? data.items : [])
           break
         case 'choice': {
-          // DO NOT clear streaming state here — we want the assistant text
-          // that's currently mid-flight to keep streaming and finish naturally.
-          // The card itself is BUFFERED and only flushed when the turn ends
-          // (`done` / `error` / `aborted`), so it always lands at the bottom,
-          // never injected mid-stream.
-
-          // Normalize: prefer `questions[]`, fall back to legacy single-question fields
+          // LEGACY PATH — no longer used by ChoicePromptPiece (which now
+          // plants an anchor via ChatAnchorRegistry, picked up by the
+          // useChatAnchors long-poll above). Kept only as a safety net
+          // for environments where the anchor registry isn't wired
+          // (older builds or embedded headless usage).
+          //
+          // We push directly into the timeline so the user can still
+          // answer the question. Reload via /chat/history will continue
+          // to reconstruct historical choice cards from tool_use blocks
+          // — that path is unaffected by this change.
           const questions = Array.isArray(data.questions) && data.questions.length > 0
             ? data.questions.map((q: any) => ({
                 question: String(q.question ?? ''),
@@ -322,12 +367,6 @@ export function ChatPanel({
             questions,
           }
           pendingChoices.current.push(card)
-
-          // Edge case: if the turn isn't streaming AND nothing is thinking
-          // when the choice arrives (e.g. a deferred capability triggered it
-          // outside of a normal turn flow), flush immediately so the card
-          // doesn't get stuck in the buffer. Use refs because state read
-          // inside this SSE callback would be stale.
           if (!isStreamingRef.current && !isThinkingRef.current) {
             flushPendingChoices()
           }
@@ -549,6 +588,28 @@ export function ChatPanel({
           onToggleExpand={toggleExpand}
           onChoiceSubmit={handleChoiceSubmit}
           pendingQueue={pendingQueue}
+          retryBanner={retryBanner}
+        />
+      </div>
+
+      {/*
+        Anchor zone — a fixed slot between the scrolling timeline and the
+        input. Pieces (core or plugin) plant UI here that must remain
+        visible across AI turns. Currently consumed by ChoicePromptPiece
+        for sticky choice cards. Scroll-locked: when the timeline grows,
+        anchors stay put.
+      */}
+      <div
+        className="chatAnchors"
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{ padding: anchors.length > 0 ? '6px 12px 0 12px' : 0 }}
+      >
+        <AnchorSlot
+          baseUrl=""
+          sessionId={sessionId}
+          anchors={anchors}
+          assistantLabel={assistantLabel}
+          assistantLabelColor="var(--chat-jarvis-label)"
         />
       </div>
 

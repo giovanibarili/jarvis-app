@@ -61,9 +61,14 @@ export class PluginManager implements Piece {
   private factory?: AISessionFactory;
   private sessions?: SessionManager;
   private httpServer?: HttpServerLike;
+  private chatAnchors?: import("../chat/anchor-registry.js").ChatAnchorRegistry;
 
   constructor(registry: CapabilityRegistry) {
     this.registry = registry;
+  }
+
+  setChatAnchors(registry: import("../chat/anchor-registry.js").ChatAnchorRegistry): void {
+    this.chatAnchors = registry;
   }
 
   setPieceManager(pm: PieceManager): void {
@@ -301,6 +306,7 @@ export class PluginManager implements Piece {
                   graphRegistry.update(pieceId, patch);
                 },
               }),
+              chatAnchors: this.chatAnchors as unknown as PluginContext["chatAnchors"],
             };
             const pieces = mod.createPieces(ctx);
             for (const piece of pieces) {
