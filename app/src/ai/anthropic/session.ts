@@ -445,9 +445,15 @@ export class AnthropicSession implements AISession {
         const tokensBefore = iterationsArr?.[0]?.input_tokens ?? message.usage?.input_tokens ?? 0;
         const tokensAfter = message.usage?.input_tokens ?? 0;
 
-        // Replace message history with compacted context
+        // Replace message history with compacted context.
+        // CRITICAL: filter out 'compaction' blocks — they are valid in API
+        // OUTPUT but rejected as INPUT (Anthropic API v2026-01-12). Keep only
+        // text/tool_use blocks so subsequent turns don't fail with 400.
         this.injectedContextCount = 0; // compaction wipes all messages — reset ephemeral tracking
-        this.messages = [{ role: "assistant", content: message.content }];
+        const sanitized = (message.content as any[]).filter(b => b?.type !== "compaction");
+        this.messages = sanitized.length > 0
+          ? [{ role: "assistant", content: sanitized }]
+          : [{ role: "assistant", content: [{ type: "text", text: `[Previous conversation compacted by Anthropic API]\n${compactionSummary}` }] }];
 
         yield {
           type: "compaction",
