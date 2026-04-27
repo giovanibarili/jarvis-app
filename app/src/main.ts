@@ -88,6 +88,13 @@ async function main() {
   jarvisCore.setSessions(sessions);
   chatPiece.setSessions(sessions);
 
+  // Tell ChatPiece which sessions JarvisCore owns. For owned sessions
+  // (main, grpc-*, etc.), JarvisCore emits prompt_dispatched and ChatPiece
+  // stays out of the timeline-mirroring business. For non-owned sessions
+  // (e.g. actor-* handled by the actors plugin), ChatPiece must mirror
+  // user-typed input as type:"user" SSE immediately so the panel renders it.
+  chatPiece.setOwnedSessionMatcher((sid) => jarvisCore.isSessionOwned(sid));
+
   // Model management tools — now provider-aware
   capabilityRegistry.register({
     name: "model_set",

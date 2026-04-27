@@ -70,6 +70,17 @@ export class JarvisCore implements Piece {
     );
   }
 
+  /**
+   * Public matcher for other pieces (notably ChatPiece) to ask whether a
+   * sessionId is processed by this core. Used to decide whether to mirror
+   * user-typed input as type:"user" SSE immediately, or wait for the
+   * core's prompt_dispatched event. Plugin-owned sessions (e.g. actor-*)
+   * never get prompt_dispatched, so the asker must mirror locally.
+   */
+  isSessionOwned(sessionId: string): boolean {
+    return this.isOwnedSession(sessionId);
+  }
+
   /** Register an additional session pattern that JarvisCore should manage.
    *  Accepts exact string or RegExp. */
   registerSessionPattern(pattern: string | RegExp): void {
