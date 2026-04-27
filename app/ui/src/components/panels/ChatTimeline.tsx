@@ -46,6 +46,13 @@ export type ChatEntry =
       other_text?: string
     }
 
+/** A user message that arrived while a turn was busy and is waiting in line. */
+export interface PendingQueueItem {
+  text: string
+  source?: string
+  hasImages?: boolean
+}
+
 interface Props {
   entries: ChatEntry[]
   streamingText: string
@@ -61,6 +68,9 @@ interface Props {
   onToggleExpand: (index: number) => void
   /** Submit a choice answer — one answer per question. */
   onChoiceSubmit?: (index: number, answers: ChoiceAnswer[]) => void
+  /** Pending user messages waiting in queue while the current turn finishes.
+   *  Rendered as small cards under the JARVIS thinking indicator. */
+  pendingQueue?: PendingQueueItem[]
 }
 
 // ─── Choice card (inline prompt with radio / checkbox + free-text "Other") ───
@@ -422,13 +432,60 @@ export const ChatTimeline = React.memo(function ChatTimeline({
   assistantLabelColor = 'var(--chat-jarvis-label)',
   onToggleExpand,
   onChoiceSubmit,
+  pendingQueue = [],
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // "Stick to bottom" — auto-scroll only while the user is already at the
+  // bottom of the timeline. If they scrolled up to read older messages,
+  // new content appends silently without yanking them away.
+  // Threshold: small slack to absorb sub-pixel rounding and natural
+  // overscroll on macOS rubber-banding.
+  const SCROLL_BOTTOM_THRESHOLD_PX = 32
+  const stickToBottomRef = useRef(true)
+
+  // Track scroll position to maintain stickToBottom flag.
+  // Mount: snap to bottom (so a freshly-loaded history shows the latest
+  // message) and start in sticky mode.
   useEffect(() => {
     const el = containerRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [entries, streamingText])
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    stickToBottomRef.current = true
+
+    const onScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      stickToBottomRef.current = distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD_PX
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Auto-scroll only when sticky. Triggers on entries, streaming text, the
+  // queue, AND the thinking state — anything that changes layout below.
+  // Exception: if the last entry is a user message that JUST appeared, we
+  // always snap to bottom even if the user had scrolled up. Sending a new
+  // message implies "I want to see the answer" — staying scrolled up would
+  // be disorienting.
+  const lastEntryRef = useRef<ChatEntry | null>(null)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const last = entries[entries.length - 1] ?? null
+    const isFreshUserMsg =
+      last && last.kind === 'message' && last.role === 'user' && last !== lastEntryRef.current
+    lastEntryRef.current = last
+
+    if (isFreshUserMsg) {
+      el.scrollTop = el.scrollHeight
+      stickToBottomRef.current = true
+      return
+    }
+    if (stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [entries, streamingText, pendingQueue, isThinking])
 
   const labelFor = (msg: ChatEntry & { kind: 'message' }) => {
     if (msg.role === 'user') return userLabel(msg.source)
@@ -678,6 +735,55 @@ export const ChatTimeline = React.memo(function ChatTimeline({
           <span style={{ color: assistantLabelColor, marginRight: '8px', fontFamily: 'var(--font-display)', fontSize: '9px', fontWeight: 600 }}>{assistantLabel}</span>
           <MarkdownText text={streamingText} />
           {isStreaming && <span className="streaming-cursor" />}
+        </div>
+      )}
+
+      {/*
+        Queued user messages — rendered as faint cards directly under the
+        thinking/streaming indicator. They become real user messages once the
+        backend drains the queue. Visual hierarchy: less prominent than real
+        messages (italic, low opacity) so the user reads them as "in flight".
+      */}
+      {pendingQueue.length > 0 && (
+        <div style={{ marginTop: '6px', marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ fontSize: '9px', letterSpacing: '1.5px', color: '#5a6c8a', textTransform: 'uppercase', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>
+            queued · {pendingQueue.length}
+          </div>
+          {pendingQueue.map((item, idx) => (
+            <div
+              key={idx}
+              style={{
+                background: 'rgba(120, 180, 255, 0.05)',
+                border: '1px dashed rgba(120, 180, 255, 0.18)',
+                borderRadius: '6px',
+                padding: '6px 10px',
+                fontSize: '12px',
+                color: 'rgba(207, 216, 232, 0.6)',
+                fontStyle: 'italic',
+                lineHeight: '1.4',
+                position: 'relative',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: '5px',
+                  height: '5px',
+                  background: 'rgba(120, 180, 255, 0.5)',
+                  borderRadius: '50%',
+                  marginRight: '8px',
+                  verticalAlign: 'middle',
+                  animation: 'pulse 1.8s infinite',
+                }}
+              />
+              <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {item.text}
+                {item.hasImages && (
+                  <span style={{ marginLeft: '6px', fontSize: '10px', opacity: 0.7 }}>📎</span>
+                )}
+              </span>
+            </div>
+          ))}
         </div>
       )}
 
