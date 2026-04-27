@@ -5,6 +5,25 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-04-27
+
+### Changed
+
+- **Timeline reflects what was sent to the API; pending queue reflects what is waiting.** Previously, every `ai.request` was mirrored as a `type:"user"` SSE on arrival, so a message from an actor (or any non-chat source) appeared in the chat timeline AND simultaneously as a queued card under the thinking indicator — a visual duplication. The new rule:
+  - **Timeline (`type:"user"`)** materializes only when the prompt is actually about to be sent to the AI. JarvisCore emits a new internal event `prompt_dispatched` at that moment, and ChatPiece translates it into the SSE `type:"user"` event.
+  - **Pending queue (`type:"pending_queue"`)** continues to show whatever is sitting in `pendingPrompts` for the session.
+  - A queue drain emits **one `prompt_dispatched` per originally-queued message**, so each shows up as its own user entry with its preserved source label (chat / actor-* / grpc / etc.). The backend still combines them into a single API call to save tokens.
+- Slash command flow unchanged — slash commands never go through `ai.request`, so they still broadcast `type:"user"` immediately.
+
+### Added
+
+- **`JarvisCore.broadcastPromptDispatched(sessionId, items[])`** — internal helper that emits an `ai.stream` event `prompt_dispatched` carrying `items: [{ text, source, images? }]`. Like `pending_queue`, it is intentionally NOT in the public `AIStreamMessage.event` union (kept off the type surface so plugins do not need to update); ChatPiece reads it via cast.
+- **`JarvisCore.dispatchToSession(sessionId, text, images)`** — extracted from `handlePrompt` so `drainQueue` can ship the combined prompt without re-running the queue branch and without re-emitting `prompt_dispatched`.
+
+### Fixed
+
+- **Visual duplication of actor / non-chat messages.** When an actor published `ai.request` while JARVIS was busy, the message rendered both as a user entry in the timeline and as a queued card under the thinking indicator. With the new dispatch semantics, a queued message shows ONLY as a queued card until it is actually sent, then transitions into a user entry.
+
 ## [0.2.3] - 2026-04-27
 
 ### Added

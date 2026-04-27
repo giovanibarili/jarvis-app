@@ -105,18 +105,45 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
             session: msg.target,
           });
           break;
+        // prompt_dispatched is published by JarvisCore.broadcastPromptDispatched
+        // when prompts are about to be sent to the AI. One event may carry
+        // multiple items (e.g. a queue drain combines N original messages
+        // into one API call but emits one item per original message). We
+        // expand into one `type:"user"` SSE per item so the timeline renders
+        // them as distinct user entries with their original sources.
+        // Not in the AIStreamMessage union — read via cast.
+        case "prompt_dispatched" as any: {
+          const items = (msg as any).items as Array<{
+            text?: string;
+            source?: string;
+            images?: any[];
+          }> | undefined;
+          if (!items) break;
+          for (const item of items) {
+            // Map the item's source the same way the legacy mirror did.
+            let itemSource = item.source ?? source;
+            if (itemSource === "chat-input") itemSource = "chat";
+            else if (itemSource === "grpc") itemSource = "grpc";
+            this.broadcast(msg.target, {
+              type: "user",
+              text: item.text ?? "",
+              images: item.images,
+              source: itemSource,
+              session: msg.target,
+            });
+          }
+          break;
+        }
       }
     });
 
-    // Mirror user prompts into the SSE pool of their target session
-    this.bus.subscribe<AIRequestMessage>("ai.request", (msg) => {
-      if (!msg.target) return;
-      if (msg.source === "chat-input") return; // already broadcast by handleSend
-      let source = msg.source;
-      if (msg.source === "grpc") source = "grpc";
-      else if (msg.source === "queue-drain") source = "system";
-      this.broadcast(msg.target, { type: "user", text: msg.text, source, session: msg.target });
-    });
+    // NOTE: We deliberately do NOT mirror ai.request here as type:"user".
+    // The timeline must reflect "what was sent to the API", not "what
+    // arrived in the bus". JarvisCore is responsible for emitting
+    // `prompt_dispatched` (handled above) at the moment a prompt is
+    // actually sent to the model — which is also the moment we want the
+    // user entry to appear in the timeline. Until then, a queued prompt
+    // shows only as a card in the pending_queue list.
 
     // Register HUD panels for the root chat (main session lives in App.tsx)
     this.bus.publish({
@@ -215,8 +242,11 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
       }
     }
 
-    // Normal message
-    this.broadcast(sid, { type: "user", text: prompt, images, source: "chat", session: sid });
+    // Normal message — DO NOT broadcast type:"user" here. JarvisCore will
+    // emit prompt_dispatched when this request is actually sent to the API
+    // (which may be immediate, if the session is idle, or after a drain if
+    // the session was busy). Until then, the pending_queue mechanism shows
+    // it as a queued card.
     this.bus.publish({
       channel: "ai.request",
       source: "chat-input",
