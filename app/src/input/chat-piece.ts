@@ -39,12 +39,25 @@ export class ChatPiece implements Piece {
   /** SSE clients keyed by sessionId. Events only reach matching pools. */
   private streamClients = new Map<string, Set<ServerResponse>>();
 
+  /**
+   * Predicate that returns true if a sessionId belongs to JarvisCore.
+   * Set via setOwnedSessionMatcher() at boot. When true, user-typed
+   * messages are mirrored into the timeline by JarvisCore.prompt_dispatched.
+   * When false (plugin-owned sessions like actors), this piece must mirror
+   * type:"user" itself so the panel's timeline reflects what the user typed.
+   */
+  private ownedSessionMatcher?: (sid: string) => boolean;
+
   setRegistry(registry: CapabilityRegistry): void {
     this.registry = registry;
   }
 
   setSessions(sessions: SessionManager): void {
     this.sessions = sessions;
+  }
+
+  setOwnedSessionMatcher(matcher: (sid: string) => boolean): void {
+    this.ownedSessionMatcher = matcher;
   }
 
   systemContext(): string {
@@ -242,11 +255,35 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
       }
     }
 
-    // Normal message — DO NOT broadcast type:"user" here. JarvisCore will
-    // emit prompt_dispatched when this request is actually sent to the API
-    // (which may be immediate, if the session is idle, or after a drain if
-    // the session was busy). Until then, the pending_queue mechanism shows
-    // it as a queued card.
+    // Normal message routing:
+    //
+    // For sessions OWNED by JarvisCore (main, grpc-*, plus any patterns
+    // plugins register), we DO NOT broadcast type:"user" here — JarvisCore
+    // emits prompt_dispatched when the prompt is actually sent to the API,
+    // which is when we want the user entry to appear in the timeline.
+    // Until then, queued prompts show as cards in pending_queue.
+    //
+    // For sessions NOT owned by JarvisCore (e.g. actor-* sessions handled
+    // by the actors plugin's actor-runner), no prompt_dispatched event is
+    // ever emitted because the plugin doesn't know about that protocol —
+    // it only consumes ai.request and dispatches to its own AI session.
+    // Without an immediate type:"user" broadcast here, the user's typed
+    // message never appears in the panel's timeline. So for those sessions
+    // we mirror ai.request → type:"user" SSE the moment the user sends it.
+    //
+    // The check uses the same ownership check JarvisCore uses internally,
+    // exposed via getOwnedSessionMatcher so this piece doesn't import core.
+    const isOwnedByCore = this.ownedSessionMatcher?.(sid) ?? false;
+    if (!isOwnedByCore) {
+      this.broadcast(sid, {
+        type: "user",
+        text: prompt,
+        images,
+        source: "chat",
+        session: sid,
+      });
+    }
+
     this.bus.publish({
       channel: "ai.request",
       source: "chat-input",
