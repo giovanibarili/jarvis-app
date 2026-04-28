@@ -6,6 +6,9 @@ import { log } from "../logger/index.js";
 
 export interface StoredConversation {
   sessionId: string;
+  /** Stable UUID for this session — sent as X-Jarvis-Session-Id on every API call.
+   *  Generated once on first save, preserved across restarts. */
+  apiSessionId?: string;
   provider: string;
   model: string;
   messages: unknown[];
@@ -34,6 +37,7 @@ export function saveConversation(
   messages: unknown[],
   provider: string,
   model: string,
+  apiSessionId?: string,
 ): void {
   try {
     ensureDir();
@@ -49,8 +53,20 @@ export function saveConversation(
       }
     }
 
+    // Preserve existing apiSessionId from disk if caller didn't provide one.
+    // This ensures the UUID survives auto-saves that don't re-supply it.
+    let stableApiId = apiSessionId;
+    if (!stableApiId) {
+      try {
+        const existing = JSON.parse(readFileSync(filePath(sessionLabel), "utf-8")) as StoredConversation;
+        stableApiId = existing.apiSessionId;
+      } catch { /* no existing file */ }
+    }
+    if (!stableApiId) stableApiId = crypto.randomUUID();
+
     const data: StoredConversation = {
       sessionId: sessionLabel,
+      apiSessionId: stableApiId,
       provider,
       model,
       messages: trimmed,

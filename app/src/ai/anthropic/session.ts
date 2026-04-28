@@ -35,7 +35,8 @@ function loadUtilityModel(): string {
 }
 
 export class AnthropicSession implements AISession {
-  readonly sessionId: string;
+  private _sessionId: string;
+  get sessionId(): string { return this._sessionId; }
   private client: Anthropic;
   private getBaseModel: () => string;
   /**
@@ -84,7 +85,7 @@ export class AnthropicSession implements AISession {
     label: string;
     bus?: EventBus;
   }) {
-    this.sessionId = crypto.randomUUID();
+    this._sessionId = crypto.randomUUID(); // overwritten by setApiSessionId() if restoring
     this.client = opts.client;
     const model = opts.model;
     this.getBaseModel = typeof model === "function" ? model : () => model;
@@ -152,6 +153,15 @@ export class AnthropicSession implements AISession {
 
   setContextInjector(injector: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
     this.contextInjector = injector;
+  }
+
+  /**
+   * Restore a stable session UUID from persisted storage.
+   * Called by SessionManager after loading a saved conversation so that
+   * X-Jarvis-Session-Id stays consistent across restarts for the same session.
+   */
+  setApiSessionId(id: string): void {
+    this._sessionId = id;
   }
 
   /**
@@ -586,7 +596,7 @@ export class AnthropicSession implements AISession {
             ...(betas.includes("compact-2026-01-12") && compactionConfig.contextManagement
               ? { context_management: compactionConfig.contextManagement }
               : {}),
-          }, { signal: this.abortController.signal });
+          }, { signal: this.abortController.signal, headers: { "X-Jarvis-Session-Id": this.sessionId } });
 
           betaStream.on("text", () => {});
           message = await betaStream.finalMessage();
@@ -614,7 +624,7 @@ export class AnthropicSession implements AISession {
           messages: this.messages,
           tools,
           cache_control: { type: "ephemeral" as const },
-        } as any, { signal: this.abortController.signal });
+        } as any, { signal: this.abortController.signal, headers: { "X-Jarvis-Session-Id": this.sessionId } });
 
         stream.on("text", () => {});
         message = await stream.finalMessage();
