@@ -4,15 +4,16 @@ import type { EventBus } from "../core/bus.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 /**
- * Tests for ChatPiece's session-aware mirroring decision in handleSend().
+ * Tests for ChatPiece's session-agnostic routing in handleSend().
  *
- * Behavior under test:
- *   - Sessions OWNED by JarvisCore (returns true from matcher) must NOT be
- *     mirrored as type:"user" SSE — JarvisCore will emit prompt_dispatched
- *     and that becomes the timeline entry.
- *   - Sessions NOT owned by JarvisCore (e.g. actor-* handled by plugin)
- *     MUST be mirrored as type:"user" SSE so the panel shows what the user
- *     typed. No core piece will emit prompt_dispatched for them.
+ * Contract:
+ *   - ChatPiece is plugin-agnostic. It NEVER mirrors type:"user" itself.
+ *   - The session OWNER (JarvisCore for main/grpc-*, or any plugin owning
+ *     custom sessionIds like actor-*) is responsible for emitting
+ *     `prompt_dispatched` (timeline) when the prompt actually goes to the
+ *     model and `pending_queue` (queue cards) while it waits.
+ *   - ChatPiece only publishes `ai.request` on the bus and lets the owner
+ *     decide what to broadcast.
  */
 
 function makeBus(): { bus: EventBus; published: any[] } {
@@ -39,26 +40,22 @@ function makeReqRes(body: any): { req: IncomingMessage; res: ServerResponse; sen
   return { req, res, sent };
 }
 
-describe("ChatPiece.handleSend — owned vs plugin sessions", () => {
-  it("does NOT mirror type:'user' for owned sessions (main, grpc-*)", async () => {
+describe("ChatPiece.handleSend — session-agnostic routing", () => {
+  it("does NOT broadcast type:'user' for any session — owner emits prompt_dispatched", async () => {
     const { bus, published } = makeBus();
     const piece = new ChatPiece();
     (piece as any).bus = bus;
-    piece.setOwnedSessionMatcher((sid) => sid === "main" || sid.startsWith("grpc-"));
 
-    // Spy on the private broadcast — that's what type:"user" goes through.
     const broadcastSpy = vi.spyOn(piece as any, "broadcast");
 
     const { req, res, sent } = makeReqRes({ sessionId: "main", prompt: "hello" });
     await piece.handleSend(req, res);
 
-    // ai.request must always be published for the AI to react
     const aiReq = published.find((m: any) => m.channel === "ai.request");
     expect(aiReq).toBeDefined();
     expect(aiReq.text).toBe("hello");
     expect(aiReq.target).toBe("main");
 
-    // type:"user" must NOT be broadcast — JarvisCore will mirror via prompt_dispatched
     const userBroadcasts = broadcastSpy.mock.calls.filter(
       ([_sid, evt]: any[]) => evt?.type === "user"
     );
@@ -66,53 +63,44 @@ describe("ChatPiece.handleSend — owned vs plugin sessions", () => {
     expect(sent.statusCode).toBe(200);
   });
 
-  it("mirrors type:'user' immediately for plugin-owned sessions (actor-*)", async () => {
+  it("does NOT broadcast type:'user' for plugin-owned sessions either (actor-*)", async () => {
+    // Same contract as core-owned sessions: the plugin owner (actor-runner)
+    // is responsible for emitting prompt_dispatched. ChatPiece stays neutral.
     const { bus, published } = makeBus();
     const piece = new ChatPiece();
     (piece as any).bus = bus;
-    piece.setOwnedSessionMatcher((sid) => sid === "main" || sid.startsWith("grpc-"));
 
     const broadcastSpy = vi.spyOn(piece as any, "broadcast");
 
     const { req, res, sent } = makeReqRes({ sessionId: "actor-jarvis-imp", prompt: "fix the bug" });
     await piece.handleSend(req, res);
 
-    // ai.request still published — actor-runner subscribes to it
     const aiReq = published.find((m: any) => m.channel === "ai.request");
     expect(aiReq.target).toBe("actor-jarvis-imp");
+    expect(aiReq.text).toBe("fix the bug");
 
-    // type:"user" IS broadcast immediately so the actor's chat panel shows it
     const userBroadcasts = broadcastSpy.mock.calls.filter(
       ([_sid, evt]: any[]) => evt?.type === "user"
     );
-    expect(userBroadcasts).toHaveLength(1);
-    expect(userBroadcasts[0][1]).toMatchObject({
-      type: "user",
-      text: "fix the bug",
-      session: "actor-jarvis-imp",
-      source: "chat",
-    });
+    expect(userBroadcasts).toHaveLength(0);
     expect(sent.statusCode).toBe(200);
   });
 
-  it("mirrors type:'user' for any session when matcher is unset (safe default)", async () => {
-    // If wiring is broken or in tests where matcher isn't set, the safe
-    // behavior is to mirror — better to show duplicate user msg once than
-    // to lose the user's input entirely.
-    const { bus, published } = makeBus();
+  it("setOwnedSessionMatcher is a deprecated no-op (kept for backward compat)", async () => {
+    const { bus } = makeBus();
     const piece = new ChatPiece();
     (piece as any).bus = bus;
-    // intentionally no setOwnedSessionMatcher
+
+    // Setting the matcher must not throw and must not change behavior.
+    piece.setOwnedSessionMatcher((sid) => sid === "main");
 
     const broadcastSpy = vi.spyOn(piece as any, "broadcast");
-
-    const { req, res } = makeReqRes({ sessionId: "main", prompt: "hi" });
+    const { req, res } = makeReqRes({ sessionId: "actor-x", prompt: "hi" });
     await piece.handleSend(req, res);
 
     const userBroadcasts = broadcastSpy.mock.calls.filter(
       ([_sid, evt]: any[]) => evt?.type === "user"
     );
-    expect(userBroadcasts).toHaveLength(1);
-    expect(published.find((m: any) => m.channel === "ai.request")).toBeDefined();
+    expect(userBroadcasts).toHaveLength(0);
   });
 });

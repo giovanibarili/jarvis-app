@@ -5,6 +5,24 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-04-27
+
+### Changed
+
+- **`ChatPiece` is now plugin-agnostic.** It no longer mirrors `type:"user"` for any session — owned or not. The session OWNER (JarvisCore for `main`/`grpc-*`, or any plugin owning custom sessionIds like `actor-*`) is the single authority responsible for emitting `prompt_dispatched` (timeline) and `pending_queue` (queue cards). The frontend just renders whatever SSE delivers. Symmetric contract: `actor-*` now behaves exactly like `main` — message goes to the queue card while pending, migrates to a `type:"user"` timeline entry at the moment of dispatch.
+
+### Fixed
+
+- **Visual duplication on plugin-owned sessions when busy.** PR #37 (0.2.5) made `ChatPiece` mirror `type:"user"` immediately on `/chat/send` for non-core sessions, which collided with `actor-runner.broadcastPendingQueue`: a message arriving while the actor was processing showed up simultaneously in the timeline AND in the QUEUED card. Fix: remove the mirror entirely; let the plugin emit `prompt_dispatched` only when the message is actually dispatched to the model (idle path or queue drain). Pending messages now appear ONLY in the QUEUED card, and migrate to the timeline at the moment of dispatch — same UX as `main`.
+
+### Deprecated
+
+- **`ChatPiece.setOwnedSessionMatcher(fn)`** is now a no-op kept for backward compat. Will be removed in 0.3.0. The matcher is no longer needed because ChatPiece is fully agnostic to session ownership.
+
+### Plugin compat
+
+- **`jarvis-plugin-actors` ≥ 2.1.1** restores `broadcastPromptDispatched` (idle path + `handleDispatch` + `drainQueue`). Without this, actor sessions will lose their timeline entries entirely. Earlier versions of the plugin work but only via the now-removed mirror — they need updating before this JARVIS release.
+
 ## [0.2.5] - 2026-04-27
 
 ### Fixed
