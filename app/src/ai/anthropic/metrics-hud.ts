@@ -36,6 +36,7 @@ interface SessionBucket {
   lastRequestTokens: number;
   lastCacheRead: number;
   lastCacheCreate: number;
+  lastModel: string | null;
   requestHistory: RequestSnapshot[];
 }
 
@@ -213,6 +214,7 @@ export class AnthropicMetricsHud implements Piece {
         lastRequestTokens: 0,
         lastCacheRead: 0,
         lastCacheCreate: 0,
+        lastModel: null,
         requestHistory: [],
       };
       this.buckets.set(sessionId, b);
@@ -234,6 +236,7 @@ export class AnthropicMetricsHud implements Piece {
     b.lastRequestTokens = reqInput + reqCacheCreate + reqCacheRead;
     b.lastCacheRead = reqCacheRead;
     b.lastCacheCreate = reqCacheCreate;
+    if (d.model) b.lastModel = d.model as string;
     b.requestCount++;
 
     b.requestHistory.push({
@@ -293,7 +296,7 @@ export class AnthropicMetricsHud implements Piece {
    */
   getData(): Record<string, unknown> {
     const view = this.computeScopeView();
-    const maxContext = getMaxContext();
+    const maxContext = getMaxContext(view.lastModel ?? undefined);
     const cachePct = view.lastRequestTokens > 0 ? view.lastCacheRead / view.lastRequestTokens : 0;
     const contextPct = view.lastRequestTokens / maxContext;
 
@@ -306,7 +309,7 @@ export class AnthropicMetricsHud implements Piece {
     const messagesTokens = Math.max(0, totalInputTokens - staticTokens);
 
     return {
-      model: config.model,
+      model: view.lastModel ?? config.model,
       // Session accumulated totals (in-scope)
       inputTokens: view.inputTokens,
       outputTokens: view.outputTokens,
@@ -375,6 +378,11 @@ export class AnthropicMetricsHud implements Piece {
       agg.lastCacheCreate = last.cacheCreation;
     }
 
+    // lastModel = most recently seen model across all buckets
+    for (const b of this.buckets.values()) {
+      if (b.lastModel) agg.lastModel = b.lastModel;
+    }
+
     return agg;
   }
 
@@ -388,6 +396,7 @@ export class AnthropicMetricsHud implements Piece {
       lastRequestTokens: 0,
       lastCacheRead: 0,
       lastCacheCreate: 0,
+      lastModel: null,
       requestHistory: [],
     };
   }

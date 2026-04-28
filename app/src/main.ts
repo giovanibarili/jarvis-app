@@ -26,6 +26,9 @@ import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.
 import { HudCoreNodePiece } from "./core/hud-core-node.js";
 import { DiffViewerPiece } from "./pieces/diff-viewer.js";
 import { ChoicePromptPiece } from "./pieces/choice-prompt.js";
+import { ModelRouterPiece } from "./pieces/model-router.js";
+import { DelegateTaskPiece } from "./pieces/delegate-task.js";
+import { load as loadSettingsForSlash } from "./core/settings.js";
 import { ensureUiBuildIntegrity } from "./server.js";
 import type { IncomingMessage } from "node:http";
 
@@ -54,7 +57,22 @@ async function main() {
   // sessions wired later after SessionManager is created
   const jarvisCore = new JarvisCore();
 
+  // SessionManager is created here (with null factory placeholder; factory is
+  // wired after provider activation below) so the ModelRouter piece — which
+  // needs a passive reference to look up sessions — can sit at the head of
+  // the pieces array and subscribe to ai.request BEFORE JarvisCore.
+  const sessionsForRouter = new SessionManager(null as any);
+  sessionsForRouter.setBus(bus);
+
+  // Keep a typed handle on the router so /model and other internals can
+  // mutate sticky state without going through the bus.
+  const modelRouter = new ModelRouterPiece(sessionsForRouter, chatPiece);
+
   const pieces: Piece[] = [
+    // ModelRouter MUST come first: bus delivers handlers in subscription
+    // order, so this piece routes (sets per-call model override on the
+    // session) BEFORE JarvisCore reads getModel() in its own handler.
+    modelRouter,
     jarvisCore,
     new CapabilityExecutor(capabilityRegistry),
     new CapabilityLoaderPiece(capabilityRegistry),
@@ -82,9 +100,9 @@ async function main() {
   providerRouter.registerProviderFactory("anthropic", createAnthropicProvider);
   providerRouter.registerProviderFactory("openai", createOpenAIProvider);
 
-  // SessionManager — factory set after provider activation
-  const sessions = new SessionManager(null as any);
-  sessions.setBus(bus);
+  // SessionManager — factory set after provider activation.
+  // We reuse `sessionsForRouter` created earlier (router holds a passive ref).
+  const sessions = sessionsForRouter;
   jarvisCore.setSessions(sessions);
   chatPiece.setSessions(sessions);
 
@@ -179,7 +197,15 @@ async function main() {
 
       const stream = managed.session.forceCompact();
       for await (const event of stream) {
-        if (event.type === "compaction" && event.compaction) {
+        if (event.type === "compaction_start" && event.compactionStart) {
+          bus.publish({
+            channel: "ai.stream",
+            source: "jarvis-core",
+            target: sessionId,
+            event: "compaction_start",
+            compactionStart: event.compactionStart,
+          } as any);
+        } else if (event.type === "compaction" && event.compaction) {
           // Publish compaction events to the bus so metrics and chat timeline update
           bus.publish({
             channel: "ai.stream",
@@ -211,6 +237,40 @@ async function main() {
     },
   });
 
+  // /model — change sticky model for the calling session WITHOUT sending a prompt.
+  //   /model               → show current sticky + cost projection
+  //   /model opus          → switch to Opus, banner with reconstruction cost
+  //   /model claude-haiku-4-5  → switch to a specific model id
+  capabilityRegistry.registerSlashCommand({
+    name: "model",
+    description: "Show or change the sticky model for the current session",
+    hint: "/model [opus|sonnet|haiku|<model-id>]",
+    source: "system",
+    handler: async (args, ctx) => {
+      const sessionId = ctx?.sessionId ?? "main";
+      const arg = (args ?? "").trim();
+      const route = modelRouter.getRoute(sessionId);
+
+      if (!arg) {
+        const sticky = route?.sticky ?? "(default)";
+        const switches = route?.switchCount ?? 0;
+        return {
+          message: `🔧 Sticky model for ${sessionId}: \`${sticky}\` (${switches} switches this session)\nUsage: /model opus|sonnet|haiku|<model-id>`,
+        };
+      }
+
+      // Resolve alias or accept full model id
+      const cfg = (loadSettingsForSlash() as any)?.models?.routing ?? {};
+      const aliases = { opus: "claude-opus-4-7", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5", ...(cfg.aliases ?? {}) };
+      const target = aliases[arg.toLowerCase()] ?? arg;
+
+      const newRoute = modelRouter.setStickyModel(sessionId, target, "slash:/model");
+      return {
+        message: `🔧 Sticky model for ${sessionId}: \`${newRoute.sticky}\` (was \`${route?.sticky ?? "(default)"}\`)`,
+      };
+    },
+  });
+
   // Core Node graph visualization
   pieces.push(new HudCoreNodePiece());
 
@@ -222,6 +282,13 @@ async function main() {
 
   // Cron scheduler
   pieces.push(new CronPiece(capabilityRegistry));
+
+  // Delegate-read-task — ephemeral worker for cheap exploration.
+  // Uses the active provider's factory and the global capability registry.
+  pieces.push(new DelegateTaskPiece({
+    getFactory: () => providerRouter.getFactory(),
+    registry: capabilityRegistry,
+  }));
 
   // Plugin manager
   const pluginManager = new PluginManager(capabilityRegistry);
@@ -284,7 +351,15 @@ async function main() {
 
     const stream = managed.session.forceCompact();
     for await (const event of stream) {
-      if (event.type === "compaction" && event.compaction) {
+      if (event.type === "compaction_start" && event.compactionStart) {
+        bus.publish({
+          channel: "ai.stream",
+          source: "jarvis-core",
+          target: sessionId,
+          event: "compaction_start",
+          compactionStart: event.compactionStart,
+        } as any);
+      } else if (event.type === "compaction" && event.compaction) {
         bus.publish({
           channel: "ai.stream",
           source: "jarvis-core",

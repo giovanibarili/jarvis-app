@@ -10,17 +10,54 @@ import { sanitizeMessages } from "./sanitize-messages.js";
 import { unescapeToolInput } from "./unescape-tool-input.js";
 import { logUsage } from "./usage-log.js";
 import { load as loadSettings, getCompactionSettings } from "../../core/settings.js";
-import { getMaxContext, getMaxOutput } from "../../config/index.js";
+import { getMaxContext, getMaxOutput, supportsLongContext } from "../../config/index.js";
 
 type CapabilityDef = { name: string; description: string; input_schema: Record<string, unknown> };
 type SystemPrompt = string | TextBlockParam[];
 
+/**
+ * Model used for "utility" calls — summarization, classification, title gen, etc.
+ * Always Haiku regardless of session sticky. Read once on each utility call from
+ * settings.models.routing.utility, falling back to this constant if missing.
+ *
+ * Rationale: utility calls are isolated single-shot prompts. They don't share the
+ * cache pool of the main loop, so using a cheap model is pure win.
+ */
+const UTILITY_MODEL_DEFAULT = "claude-haiku-4-5";
+
+function loadUtilityModel(): string {
+  try {
+    const s = loadSettings() as any;
+    return s?.models?.routing?.utility ?? UTILITY_MODEL_DEFAULT;
+  } catch {
+    return UTILITY_MODEL_DEFAULT;
+  }
+}
+
 export class AnthropicSession implements AISession {
   readonly sessionId: string;
   private client: Anthropic;
-  private getModel: () => string;
+  private getBaseModel: () => string;
+  /**
+   * Per-call model override. When set, the next API call uses this model
+   * instead of the session default, and the override is consumed (cleared
+   * after use). Set by ModelRouter via setNextModelOverride().
+   */
+  private nextModelOverride?: string;
+  /**
+   * Sticky model override. When set, ALL subsequent API calls use this model
+   * (including tool-loop continuations) until cleared. Wins over base, loses
+   * to nextModelOverride (per-call still takes precedence within the same call).
+   */
+  private stickyModelOverride?: string;
   private getSystemPrompt: () => SystemPrompt;
-  private getTools: () => CapabilityDef[];
+  /** Raw tool registry getter — returns ALL tools without filtering. */
+  private getRawTools: () => CapabilityDef[];
+  /**
+   * Per-session tool filter. When set, tools are filtered on every API call.
+   * `undefined` = no filter (all tools visible).
+   */
+  private toolFilter?: (toolName: string) => boolean;
   private messages: MessageParam[] = [];
   private label: string;
   private abortController?: AbortController;
@@ -30,6 +67,14 @@ export class AnthropicSession implements AISession {
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
   private consecutiveFallbacks = 0;
   private static MAX_CONSECUTIVE_FALLBACKS = 2;
+  /**
+   * Real total input tokens from the LAST API response (input + cache_read + cache_create).
+   * Set after every successful response. Used by measureContext() to override the
+   * char/4 heuristic with the truth — chars/4 systematically underestimates by 3-4x
+   * when tools and structured content are involved (Anthropic tokenizer counts JSON,
+   * cache_control markers, and structured blocks differently from raw text).
+   */
+  private lastRealInputTokens = 0;
 
   constructor(opts: {
     client: Anthropic;
@@ -42,11 +87,11 @@ export class AnthropicSession implements AISession {
     this.sessionId = crypto.randomUUID();
     this.client = opts.client;
     const model = opts.model;
-    this.getModel = typeof model === "function" ? model : () => model;
+    this.getBaseModel = typeof model === "function" ? model : () => model;
     this.getSystemPrompt = typeof opts.systemPrompt === "function"
       ? opts.systemPrompt
       : () => opts.systemPrompt as SystemPrompt;
-    this.getTools = opts.getTools;
+    this.getRawTools = opts.getTools;
     this.label = opts.label;
     this.bus = opts.bus;
     log.info({ label: this.label, sessionId: this.sessionId }, "AnthropicSession: created");
@@ -57,25 +102,37 @@ export class AnthropicSession implements AISession {
    * Consumed by AnthropicMetricsHud which buckets metrics per session.
    * Emits on every API response that carries a `message.usage` payload.
    */
-  private emitAnthropicUsage(usage: {
-    input_tokens: number;
-    output_tokens: number;
-    cache_creation_input_tokens: number;
-    cache_read_input_tokens: number;
-    iterations?: number;
-  }): void {
+  private emitAnthropicUsage(
+    modelUsed: string,
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_input_tokens: number;
+      cache_read_input_tokens: number;
+      iterations?: number;
+    },
+  ): void {
     // Persistent JSONL log for offline cost analysis. Independent of the
     // bus and the metrics HUD — fires every API response, even if no one
     // is subscribed.
+    // `modelUsed` is captured at request time, BEFORE the per-call override
+    // is consumed, so the log accurately reflects which model was billed.
     logUsage({
       sessionId: this.label,
-      model: config.model,
+      model: modelUsed,
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
       cache_creation_input_tokens: usage.cache_creation_input_tokens,
       cache_read_input_tokens: usage.cache_read_input_tokens,
       iterations: usage.iterations,
     });
+
+    // Cache the REAL total input — this is what Anthropic actually billed and what
+    // matters for routing decisions. measureContext() will prefer this over heuristics.
+    this.lastRealInputTokens =
+      usage.input_tokens +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0);
 
     if (!this.bus) return;
     this.bus.publish({
@@ -88,13 +145,75 @@ export class AnthropicSession implements AISession {
         output_tokens: usage.output_tokens,
         cache_creation_input_tokens: usage.cache_creation_input_tokens,
         cache_read_input_tokens: usage.cache_read_input_tokens,
-        model: config.model,
+        model: modelUsed,
       },
     });
   }
 
   setContextInjector(injector: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
     this.contextInjector = injector;
+  }
+
+  /**
+   * Resolve the model to use for the NEXT API call. Priority:
+   *   1. nextModelOverride (per-call, consumed after read)
+   *   2. stickyModelOverride (persists until cleared)
+   *   3. base model (session default, dynamic via config.model)
+   *
+   * Per-call override is consumed atomically — the second `getModel()` within
+   * the same API turn (e.g. compaction summary call) sees the sticky/base.
+   * That's intentional: routing decisions are per-turn, not per-internal-call.
+   */
+  private getModel(): string {
+    if (this.nextModelOverride) {
+      const m = this.nextModelOverride;
+      this.nextModelOverride = undefined;
+      return m;
+    }
+    if (this.stickyModelOverride) return this.stickyModelOverride;
+    return this.getBaseModel();
+  }
+
+  /**
+   * Set a one-shot model for the next API turn. Consumed on first read
+   * inside the next streamFromAPI call.
+   */
+  setNextModelOverride(model: string | undefined): void {
+    this.nextModelOverride = model || undefined;
+  }
+
+  /**
+   * Set a sticky model that wins over the base until cleared. Use for
+   * "this whole conversation should be Sonnet" scenarios. Pass undefined
+   * to clear and revert to base.
+   */
+  setStickyModelOverride(model: string | undefined): void {
+    this.stickyModelOverride = model || undefined;
+  }
+
+  /** Returns the currently effective model without consuming any override. */
+  peekModel(): string {
+    return this.nextModelOverride ?? this.stickyModelOverride ?? this.getBaseModel();
+  }
+
+  /**
+   * Set a per-session tool filter. Called by plugins (e.g. actor-runner) to
+   * restrict the visible tool surface based on role configuration.
+   * Pass `undefined` to clear (reverts to all tools visible).
+   */
+  setToolFilter(filter: ((toolName: string) => boolean) | undefined): void {
+    this.toolFilter = filter;
+  }
+
+  /**
+   * Effective tools for this session — raw registry filtered by `toolFilter`.
+   * Called from every site that previously used `this.getTools()` directly.
+   * Logs filter stats once per filtered call so we can audit drift.
+   */
+  private getTools(): CapabilityDef[] {
+    const raw = this.getRawTools();
+    if (!this.toolFilter) return raw;
+    return raw.filter((t) => this.toolFilter!(t.name));
   }
 
   async *sendAndStream(prompt: string, images?: ImageBlock[]): AsyncGenerator<AIStreamEvent, void> {
@@ -184,20 +303,35 @@ export class AnthropicSession implements AISession {
     );
   }
 
+  /**
+   * Build the list of Anthropic beta headers for THIS turn.
+   * Combines:
+   *  - context-1m-2025-08-07 → for models that support 1M (opus 4.6/4.7, sonnet 4.6)
+   *  - compact-2026-01-12    → for server-side compaction (Engine A)
+   *
+   * The 1M header is independent of compaction — we want it whenever the
+   * model supports it, even if compaction is disabled or in cooldown.
+   */
+  private getBetaHeaders(model: string): string[] {
+    const betas: string[] = [];
+    if (supportsLongContext(model)) {
+      betas.push("context-1m-2025-08-07");
+    }
+    return betas;
+  }
+
   private getCompactionConfig(): {
-    useBeta: boolean;
-    betas?: string[];
+    useCompaction: boolean;
     contextManagement?: Record<string, unknown>;
   } {
     const settings = getCompactionSettings(loadSettings());
     if (!settings.enabled || Date.now() < this.betaDisabledUntil) {
-      return { useBeta: false };
+      return { useCompaction: false };
     }
     const maxCtx = getMaxContext(this.getModel());
     const threshold = Math.max(50_000, Math.floor(maxCtx * settings.thresholdPercent / 100));
     return {
-      useBeta: true,
-      betas: ["compact-2026-01-12"],
+      useCompaction: true,
       contextManagement: {
         edits: [{
           type: "compact_20260112",
@@ -222,7 +356,7 @@ export class AnthropicSession implements AISession {
 
     log.info({ label: this.label, tokensBefore, messageCount: ctx.messageCount }, "AnthropicSession: forced compaction requested");
 
-    yield* this.doCompact(tokensBefore);
+    yield* this.doCompact(tokensBefore, "forced");
   }
 
   private async *fallbackCompact(lastInputTokens: number): AsyncGenerator<AIStreamEvent, void> {
@@ -255,17 +389,29 @@ export class AnthropicSession implements AISession {
 
     log.info({ label: this.label, tokensBefore: lastInputTokens, threshold: safetyThreshold }, "AnthropicSession: Engine B fallback compaction triggered");
 
-    yield* this.doCompact(lastInputTokens);
+    yield* this.doCompact(lastInputTokens, "threshold");
   }
 
   /**
    * Core compaction logic shared by both fallbackCompact and forceCompact.
    * Sends messages to a summarizer, replaces history with the summary.
    */
-  private async *doCompact(tokensBefore: number): AsyncGenerator<AIStreamEvent, void> {
+  private async *doCompact(tokensBefore: number, reason: "forced" | "threshold"): AsyncGenerator<AIStreamEvent, void> {
     const settings = getCompactionSettings(loadSettings());
     const instructions = settings.instructions ||
       "Summarize this conversation preserving key decisions, code, and progress.";
+
+    // Signal start to the UI BEFORE the (potentially long) summary call.
+    // Engine B is the only path that emits this — Engine A is server-side
+    // and effectively instantaneous from the client's perspective.
+    yield {
+      type: "compaction_start",
+      compactionStart: {
+        engine: "fallback",
+        tokensBefore,
+        reason,
+      },
+    };
 
     try {
       // Ensure messages end with a user message (API requirement)
@@ -274,8 +420,14 @@ export class AnthropicSession implements AISession {
         msgs.push({ role: "user", content: "Please summarize the conversation above." });
       }
 
+      // Compaction is a UTILITY call: summary doesn't share cache pool with
+      // the main loop. Force Haiku regardless of session sticky to capture
+      // the price gap (~$3 → ~$0.20 on a 200k context).
+      const utilityModel = loadUtilityModel();
+      log.info({ label: this.label, utilityModel }, "AnthropicSession: compaction summary using utility model");
+
       const summaryResponse = await this.client.messages.create({
-        model: this.getModel(),
+        model: utilityModel,
         max_tokens: 8192, // summary is short prose, doesn't need the full output budget
         system: `You are a conversation summarizer. ${instructions}\nWrap your summary in <summary></summary> tags.`,
         messages: msgs,
@@ -315,7 +467,7 @@ export class AnthropicSession implements AISession {
     }
   }
 
-  private measureContext(): { systemChars: number; messagesChars: number; messageCount: number; toolsChars: number; totalTokensEst: number } {
+  measureContext(): { systemChars: number; messagesChars: number; messageCount: number; toolsChars: number; totalTokensEst: number } {
     // System prompt size
     const sys = this.getSystemPrompt();
     const systemChars = typeof sys === "string"
@@ -335,12 +487,26 @@ export class AnthropicSession implements AISession {
     const rawTools = this.getTools();
     const toolsChars = JSON.stringify(rawTools).length;
 
+    // Heuristic estimate (chars/4). Used as fallback before any API response
+    // has been received for this session, OR when it gives a HIGHER number
+    // than the real measurement (e.g. lots of new content was just appended
+    // since the last API call).
+    const heuristicEst = Math.ceil((systemChars + messagesChars + toolsChars) / 4);
+
+    // Prefer the REAL total input tokens from the last API response when available.
+    // chars/4 systematically underestimates 3-4x when tools/structured content are
+    // involved. Take the MAX of the two — gives the routing layer the most
+    // pessimistic (= safest for cost) estimate.
+    const totalTokensEst = this.lastRealInputTokens > 0
+      ? Math.max(this.lastRealInputTokens, heuristicEst)
+      : heuristicEst;
+
     return {
       systemChars,
       messagesChars,
       messageCount: this.messages.length,
       toolsChars,
-      totalTokensEst: Math.ceil((systemChars + messagesChars + toolsChars) / 4),
+      totalTokensEst,
     };
   }
 
@@ -370,6 +536,13 @@ export class AnthropicSession implements AISession {
       return { i, role };
     }) }, "AnthropicSession: message structure");
 
+    // Resolve the model ONCE for this turn. getModel() consumes nextModelOverride;
+    // we then reuse `modelForCall` for every internal API call (beta + standard +
+    // logging) so the whole turn uses one consistent model.
+    const modelForCall = this.getModel();
+    const maxOutForCall = getMaxOutput(modelForCall);
+    log.info({ label: this.label, model: modelForCall }, "AnthropicSession: model resolved for this turn");
+
     try {
       // Add cache_control (BP1) to the last tool definition
       const tools: Anthropic.Tool[] | undefined = rawTools.length > 0
@@ -382,21 +555,37 @@ export class AnthropicSession implements AISession {
       this.abortController = new AbortController();
 
       const compactionConfig = this.getCompactionConfig();
+      const betaHeaders = this.getBetaHeaders(modelForCall);
+      const betas: string[] = [...betaHeaders];
+      if (compactionConfig.useCompaction && Date.now() >= this.betaDisabledUntil) {
+        betas.push("compact-2026-01-12");
+      }
       let message: any | undefined;
 
-      // Engine A: try beta compaction API
-      if (compactionConfig.useBeta) {
+      // Beta path: used whenever any beta header is needed (1M context,
+      // server-side compaction, or both). The beta endpoint is a strict
+      // superset of the standard endpoint when no betas are passed, so we
+      // ONLY take this branch when there's actually a beta to enable —
+      // otherwise we use the standard endpoint to keep the path simple.
+      if (betas.length > 0) {
         try {
-          log.info({ label: this.label, betas: compactionConfig.betas }, "AnthropicSession: attempting beta compaction API");
+          log.info({
+            label: this.label,
+            model: modelForCall,
+            betas,
+            useCompaction: compactionConfig.useCompaction && betas.includes("compact-2026-01-12"),
+          }, "AnthropicSession: attempting beta API call");
           const betaStream = (this.client.beta.messages as any).stream({
-            model: this.getModel(),
-            max_tokens: getMaxOutput(this.getModel()),
+            model: modelForCall,
+            max_tokens: maxOutForCall,
             system: this.getSystemPrompt(),
             messages: this.messages,
             tools,
             cache_control: { type: "ephemeral" as const },
-            betas: compactionConfig.betas,
-            context_management: compactionConfig.contextManagement,
+            betas,
+            ...(betas.includes("compact-2026-01-12") && compactionConfig.contextManagement
+              ? { context_management: compactionConfig.contextManagement }
+              : {}),
           }, { signal: this.abortController.signal });
 
           betaStream.on("text", () => {});
@@ -405,9 +594,9 @@ export class AnthropicSession implements AISession {
           const status = betaErr?.status ?? betaErr?.response?.status;
           const errMsg = String(betaErr?.message ?? betaErr ?? "");
           const isNetworkError = /terminated|socket|ECONNRESET|ETIMEDOUT|other side closed/i.test(errMsg);
-          const isBetaError = status === 400 || /beta|compact/i.test(errMsg) || isNetworkError;
+          const isBetaError = status === 400 || /beta|compact|context-1m/i.test(errMsg) || isNetworkError;
           if (isBetaError) {
-            log.warn({ label: this.label, status, err: errMsg }, "AnthropicSession: beta compaction failed, falling back to standard API");
+            log.warn({ label: this.label, status, err: errMsg, betas }, "AnthropicSession: beta API failed, falling back to standard API");
             this.betaDisabledUntil = Date.now() + AnthropicSession.BETA_COOLDOWN_MS;
             message = undefined; // fall through to standard path
           } else {
@@ -416,11 +605,11 @@ export class AnthropicSession implements AISession {
         }
       }
 
-      // Standard path (non-beta or beta fallback)
+      // Standard path (no betas needed, or beta fallback)
       if (!message) {
         const stream = this.client.messages.stream({
-          model: this.getModel(),
-          max_tokens: getMaxOutput(this.getModel()),
+          model: modelForCall,
+          max_tokens: maxOutForCall,
           system: this.getSystemPrompt(),
           messages: this.messages,
           tools,
@@ -519,7 +708,9 @@ export class AnthropicSession implements AISession {
       // Emit provider-specific, sessionId-scoped usage telemetry.
       // This is the primary channel for Anthropic metrics going forward;
       // the generic `api.usage` (published by JarvisCore) remains for backcompat.
-      if (usage) this.emitAnthropicUsage(usage);
+      // Pass `modelForCall` so the log records the actual billed model, not
+      // whatever the dynamic config has drifted to since the request started.
+      if (usage) this.emitAnthropicUsage(modelForCall, usage);
 
       yield {
         type: "message_complete",

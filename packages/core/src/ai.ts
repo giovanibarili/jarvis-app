@@ -15,6 +15,33 @@ export interface AISession {
   addToolResults(toolCalls: CapabilityCall[], results: CapabilityResult[]): void;
   continueAndStream(): AsyncGenerator<AIStreamEvent, void>;
   close(): void;
+
+  /**
+   * Set a sticky model override for ALL subsequent calls on this session.
+   * Pass `undefined` to clear and revert to the global config model.
+   * Optional — providers that don't support per-session model routing leave this unimplemented.
+   *
+   * @since 2.1.0
+   */
+  setStickyModelOverride?(model: string | undefined): void;
+
+  /**
+   * Set a tool filter for this session. Only tools matching the filter are sent
+   * to the model. Pass `undefined` to clear (all tools visible).
+   *
+   * Use cases:
+   *  - Restrict an actor role to a subset of tools (e.g. file-system worker only sees read/edit/grep)
+   *  - Block dangerous tools for sandboxed sessions
+   *
+   * The filter is applied on every API call (the raw `getTools()` registry call
+   * is wrapped). Tools registered AFTER setToolFilter is called are also subject
+   * to the filter — it's a predicate, not a snapshot.
+   *
+   * Optional — providers that can't filter at the session boundary leave this unimplemented.
+   *
+   * @since 2.1.0
+   */
+  setToolFilter?(filter: ((toolName: string) => boolean) | undefined): void;
 }
 
 export interface CreateWithPromptOptions {
