@@ -16,6 +16,7 @@ This package follows **Semantic Versioning (semver)**:
 | 2.x | `state` prop + `useHudPiece()` | ✅ SSE `/hud-stream` | Backward compatible — `state` prop still works |
 | 0.2.1 | + `sessionManager?` in PluginContext | ✅ SSE `/hud-stream` | Optional field — plugins without it still work |
 | **0.2.2** | **Unified chat — sessionId required everywhere** | ✅ SSE per sessionId | **BREAKING** — see CHANGELOG. Chat endpoints, `ChatPanel` props, and `HttpServer` callbacks all changed. `renderer.plugin` accepts `null` for core renderers. |
+| **0.3.0** | + `chat.anchor` channel + `ChatAnchor` types + `window.__JARVIS_CHAT_ANCHORS` | ✅ Unchanged | Additive. Pieces can pin per-session UI anchors above the chat composer. |
 
 ## Public API Surface
 

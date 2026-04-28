@@ -2,7 +2,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { EventBus } from "../core/bus.js";
 import type { Piece } from "../core/piece.js";
-import type { AIRequestMessage, AIStreamMessage, HudUpdateMessage } from "../core/types.js";
+import type { AIRequestMessage, AIStreamMessage, HudUpdateMessage, ChatAnchorMessage } from "../core/types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { SessionManager } from "../core/session-manager.js";
 import { log } from "../logger/index.js";
@@ -144,6 +144,37 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
           }
           break;
         }
+      }
+    });
+
+    // chat.anchor → forward to the SSE pool of the matching sessionId.
+    // Generic mechanism: any piece (core or plugin) can pin a UI anchor
+    // above the chat composer for a specific session.
+    this.bus.subscribe<ChatAnchorMessage>("chat.anchor", (msg) => {
+      const sessionId = msg.sessionId;
+      if (!sessionId) return;
+      switch (msg.action) {
+        case "set":
+          if (!msg.anchor) return;
+          // Stamp createdAt server-side if missing — guarantees TTL expiry
+          // in the client uses a coherent reference timestamp.
+          this.broadcast(sessionId, {
+            type: "anchor.set",
+            sessionId,
+            anchor: { ...msg.anchor, createdAt: msg.anchor.createdAt ?? Date.now() },
+          });
+          break;
+        case "remove":
+          if (!msg.anchorId) return;
+          this.broadcast(sessionId, {
+            type: "anchor.remove",
+            sessionId,
+            anchorId: msg.anchorId,
+          });
+          break;
+        case "clear":
+          this.broadcast(sessionId, { type: "anchor.clear", sessionId });
+          break;
       }
     });
 
@@ -371,7 +402,14 @@ export function parseMessagesToHistory(rawMessages: any[]): any[] {
   const mapAnswerToValues = (
     answerStr: string,
     q: PendingChoiceQuestion,
-  ): { values: string[]; otherText?: string } => {
+  ): { values: string[]; otherText?: string; dismissed?: boolean } => {
+    // Sentinel for the "Dismiss" button. The frontend serializes the dismiss
+    // action as `[choice] <q> → (dismissed)`. Surface it explicitly so the UI
+    // can render a "dismissed" pill instead of treating it as free-text Other.
+    if (answerStr.trim() === "(dismissed)") {
+      return { values: [], dismissed: true };
+    }
+
     const labels = q.options.map(o => o.label).sort((a, b) => b.length - a.length);
     const values: string[] = [];
     let otherText: string | undefined;
@@ -411,6 +449,20 @@ export function parseMessagesToHistory(rawMessages: any[]): any[] {
     if (!text.startsWith("[choice]")) return false;
 
     const trimmed = text.replace(/^\[choice\]\s*/, "");
+
+    // Bare-dismiss form: "[choice] (dismissed)" with no question segment.
+    // Pair with the OLDEST pending choice (FIFO) and mark every question as
+    // dismissed — covers the edge case where the frontend couldn't extract
+    // the first question label.
+    if (trimmed === "(dismissed)") {
+      const target = pendingQueue.shift();
+      if (!target) return false;
+      const entry = entries[target.entryIdx];
+      if (!entry || entry.kind !== "choice") return true; // consumed silently
+      entry.answers = target.questions.map(() => ({ values: [], dismissed: true }));
+      return true;
+    }
+
     const hasNewlines = /\n/.test(trimmed);
 
     // Extract the first question text from the answer to find which pending choice it targets.

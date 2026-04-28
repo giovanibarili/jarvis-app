@@ -23,6 +23,9 @@ export interface ChoiceQuestion {
 export interface ChoiceAnswer {
   values: string[]
   otherText?: string
+  /** Marker — set by the dismiss path. Renders as "(dismissed)" in history
+   *  and tells consumers the user closed the prompt without choosing. */
+  dismissed?: boolean
 }
 
 export type ChatEntry =
@@ -71,16 +74,26 @@ interface Props {
   /** Pending user messages waiting in queue while the current turn finishes.
    *  Rendered as small cards under the JARVIS thinking indicator. */
   pendingQueue?: PendingQueueItem[]
+  /** choice_ids whose inline ChoiceCard should be HIDDEN — they are being
+   *  rendered by the ChatAnchorSlot above the composer instead. Once the
+   *  user replies, the anchor is removed and the choice_id leaves this set,
+   *  at which point the inline card (now `answered`) appears in history. */
+  hiddenChoiceIds?: ReadonlySet<string>
 }
 
 // ─── Choice card (inline prompt with radio / checkbox + free-text "Other") ───
 
 const OTHER_VALUE = '__other__'
 
-interface ChoiceCardProps {
+export interface ChoiceCardProps {
   index: number
   entry: Extract<ChatEntry, { kind: 'choice' }>
   onSubmit?: (index: number, answers: ChoiceAnswer[]) => void
+  /** Optional dismiss handler. When provided, a "Dismiss" button is rendered
+   *  to the LEFT of the Confirm button. Used for live anchor cards — the host
+   *  is expected to send a dismissal signal to the AI and remove the anchor.
+   *  Inline (historical) cards omit this prop, so no Dismiss button appears. */
+  onDismiss?: (index: number) => void
   assistantLabel: string
   assistantLabelColor: string
 }
@@ -109,7 +122,7 @@ function getAnswers(entry: Extract<ChatEntry, { kind: 'choice' }>): ChoiceAnswer
   return null
 }
 
-function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColor }: ChoiceCardProps) {
+export function ChoiceCard({ index, entry, onSubmit, onDismiss, assistantLabel, assistantLabelColor }: ChoiceCardProps) {
   const questions = getQuestions(entry)
   const persistedAnswers = getAnswers(entry)
   const answered = persistedAnswers !== null
@@ -191,6 +204,26 @@ function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColo
     if (!answered || !persistedAnswers) return null
     const ans = persistedAnswers[qIdx]
     if (!ans) return null
+
+    // Dismissed: render a muted "(dismissed)" pill instead of an answer.
+    if (ans.dismissed) {
+      return (
+        <div style={{
+          marginTop: '4px',
+          padding: '3px 8px',
+          background: 'rgba(120,120,120,0.08)',
+          borderLeft: '2px solid #6a7080',
+          borderRadius: '0 3px 3px 0',
+          fontSize: '11px',
+          color: '#7a8090',
+          fontStyle: 'italic',
+        }}>
+          <span style={{ opacity: 0.7, marginRight: '6px' }}>✗</span>
+          dismissed
+        </div>
+      )
+    }
+
     const q = questions[qIdx]
     const labels = ans.values.map(v => {
       if (v === OTHER_VALUE) return ans.otherText ?? '(other)'
@@ -397,24 +430,54 @@ function ChoiceCard({ index, entry, onSubmit, assistantLabel, assistantLabelColo
           <div style={{ fontSize: '10px', color: '#4a5a6a', fontFamily: 'var(--font-mono)' }}>
             ⏎ to confirm
           </div>
-          <button
-            onClick={handleSubmit}
-            disabled={!canSubmit}
-            style={{
-              padding: '4px 14px',
-              fontSize: '11px',
-              fontWeight: 600,
-              letterSpacing: '0.5px',
-              border: `1px solid ${canSubmit ? '#4af' : '#2a3040'}`,
-              borderRadius: '3px',
-              background: canSubmit ? 'rgba(68,170,255,0.15)' : 'transparent',
-              color: canSubmit ? '#4af' : '#4a5a6a',
-              cursor: canSubmit ? 'pointer' : 'not-allowed',
-              transition: 'all 0.15s',
-            }}
-          >
-            CONFIRM
-          </button>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            {onDismiss && (
+              <button
+                onClick={() => onDismiss(index)}
+                title="Dismiss this choice — sends '(dismissed)' to JARVIS"
+                style={{
+                  padding: '4px 12px',
+                  fontSize: '11px',
+                  fontWeight: 500,
+                  letterSpacing: '0.5px',
+                  border: '1px solid #3a4050',
+                  borderRadius: '3px',
+                  background: 'transparent',
+                  color: '#7a8090',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#5a6070'
+                  e.currentTarget.style.color = '#a0a8b8'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#3a4050'
+                  e.currentTarget.style.color = '#7a8090'
+                }}
+              >
+                DISMISS
+              </button>
+            )}
+            <button
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              style={{
+                padding: '4px 14px',
+                fontSize: '11px',
+                fontWeight: 600,
+                letterSpacing: '0.5px',
+                border: `1px solid ${canSubmit ? '#4af' : '#2a3040'}`,
+                borderRadius: '3px',
+                background: canSubmit ? 'rgba(68,170,255,0.15)' : 'transparent',
+                color: canSubmit ? '#4af' : '#4a5a6a',
+                cursor: canSubmit ? 'pointer' : 'not-allowed',
+                transition: 'all 0.15s',
+              }}
+            >
+              CONFIRM
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -433,6 +496,7 @@ export const ChatTimeline = React.memo(function ChatTimeline({
   onToggleExpand,
   onChoiceSubmit,
   pendingQueue = [],
+  hiddenChoiceIds,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -661,6 +725,11 @@ export const ChatTimeline = React.memo(function ChatTimeline({
         }
 
         if (entry.kind === 'choice') {
+          // Hide inline if an anchor for this choice is currently rendered
+          // above the composer. Once the anchor is removed (after answer),
+          // the inline card reappears — by then it carries `answers` and
+          // renders as the answered/historical form.
+          if (hiddenChoiceIds?.has(entry.choice_id)) return null
           return (
             <ChoiceCard
               key={i}

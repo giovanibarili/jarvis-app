@@ -7,6 +7,8 @@ import { log } from "../../logger/index.js";
 import { config } from "../../config/index.js";
 import { cleanupAbortedToolMessages } from "./cleanup-aborted-tools.js";
 import { sanitizeMessages } from "./sanitize-messages.js";
+import { unescapeToolInput } from "./unescape-tool-input.js";
+import { logUsage } from "./usage-log.js";
 import { load as loadSettings, getCompactionSettings } from "../../core/settings.js";
 import { getMaxContext, getMaxOutput } from "../../config/index.js";
 
@@ -60,7 +62,21 @@ export class AnthropicSession implements AISession {
     output_tokens: number;
     cache_creation_input_tokens: number;
     cache_read_input_tokens: number;
+    iterations?: number;
   }): void {
+    // Persistent JSONL log for offline cost analysis. Independent of the
+    // bus and the metrics HUD — fires every API response, even if no one
+    // is subscribed.
+    logUsage({
+      sessionId: this.label,
+      model: config.model,
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens,
+      cache_read_input_tokens: usage.cache_read_input_tokens,
+      iterations: usage.iterations,
+    });
+
     if (!this.bus) return;
     this.bus.publish({
       channel: "system.event",
@@ -424,7 +440,16 @@ export class AnthropicSession implements AISession {
         if (block.type === "text") {
           fullText += block.text;
         } else if (block.type === "tool_use") {
-          const tc: CapabilityCall = { id: block.id, name: block.name, input: block.input as Record<string, unknown> };
+          // Sanitize literal `\uXXXX` escapes in string leaves of the input.
+          // Opus occasionally emits double-escaped Unicode in tool_use JSON
+          // (e.g. "Ter\\u00e7a" instead of "Terça") — without this pass the
+          // user-visible strings (jarvis_ask_choice questions, HUD labels)
+          // would render with literal escape sequences. See
+          // unescape-tool-input.ts for the full rationale.
+          const cleanInput = unescapeToolInput(
+            block.input as Record<string, unknown>,
+          );
+          const tc: CapabilityCall = { id: block.id, name: block.name, input: cleanInput };
           toolCalls.push(tc);
         } else if (block.type === "compaction") {
           compactionSummary = (block as any).content;

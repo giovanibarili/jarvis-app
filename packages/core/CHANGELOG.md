@@ -4,6 +4,38 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-04-28
+
+### Added — Chat Anchor Registry
+
+Generic, session-scoped anchor mechanism for the chat composer. Any piece (core or plugin) can pin a UI element above the composer until explicitly removed.
+
+#### New bus channel: `chat.anchor`
+
+Three actions:
+- `set` — declare/replace an anchor by `(sessionId, id)`
+- `remove` — drop a single anchor
+- `clear` — drop all anchors of a session
+
+Anchors are **strictly per-session**: a `chat.anchor` message carries a required `sessionId`. The frontend AnchorRegistry filters by the active ChatPanel's `sessionId` so anchors never leak across sessions.
+
+#### New types
+
+- `ChatAnchor` — `{ id, sessionId, source, priority?, rendererKind, payload, renderer?, ttlMs?, createdAt? }`
+- `ChatAnchorMessage` — bus envelope for `set` / `remove` / `clear`
+
+#### Frontend additions (consumed via `window.__JARVIS_CHAT_ANCHORS`)
+
+- Singleton registry exposed for plugin renderers; backend pieces should publish via the bus instead.
+- `useAnchors(sessionId)` hook for React components.
+- `<ChatAnchorSlot sessionId={...} />` mounted between the chat scroll output and the composer.
+
+Built-in `rendererKind`: `"choice"`. Plugins may set `renderer: { plugin, file }` to load a custom renderer (same loader path used for HUD pieces).
+
+### Backward compatibility
+
+Additive only. Existing channels, types, and HTTP endpoints unchanged. Plugins that never publish to `chat.anchor` are unaffected.
+
 ## [0.2.2] — 2026-04-23
 
 ### Breaking Changes — Unified Chat Refactor

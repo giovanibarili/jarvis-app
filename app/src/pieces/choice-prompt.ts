@@ -25,6 +25,7 @@
 
 import type { EventBus } from "../core/bus.js";
 import type { Piece } from "../core/piece.js";
+import type { AIRequestMessage } from "../core/types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { ChatPiece } from "../input/chat-piece.js";
 import { log } from "../logger/index.js";
@@ -101,6 +102,9 @@ export class ChoicePromptPiece implements Piece {
   private readonly registry: CapabilityRegistry;
   private readonly chatPiece: ChatPiece;
   private counter = 0;
+  /** sessionId → ordered list of pending choiceIds (FIFO).
+   *  When a `[choice]` reply arrives, we drop the oldest pending. */
+  private readonly pendingBySession = new Map<string, string[]>();
 
   constructor(registry: CapabilityRegistry, chatPiece: ChatPiece) {
     this.registry = registry;
@@ -110,6 +114,30 @@ export class ChoicePromptPiece implements Piece {
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
     this.registerCapabilities();
+
+    // Observe ai.request — when the user replies with the "[choice]" prefix,
+    // drop the oldest pending anchor for that session. The frontend already
+    // removes optimistically on submit; this is the authoritative removal
+    // (also covers external clients like grpc).
+    this.bus.subscribe<AIRequestMessage>("ai.request", (msg) => {
+      const target = msg.target;
+      if (!target) return;
+      const text = (msg.text ?? "").trimStart();
+      if (!text.startsWith("[choice]")) return;
+      const queue = this.pendingBySession.get(target);
+      if (!queue || queue.length === 0) return;
+      const anchorId = queue.shift()!;
+      if (queue.length === 0) this.pendingBySession.delete(target);
+      this.bus.publish({
+        channel: "chat.anchor",
+        source: this.id,
+        sessionId: target,
+        action: "remove",
+        anchorId,
+      });
+      log.debug({ sessionId: target, anchorId }, "ChoicePrompt: removed anchor on [choice] reply");
+    });
+
     log.info("ChoicePrompt: initialized");
   }
 
@@ -208,29 +236,39 @@ export class ChoicePromptPiece implements Piece {
 
         const choiceId = this.nextId();
 
-        // SSE payload: include `questions` (new) AND legacy single-question
-        // fields (question/options/multi/allow_other) when there's exactly
-        // one question — older frontend versions still work.
-        const data: ChoicePromptData = {
-          choice_id: choiceId,
-          questions,
-        };
-        if (questions.length === 1) {
-          data.question = questions[0].question;
-          data.options = questions[0].options;
-          data.multi = questions[0].multi;
-          data.allow_other = questions[0].allow_other;
-        }
+        // Publish a chat anchor — pinned UI above the composer until the
+        // user answers (or it's removed by the [choice] reply observer).
+        // We no longer emit the legacy SSE `type:"choice"` event; the
+        // anchor channel is the single transport for live choice prompts.
+        // History reconstruction (kind:'choice' from tool_use) is unaffected.
+        // Track pending choices FIFO per session so we can correlate the
+        // next `[choice]` reply with the oldest open anchor.
+        const queue = this.pendingBySession.get(sessionId) ?? [];
+        queue.push(choiceId);
+        this.pendingBySession.set(sessionId, queue);
 
-        this.chatPiece.broadcastEvent(sessionId, {
-          type: "choice",
-          ...data,
-          session: sessionId,
+        this.bus.publish({
+          channel: "chat.anchor",
+          source: this.id,
+          sessionId,
+          action: "set",
+          anchor: {
+            id: choiceId,
+            sessionId,
+            source: this.id,
+            rendererKind: "choice",
+            payload: { choice_id: choiceId, questions } satisfies {
+              choice_id: string;
+              questions: ChoiceQuestion[];
+            },
+            // Higher than future plugin anchors that don't request priority.
+            priority: 100,
+          },
         });
 
         log.info(
           { sessionId, choiceId, questions: questions.length },
-          "ChoicePrompt: published choice",
+          "ChoicePrompt: published anchor",
         );
 
         return {

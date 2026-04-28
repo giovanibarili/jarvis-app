@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback, type KeyboardEvent, type ChangeEvent, type ClipboardEvent } from 'react'
 import { ChatTimeline, type ChatEntry } from './ChatTimeline'
+import { ChatAnchorSlot } from './ChatAnchorSlot'
+import { chatAnchorRegistry, useAnchors } from '../../hooks/useChatAnchors'
 import { SlashMenu } from './SlashMenu'
 
 interface PendingImage {
@@ -288,6 +290,21 @@ export function ChatPanel({
           // Drop any buffered cards — they belonged to the wiped session.
           pendingChoices.current = []
           setPendingQueue([])
+          // Drop all anchors for this session.
+          chatAnchorRegistry.clear(sessionId)
+          break
+        case 'anchor.set':
+        case 'anchor.remove':
+        case 'anchor.clear':
+          // Generic anchor channel — applies regardless of source piece/plugin.
+          // Defensive: ignore events whose sessionId doesn't match this panel.
+          if (data?.sessionId && data.sessionId !== sessionId) break
+          chatAnchorRegistry.applySSEEvent({
+            type: data.type,
+            sessionId: data.sessionId ?? sessionId,
+            anchor: data.anchor,
+            anchorId: data.anchorId,
+          })
           break
         case 'pending_queue':
           // Backend snapshot of the user-message queue for this session.
@@ -526,6 +543,89 @@ export function ChatPanel({
     }).catch(() => {})
   }, [sendUrl, sessionId])
 
+  // ── Anchor submit ─────────────────────────────────────────────────────
+  // Choice anchors render via the shared ChoiceCard. When the user confirms,
+  // we serialize the prompt the same way as inline submits, dispatch it,
+  // and remove the anchor. The matching kind:'choice' history entry will be
+  // reconstructed from tool_use on next history fetch — no inline tweak
+  // needed because the inline copy was hidden while the anchor was active.
+  const handleAnchorChoiceSubmit = useCallback(
+    (anchorId: string, answers: { values: string[]; otherText?: string }[]) => {
+      // Pull the anchor from the live registry to grab the questions snapshot.
+      const all = chatAnchorRegistry.dump()[sessionId] ?? []
+      const anchor = all.find(a => a.id === anchorId)
+      if (!anchor) return
+      const payload = anchor.payload as
+        | { choice_id: string; questions: Array<{ question: string; options: { value: string; label: string }[]; multi: boolean }> }
+        | undefined
+      if (!payload || !Array.isArray(payload.questions) || payload.questions.length === 0) return
+
+      const lineFor = (qi: number): string => {
+        const q = payload.questions[qi]
+        const a = answers[qi]
+        if (!q || !a) return ''
+        const labels = a.values.map(v => {
+          if (v === '__other__') return a.otherText ?? '(other)'
+          return q.options.find(o => o.value === v)?.label ?? v
+        })
+        const joined = q.multi ? labels.join(', ') : (labels[0] ?? '')
+        return `${q.question} → ${joined}`
+      }
+      const prompt = payload.questions.length === 1
+        ? `[choice] ${lineFor(0)}`
+        : `[choice]\n${payload.questions.map((_, i) => lineFor(i)).filter(Boolean).join('\n')}`
+
+      // Optimistically remove the anchor — backend will also send anchor.remove
+      // when it observes the [choice] reply, so this is double-safe.
+      chatAnchorRegistry.remove(sessionId, anchorId)
+
+      fetch(sendUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, prompt }),
+      }).catch(() => {})
+    },
+    [sendUrl, sessionId],
+  )
+
+  // Dismiss a choice anchor — sends a "(dismissed)" reply so the AI knows the
+  // user closed the prompt without answering, then optimistically removes the
+  // anchor. Backend's [choice] observer also publishes anchor.remove, making
+  // this idempotent.
+  const handleAnchorChoiceDismiss = useCallback(
+    (anchorId: string) => {
+      const all = chatAnchorRegistry.dump()[sessionId] ?? []
+      const anchor = all.find(a => a.id === anchorId)
+      const payload = anchor?.payload as
+        | { questions?: Array<{ question: string }> }
+        | undefined
+      // Build a minimal but recognizable "[choice] ... → (dismissed)" line so
+      // consumeChoiceAnswer can pair it with the matching pending entry in
+      // history reconstruction.
+      const firstQ = payload?.questions?.[0]?.question?.trim() ?? ''
+      const prompt = firstQ
+        ? `[choice] ${firstQ} → (dismissed)`
+        : `[choice] (dismissed)`
+
+      chatAnchorRegistry.remove(sessionId, anchorId)
+
+      fetch(sendUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, prompt }),
+      }).catch(() => {})
+    },
+    [sendUrl, sessionId],
+  )
+
+  // Drop all anchors of this session whenever the panel is reused for a
+  // different sessionId — prevents stale anchors leaking across.
+  useEffect(() => {
+    return () => {
+      chatAnchorRegistry.clear(sessionId)
+    }
+  }, [sessionId])
+
   const toggleExpand = useCallback((index: number) => {
     setEntries(prev => prev.map((e, j) => {
       if (j !== index) return e
@@ -534,6 +634,21 @@ export function ChatPanel({
       return e
     }))
   }, [])
+
+  // Derive hidden inline choice IDs from the live anchor list — any choice
+  // currently rendered in the anchor slot must NOT also render inline.
+  const activeAnchors = useAnchors(sessionId)
+  const hiddenChoiceIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const a of activeAnchors) {
+      if (a.rendererKind !== 'choice') continue
+      const cid = (a.payload as { choice_id?: string } | undefined)?.choice_id
+      if (cid) set.add(cid)
+      // Also hide by anchor.id, which equals choice_id for ChoicePromptPiece.
+      if (a.id) set.add(a.id)
+    }
+    return set
+  }, [activeAnchors])
 
   return (
     <div className="chatDocked" ref={panelRef}>
@@ -549,8 +664,17 @@ export function ChatPanel({
           onToggleExpand={toggleExpand}
           onChoiceSubmit={handleChoiceSubmit}
           pendingQueue={pendingQueue}
+          hiddenChoiceIds={hiddenChoiceIds}
         />
       </div>
+
+      <ChatAnchorSlot
+        sessionId={sessionId}
+        assistantLabel={assistantLabel}
+        assistantLabelColor="var(--chat-jarvis-label)"
+        onChoiceSubmit={handleAnchorChoiceSubmit}
+        onChoiceDismiss={handleAnchorChoiceDismiss}
+      />
 
       <div className="chatDockedInput">
         <div style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
