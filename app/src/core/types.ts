@@ -11,4 +11,6 @@ export type {
   CapabilityResultMessage,
   HudUpdateMessage,
   SystemEventMessage,
+  ChatAnchor,
+  ChatAnchorMessage,
 } from "@jarvis/core";
