@@ -29,8 +29,19 @@ export interface AIRequestMessage extends BusMessage {
   text: string;
   images?: ImageAttachment[];
   replyTo?: string;
-  /** Optional payload for dispatch metadata (e.g. actor role, context) */
-  data?: Record<string, unknown>;
+  /**
+   * Optional payload for dispatch metadata.
+   *
+   * Conventional keys (consumed by core pieces):
+   *   - `utility: true` — this is a utility call (summary, classification,
+   *     title generation, etc). The ModelRouter routes it to the configured
+   *     utility model (Haiku by default) WITHOUT touching the session's
+   *     sticky model. Use for isolated, one-shot calls that don't share
+   *     cache with the main loop.
+   *   - `actorRole`, `actorContext` — actor-runner plugin metadata.
+   *   - any other plugin-specific key.
+   */
+  data?: Record<string, unknown> & { utility?: boolean };
 }
 
 // ai.stream — tokens coming from any AI session

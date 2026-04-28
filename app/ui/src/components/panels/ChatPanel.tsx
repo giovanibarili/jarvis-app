@@ -264,6 +264,19 @@ export function ChatPanel({
           })
           flushPendingChoices()
           break
+        case 'compaction_start':
+          if (!features.compaction) break
+          // Engine B (fallback / forced) is about to summarize — show a live
+          // banner so the user sees that compaction is in progress. Engine A
+          // (server-side) does NOT emit start; it's instantaneous from here.
+          setEntries(prev => [...prev, {
+            kind: 'compaction_pending',
+            engine: 'fallback',
+            tokensBefore: data.tokensBefore ?? 0,
+            reason: data.reason,
+            startedAt: Date.now(),
+          }])
+          break
         case 'compaction':
           if (!features.compaction) break
           setIsThinking(false)
@@ -274,13 +287,28 @@ export function ChatPanel({
             }
             return ''
           })
-          setEntries(prev => [...prev, {
-            kind: 'compaction',
-            engine: data.engine ?? 'api',
-            tokensBefore: data.tokensBefore ?? 0,
-            tokensAfter: data.tokensAfter ?? 0,
-            summary: data.summary ?? '',
-          }])
+          // If a `compaction_pending` banner exists (Engine B path), REPLACE
+          // it in place — keeps timeline ordering clean. Otherwise just
+          // append the final entry (Engine A path: no pending banner ever).
+          setEntries(prev => {
+            const finalEntry = {
+              kind: 'compaction' as const,
+              engine: (data.engine ?? 'api') as 'api' | 'fallback',
+              tokensBefore: data.tokensBefore ?? 0,
+              tokensAfter: data.tokensAfter ?? 0,
+              summary: data.summary ?? '',
+            }
+            // Replace the LAST compaction_pending entry (most recent first wins
+            // if there are multiple — shouldn't happen in practice).
+            for (let idx = prev.length - 1; idx >= 0; idx--) {
+              if (prev[idx].kind === 'compaction_pending') {
+                const next = prev.slice()
+                next[idx] = finalEntry
+                return next
+              }
+            }
+            return [...prev, finalEntry]
+          })
           break
         case 'session_cleared':
           setEntries([])
@@ -305,6 +333,11 @@ export function ChatPanel({
             anchor: data.anchor,
             anchorId: data.anchorId,
           })
+          break
+        case 'system':
+          // System notifications — shown in chat timeline but never sent to LLM.
+          if (data?.session && data.session !== sessionId) break
+          setEntries(prev => [...prev, { kind: 'system', text: data.text ?? '', session: data.session }])
           break
         case 'pending_queue':
           // Backend snapshot of the user-message queue for this session.

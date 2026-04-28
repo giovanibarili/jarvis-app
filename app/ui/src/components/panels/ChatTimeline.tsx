@@ -32,7 +32,9 @@ export type ChatEntry =
   | { kind: 'message'; role: 'user' | 'assistant'; text: string; images?: ChatImage[]; source?: string; session?: string; aborted?: boolean }
   | { kind: 'capability'; name: string; id: string; args?: string; status: 'running' | 'done' | 'cancelled'; ms?: number; output?: string; expanded?: boolean }
   | { kind: 'compaction'; engine: 'api' | 'fallback'; tokensBefore: number; tokensAfter: number; summary: string; expanded?: boolean }
+  | { kind: 'compaction_pending'; engine: 'fallback'; tokensBefore: number; reason?: 'forced' | 'threshold'; startedAt: number }
   | { kind: 'bash_result'; command: string; output: string; exitCode: number; ms: number; expanded?: boolean }
+  | { kind: 'system'; text: string; session?: string }
   | {
       kind: 'choice'
       choice_id: string
@@ -742,6 +744,32 @@ export const ChatTimeline = React.memo(function ChatTimeline({
           )
         }
 
+        if (entry.kind === 'compaction_pending') {
+          const beforeK = Math.round(entry.tokensBefore / 1000)
+          const reasonLabel = entry.reason === 'forced' ? 'forced' : 'threshold'
+          return (
+            <div key={i} style={{ marginBottom: '2px' }}>
+              <div
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: '4px',
+                  fontSize: '10px',
+                  borderLeft: '3px solid #ffb86c',
+                  background: '#1a1e2e',
+                  color: '#ffb86c',
+                  fontFamily: 'var(--font-mono)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <span style={{ animation: 'pulse 1.5s infinite', display: 'inline-block' }}>⏳</span>
+                <span>Compacting context — {beforeK}K tokens ({reasonLabel})…</span>
+              </div>
+            </div>
+          )
+        }
+
         if (entry.kind === 'compaction') {
           const beforeK = Math.round(entry.tokensBefore / 1000)
           const afterK = Math.round(entry.tokensAfter / 1000)
@@ -780,6 +808,27 @@ export const ChatTimeline = React.memo(function ChatTimeline({
                   {entry.summary}
                 </div>
               )}
+            </div>
+          )
+        }
+
+        if (entry.kind === 'system') {
+          return (
+            <div key={i} style={{ marginBottom: '2px' }}>
+              <div
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: '4px',
+                  fontSize: '10px',
+                  borderLeft: '3px solid #f1fa8c',
+                  background: '#1a1e2e',
+                  color: '#f1fa8c',
+                  whiteSpace: 'pre-wrap',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                {entry.text}
+              </div>
             </div>
           )
         }

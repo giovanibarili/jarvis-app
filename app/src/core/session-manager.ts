@@ -80,6 +80,36 @@ export class SessionManager {
   }
 
   /**
+   * Read-only lookup. Returns undefined if the session doesn't exist.
+   * Use when you want to inspect/mutate an existing session WITHOUT
+   * triggering creation (which `get()` does as a side effect).
+   * Required by the ModelRouter — routing must never spawn a session.
+   */
+  peek(sessionId: string): ManagedSession | undefined {
+    return this.sessions.get(sessionId);
+  }
+
+  /**
+   * Listeners fired when a session is created (by `get()` or `getWithPrompt()`).
+   * Used by the ModelRouter to apply sticky model overrides on the FIRST turn —
+   * the router's bus subscriber runs before the session exists, so peek()
+   * returns undefined on turn 1; this hook lets the router catch up immediately
+   * after creation, before sendAndStream() reads getModel().
+   */
+  private createListeners: Array<(sessionId: string, managed: ManagedSession) => void> = [];
+
+  onSessionCreated(listener: (sessionId: string, managed: ManagedSession) => void): void {
+    this.createListeners.push(listener);
+  }
+
+  private fireCreated(sessionId: string, managed: ManagedSession): void {
+    for (const l of this.createListeners) {
+      try { l(sessionId, managed); }
+      catch (err) { log.warn({ sessionId, err }, "SessionManager: onSessionCreated listener threw"); }
+    }
+  }
+
+  /**
    * Get or create a session.
    * Auto-creates with factory.create() and restores saved conversation.
    * For sessions with custom prompts, prefer getWithPrompt().
@@ -115,6 +145,7 @@ export class SessionManager {
       };
       this.sessions.set(sessionId, managed);
       log.info({ sessionId, restored: !!restoreMessages }, "SessionManager: created new session");
+      this.fireCreated(sessionId, managed);
     }
     return managed;
   }
@@ -151,6 +182,7 @@ export class SessionManager {
     };
     this.sessions.set(sessionId, managed);
     log.info({ sessionId, hasRestore: !!(saved && saved.messages.length > 0) }, "SessionManager: created session with custom prompt");
+    this.fireCreated(sessionId, managed);
     return managed;
   }
 

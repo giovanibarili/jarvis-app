@@ -4,6 +4,62 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-04-28
+
+### Added — `AISession.setStickyModelOverride` and `AISession.setToolFilter`
+
+Two new optional methods on `AISession`:
+
+- `setStickyModelOverride(model: string | undefined)` — sets a sticky model
+  override for ALL subsequent calls on this session. Pass `undefined` to clear
+  and revert to the global config model.
+
+- `setToolFilter(filter: ((toolName: string) => boolean) | undefined)` — sets
+  a per-session tool filter. Only tools matching the filter are sent to the
+  model. Pass `undefined` to clear (all tools visible). The filter is applied
+  on every API call — tools registered AFTER the filter is set still respect it.
+
+Both methods are **optional**. Providers that can't implement per-session
+routing/filtering simply leave them unimplemented; callers should `typeof ===
+"function"` check before invoking. Backward compatible: existing plugins that
+don't use these continue to work unchanged.
+
+#### Use cases
+
+- **Actor roles with cost-optimized models** — actor-runner plugin now reads
+  `model:` from role frontmatter (full model id only, e.g. `claude-sonnet-4-6`)
+  and applies it via `setStickyModelOverride`, isolating the actor from the
+  global model. File-system actors can run on Sonnet/Haiku while reasoning
+  actors stay on Opus.
+
+- **Tool restrictions per role** — actor-runner reads `tools_allow:` and
+  `tools_block:` from role frontmatter (YAML inline arrays) and installs a
+  `setToolFilter` predicate. Restricts the visible tool surface so a
+  read-only role can't see write/edit tools.
+
+## [0.4.0] — 2026-04-28
+
+### Added — `AIRequestMessage.data.utility` convention
+
+New optional convention on the `data` field of `AIRequestMessage` for marking
+calls as "utility" (summary, title generation, classification, etc).
+
+When `data.utility === true`, the ModelRouter piece (new) routes the call to
+the configured utility model (Haiku by default) **without touching the
+session's sticky model**. This isolates utility calls from the main
+conversation cache, preserving cache_read on subsequent turns.
+
+Backward compatible: pieces that don't read `data.utility` keep working as
+before. Old `AIRequestMessage` payloads without `data` continue to work.
+
+### Added — `system.event` events: `router.decision` and `router.switch`
+
+The ModelRouter publishes:
+- `router.decision` on every routing decision (sticky, prefix, utility)
+- `router.switch` only on actual model changes, with cost estimate
+
+Plugins can subscribe to surface routing in their HUDs / metrics.
+
 ## [0.3.0] — 2026-04-28
 
 ### Added — Chat Anchor Registry

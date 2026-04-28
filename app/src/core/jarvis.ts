@@ -399,6 +399,27 @@ export class JarvisCore implements Piece {
         case "message_complete":
           usage = event.usage;
           break;
+        case "compaction_start":
+          if (event.compactionStart) {
+            // Forward to ai.stream so the chat UI can render a "compacting…" banner.
+            // Event name `compaction_start` is intentionally NOT in the public
+            // AIStreamMessage union (kept stable for plugins) — published via cast.
+            this.bus.publish({
+              channel: "ai.stream",
+              source: "jarvis-core",
+              target: sessionId,
+              event: "compaction_start",
+              compactionStart: event.compactionStart,
+            } as any);
+
+            log.info({
+              sessionId,
+              engine: event.compactionStart.engine,
+              tokensBefore: event.compactionStart.tokensBefore,
+              reason: event.compactionStart.reason,
+            }, "JarvisCore: compaction started");
+          }
+          break;
         case "compaction":
           if (event.compaction) {
             this.bus.publish({
