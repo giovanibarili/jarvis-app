@@ -35,6 +35,7 @@ export type ChatEntry =
   | { kind: 'compaction_pending'; engine: 'fallback'; tokensBefore: number; reason?: 'forced' | 'threshold'; startedAt: number }
   | { kind: 'bash_result'; command: string; output: string; exitCode: number; ms: number; expanded?: boolean }
   | { kind: 'system'; text: string; session?: string }
+  | { kind: 'error'; message: string; source?: string; session?: string }
   | {
       kind: 'choice'
       choice_id: string
@@ -615,16 +616,22 @@ export const ChatTimeline = React.memo(function ChatTimeline({
           } catch { /* not JSON, use as-is */ }
           rawOutput = rawOutput.replace(/\\n/g, '\n').replace(/\\t/g, '\t')
           const outputLines = rawOutput.split('\n').filter(Boolean)
-          const previewLines = outputLines.slice(-1)
-          const hasMore = outputLines.length > 1
-          const visibleLines = entry.expanded ? outputLines : previewLines
+          // isLive: tool is still running and has partial output to show
+          const isLive = entry.status === 'running' && outputLines.length > 0
+          const LIVE_LINES = 12
+          const visibleLines = isLive
+            ? outputLines.slice(-LIVE_LINES)
+            : entry.expanded
+              ? outputLines
+              : outputLines.slice(-1)
+          const hasMore = !isLive && outputLines.length > 1
 
           return (
             <div key={i} style={{ marginBottom: '2px' }}>
               <div
                 style={{
                   padding: '3px 8px',
-                  borderRadius: entry.output ? '4px 4px 0 0' : '4px',
+                  borderRadius: visibleLines.length > 0 ? '4px 4px 0 0' : '4px',
                   fontSize: '10px',
                   borderLeft: entry.status === 'running' ? '3px solid #f1fa8c'
                     : entry.status === 'done' ? '3px solid #50fa7b'
@@ -633,9 +640,9 @@ export const ChatTimeline = React.memo(function ChatTimeline({
                   color: entry.status === 'running' ? '#f1fa8c'
                     : entry.status === 'done' ? '#50fa7b'
                     : '#666',
-                  cursor: entry.output ? 'pointer' : 'default',
+                  cursor: (!isLive && entry.output) ? 'pointer' : 'default',
                 }}
-                onClick={entry.output ? () => onToggleExpand(i) : undefined}
+                onClick={(!isLive && entry.output) ? () => onToggleExpand(i) : undefined}
               >
                 {entry.status === 'running' && <span style={{ animation: 'pulse 1.5s infinite', display: 'inline-block' }}>⚡</span>}
                 {entry.status === 'done' && '✓'}
@@ -646,25 +653,32 @@ export const ChatTimeline = React.memo(function ChatTimeline({
                 {entry.status === 'cancelled' && <span style={{ fontStyle: 'italic' }}> interrupted</span>}
                 {hasMore && <span style={{ marginLeft: '4px', opacity: 0.5 }}>{entry.expanded ? '▾' : '▸'}</span>}
               </div>
-              {entry.output && visibleLines.length > 0 && (
+              {visibleLines.length > 0 && (
                 <div
                   style={{
-                    padding: '2px 8px 2px 14px',
-                    background: '#111420',
-                    borderLeft: '3px solid #333',
+                    padding: '4px 8px 4px 14px',
+                    background: '#0d1117',
+                    borderLeft: isLive ? '3px solid rgba(241,250,140,0.3)' : '3px solid #333',
                     borderRadius: '0 0 4px 4px',
                     fontSize: '9px',
-                    color: '#888',
+                    color: isLive ? '#c8c8c8' : '#888',
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-all',
-                    maxHeight: entry.expanded ? 'none' : '16px',
-                    overflow: 'hidden',
-                    cursor: 'pointer',
+                    maxHeight: isLive ? '180px' : (entry.expanded ? 'none' : '16px'),
+                    overflowY: isLive ? 'auto' : 'hidden',
+                    cursor: (!isLive && hasMore) ? 'pointer' : 'default',
                     lineHeight: '1.4',
+                    fontFamily: 'var(--font-mono)',
                   }}
-                  onClick={() => onToggleExpand(i)}
+                  onClick={(!isLive && hasMore) ? () => onToggleExpand(i) : undefined}
                 >
+                  {isLive && outputLines.length > LIVE_LINES && (
+                    <span style={{ display: 'block', color: '#555', marginBottom: '2px', fontSize: '8px' }}>
+                      … {outputLines.length - LIVE_LINES} earlier lines
+                    </span>
+                  )}
                   {visibleLines.join('\n')}
+                  {isLive && <span style={{ display: 'inline-block', width: '5px', height: '10px', background: '#f1fa8c88', marginLeft: '2px', animation: 'blink 1s infinite', verticalAlign: 'middle' }} />}
                 </div>
               )}
             </div>
@@ -808,6 +822,37 @@ export const ChatTimeline = React.memo(function ChatTimeline({
                   {entry.summary}
                 </div>
               )}
+            </div>
+          )
+        }
+
+        if (entry.kind === 'error') {
+          // Extract a short human-readable message from the raw API error string.
+          // The full error is too noisy — try to surface just the inner message.
+          const raw = entry.message ?? ''
+          const inner = raw.match(/\"message\":\"([^"]+)\"/)?.[1]
+            ?? raw.match(/message: ([^,}\n]+)/)?.[1]
+            ?? raw.slice(0, 200)
+          return (
+            <div key={i} style={{ marginBottom: '4px' }}>
+              <div
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  borderLeft: '3px solid #ff5555',
+                  background: '#2a1a1a',
+                  color: '#ff7070',
+                  whiteSpace: 'pre-wrap',
+                  fontFamily: 'var(--font-mono)',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '6px',
+                }}
+              >
+                <span style={{ flexShrink: 0 }}>⚠</span>
+                <span>{inner}</span>
+              </div>
             </div>
           )
         }

@@ -201,8 +201,16 @@ export class SessionManager {
   setState(sessionId: string, state: SessionState): void {
     const managed = this.sessions.get(sessionId);
     if (managed) {
+      const prev = managed.state;
       managed.state = state;
-      log.debug({ sessionId, state }, "SessionManager: state changed");
+      // info-level so state transitions are visible without enabling debug.
+      // No-op transitions (idle→idle, processing→processing) are filtered to
+      // avoid noise from defensive callers.
+      if (prev !== state) {
+        log.info({ sessionId, from: prev, to: state }, "SessionManager: state changed");
+      } else {
+        log.trace({ sessionId, state }, "SessionManager: state set (no change)");
+      }
 
       // Save after each complete turn (when going back to idle) — skip ephemeral sessions
       if (state === "idle" && !this.ephemeralSessions.has(sessionId)) {

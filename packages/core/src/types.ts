@@ -11,6 +11,14 @@ export interface BusMessage {
   source: string;
   target?: string;
   channel: Channel;
+  /**
+   * Trace ID — propagates across an end-to-end conversation turn so logs
+   * for chat→bus→core→provider→stream→SSE can be correlated by a single id.
+   * Set by the originating publisher (e.g. ChatPiece for user input,
+   * JarvisCore for follow-up streams). Optional for backward compatibility:
+   * messages without traceId still work, just without correlation.
+   */
+  traceId?: string;
 }
 
 // Image attachment for multi-modal messages

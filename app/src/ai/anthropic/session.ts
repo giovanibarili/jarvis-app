@@ -229,6 +229,15 @@ export class AnthropicSession implements AISession {
   }
 
   async *sendAndStream(prompt: string, images?: ImageBlock[]): AsyncGenerator<AIStreamEvent, void> {
+    log.info({
+      label: this.label,
+      promptLength: prompt.length,
+      promptPreview: prompt.slice(0, 120),
+      images: images?.length ?? 0,
+      messageCountBefore: this.messages.length,
+      lastMessageRole: this.messages[this.messages.length - 1]?.role,
+    }, "AnthropicSession: sendAndStream (entry)");
+
     // Inject message-mode context (e.g. skills with injection: message)
     this.injectEphemeralContext();
 
@@ -246,7 +255,44 @@ export class AnthropicSession implements AISession {
     } else {
       this.messages.push({ role: "user", content: prompt });
     }
+
+    // Detect alternation violations — Anthropic API rejects two consecutive
+    // user messages (or two consecutive assistants) with HTTP 400. This pass
+    // is read-only: we log the offending sequence so diagnosis is one grep
+    // away. The actual fix lives in sanitizeMessages / setMessages, not here.
+    this.warnIfBadAlternation();
+
     yield* this.streamFromAPI();
+  }
+
+  /**
+   * Walk the message array and warn if there are consecutive same-role messages.
+   * Anthropic requires strict user/assistant alternation. Repeated user roles
+   * almost always mean a previous turn failed silently and the next prompt
+   * was pushed without an assistant reply — a class of bug that's worth
+   * loud-logging the moment it happens.
+   */
+  private warnIfBadAlternation(): void {
+    const violations: Array<{ at: number; role: string; preview: string }> = [];
+    for (let i = 1; i < this.messages.length; i++) {
+      const cur = this.messages[i];
+      const prev = this.messages[i - 1];
+      if (cur.role === prev.role) {
+        const text = typeof cur.content === "string"
+          ? cur.content
+          : Array.isArray(cur.content)
+            ? cur.content.map((b: any) => b?.text ?? `[${b?.type}]`).join(" ")
+            : "";
+        violations.push({ at: i, role: cur.role, preview: text.slice(0, 80) });
+      }
+    }
+    if (violations.length > 0) {
+      log.warn({
+        label: this.label,
+        violations,
+        totalMessages: this.messages.length,
+      }, "AnthropicSession: BAD ALTERNATION — consecutive same-role messages detected (will likely cause API 400)");
+    }
   }
 
   addToolResults(toolCalls: CapabilityCall[], results: CapabilityResult[]): void {
@@ -576,8 +622,10 @@ export class AnthropicSession implements AISession {
         betas.push("effort-2025-11-24");
       }
 
-      // effort: xhigh for main session, high for actors/subagents
-      const effort = this.label === "main" ? "xhigh" : "high";
+      // effort: "max" for main session (highest available), "high" for actors/subagents.
+      // NOTE: some models don't support "xhigh" — use "max" which is universally
+      // accepted by all models that support the effort-2025-11-24 beta header.
+      const effort = this.label === "main" ? "max" : "high";
 
       // metadata.user_id: mirrors CC pattern — session_id for backend cache optimization
       const metadata = { user_id: JSON.stringify({ session_id: this.sessionId }) };

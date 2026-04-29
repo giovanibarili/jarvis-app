@@ -277,11 +277,13 @@ export function TokenCounterRenderer({ state }: { state: HudComponentState }) {
       const lastReq = displayHistory[displayHistory.length - 1]
       const lastCostVal = costs[costs.length - 1]
 
-      // Last request info line
+      // Last request info line — cost + token count
+      const lastReqTotalTok = (lastReq.inputTokens ?? 0) + (lastReq.outputTokens ?? 0) + (lastReq.cacheRead ?? 0) + (lastReq.cacheCreation ?? 0)
+      const sessionTotalTok = requestHistory.reduce((s, r) => s + (r.inputTokens ?? 0) + (r.outputTokens ?? 0) + (r.cacheRead ?? 0) + (r.cacheCreation ?? 0), 0)
       ctx.fillStyle = '#8af'
       ctx.font = '9px "JetBrains Mono", monospace'
       ctx.textAlign = 'center'
-      ctx.fillText(`REQ #${lastReq.seq}  ·  ${fmtUsd(lastCostVal)}  ·  SESSION ${fmtUsd(sessionTotal)}`, cx, sparkTopY + 28)
+      ctx.fillText(`REQ #${lastReq.seq}  ·  ${fmtUsd(lastCostVal)} / ${fmt(lastReqTotalTok)}  ·  SESSION ${fmtUsd(sessionTotal)} / ${fmt(sessionTotalTok)}`, cx, sparkTopY + 28)
 
       const barsY = sparkTopY + 38
       const barsH = 70

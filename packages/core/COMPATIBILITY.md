@@ -18,6 +18,7 @@ This package follows **Semantic Versioning (semver)**:
 | **0.2.2** | **Unified chat — sessionId required everywhere** | ✅ SSE per sessionId | **BREAKING** — see CHANGELOG. Chat endpoints, `ChatPanel` props, and `HttpServer` callbacks all changed. `renderer.plugin` accepts `null` for core renderers. |
 | **0.3.0** | + `chat.anchor` channel + `ChatAnchor` types + `window.__JARVIS_CHAT_ANCHORS` | ✅ Unchanged | Additive. Pieces can pin per-session UI anchors above the chat composer. |
 | **0.5.0** | + `AISession.setStickyModelOverride?` + `AISession.setToolFilter?` | ✅ Unchanged | Additive. Both optional — plugins that don't call them keep working. Actor-runner uses them to apply per-role model + tool restrictions. |
+| **0.6.0** | + `BusMessage.traceId?` | ✅ Unchanged | Additive optional field. Plugins that don't set it keep working — bus auto-fills a fresh id per publish. Plugins that DO set it on the originating publish (and propagate it on follow-ups) get end-to-end log correlation across chat→bus→core→provider→stream. |
 
 ## Public API Surface
 
