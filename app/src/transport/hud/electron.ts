@@ -179,8 +179,12 @@ app.whenReady().then(() => {
         try {
           const { title, message, sound = true, urgency = 'normal' } = JSON.parse(body);
           const { Notification } = require('electron');
+          const { execFile } = require('child_process');
+
+          const escAS = (s) => String(s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').slice(0, 200);
+
           if (Notification.isSupported()) {
-            const subtitle = urgency === 'critical' ? '⚠️ ATENÇÃO' : urgency === 'low' ? '' : '';
+            const subtitle = urgency === 'critical' ? '⚠️ ATENÇÃO' : '';
             const n = new Notification({
               title: String(title ?? 'JARVIS'),
               body: String(message ?? ''),
@@ -194,6 +198,12 @@ app.whenReady().then(() => {
               }
             });
             n.show();
+          } else {
+            // Fallback: osascript (dev builds without signing)
+            const soundClause = sound ? ' with sound' : '';
+            const subtitleClause = urgency === 'critical' ? ' subtitle "⚠️ ATENÇÃO"' : '';
+            const script = \`display notification "\${escAS(message)}" with title "\${escAS(title ?? 'JARVIS')}"\${subtitleClause}\${soundClause}\`;
+            execFile('osascript', ['-e', script]);
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
