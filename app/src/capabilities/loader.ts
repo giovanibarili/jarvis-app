@@ -106,17 +106,55 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
     }
   }
 
-  private execWithStdin(command: string, args: string[], stdinData: string, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
+  /**
+   * Unified spawn-based executor. Replaces both `execWithStdin` and
+   * `execFileAsync` paths so ALL capabilities get live stdout streaming
+   * via the optional `onProgress` callback.
+   *
+   * Throttle: progress events are emitted at most every PROGRESS_THROTTLE_MS
+   * to avoid flooding the SSE channel on very chatty tools (e.g. npm install).
+   */
+  private execWithProgress(
+    command: string,
+    args: string[],
+    stdinData: string | undefined,
+    signal: AbortSignal | undefined,
+    onProgress: ((chunk: string) => void) | undefined,
+  ): Promise<{ stdout: string; stderr: string }> {
+    const PROGRESS_THROTTLE_MS = 100;
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, { timeout: 600000 });
       let stdout = "";
       let stderr = "";
+      let pendingChunk = "";
+      let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-      child.stdout.on("data", (chunk) => { stdout += chunk; });
-      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      const flushProgress = () => {
+        if (pendingChunk && onProgress) {
+          onProgress(pendingChunk);
+          pendingChunk = "";
+        }
+        flushTimer = undefined;
+      };
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        stdout += text;
+        if (onProgress) {
+          pendingChunk += text;
+          if (!flushTimer) {
+            flushTimer = setTimeout(flushProgress, PROGRESS_THROTTLE_MS);
+          }
+        }
+      });
+      child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
       child.on("error", reject);
       child.on("close", (code) => {
+        // Flush any remaining buffered progress
+        if (flushTimer) clearTimeout(flushTimer);
+        flushProgress();
+
         if (code !== 0 && code !== null) {
           const err: any = new Error(`Process exited with code ${code}`);
           err.stderr = stderr;
@@ -127,14 +165,22 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
         }
       });
 
-      child.stdin.write(stdinData);
+      if (stdinData !== undefined) {
+        child.stdin.write(stdinData);
+      }
       child.stdin.end();
 
       signal?.addEventListener("abort", () => {
+        if (flushTimer) clearTimeout(flushTimer);
         child.kill("SIGTERM");
         reject(new Error("aborted"));
       });
     });
+  }
+
+  /** @deprecated Use execWithProgress instead. Kept for backward compat with any external callers. */
+  private execWithStdin(command: string, args: string[], stdinData: string, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
+    return this.execWithProgress(command, args, stdinData, signal, undefined);
   }
 
   private parseOutput(stdout: string, stderr: string): unknown {
@@ -198,7 +244,8 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
       name: config.name,
       description: config.description,
       input_schema: config.input_schema,
-      handler: async (input) => {
+      supportsProgress: true,
+      handler: async (input, onProgress) => {
         const sessionId = input.__sessionId as string | undefined;
         const ctrl = new AbortController();
         if (sessionId) this.abortControllers.set(sessionId, ctrl);
@@ -218,14 +265,11 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
           : undefined;
 
         try {
-          const { stdout, stderr } = stdinData !== undefined
-            ? await this.execWithStdin(config.command, args, stdinData, signal)
-            : await execFileAsync(config.command, args, {
-                timeout: 600000,
-                maxBuffer: 1024 * 1024 * 10,
-                signal,
-              });
-
+          // Always use spawn so we can stream stdout via onProgress.
+          // For stdin-based configs (execWithStdin path) the logic is the same.
+          const { stdout, stderr } = await this.execWithProgress(
+            config.command, args, stdinData, signal, onProgress,
+          );
           return this.parseOutput(stdout, stderr);
         } catch (err: any) {
           if (signal.aborted || err.message === "aborted") {

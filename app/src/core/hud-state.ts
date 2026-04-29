@@ -67,7 +67,7 @@ export class HudState {
               existing.position = { x: msg.layout.x, y: msg.layout.y };
               existing.size = { width: msg.layout.width, height: msg.layout.height };
             }
-            log.debug({ pieceId: msg.pieceId }, "HudState: updated");
+            log.trace({ pieceId: msg.pieceId }, "HudState: updated");
             this.pushIfChanged(msg.pieceId);
           }
           break;
@@ -100,12 +100,15 @@ export class HudState {
 
   addStreamClient(res: ServerResponse): void {
     this.streamClients.add(res);
-    log.debug({ clients: this.streamClients.size }, "HudState: SSE client connected");
+    // trace level — these events fire on every HUD repaint and would
+    // flood the log file. Promote to debug only when actively diagnosing
+    // SSE client churn.
+    log.trace({ clients: this.streamClients.size }, "HudState: SSE client connected");
   }
 
   removeStreamClient(res: ServerResponse): void {
     this.streamClients.delete(res);
-    log.debug({ clients: this.streamClients.size }, "HudState: SSE client disconnected");
+    log.trace({ clients: this.streamClients.size }, "HudState: SSE client disconnected");
   }
 
   // ─── Private ────────────────────────────────────────────────────────────

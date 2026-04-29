@@ -4,6 +4,39 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-04-29
+
+### Added — Optional `traceId` on `BusMessage`
+
+`BusMessage` (and every channel message that extends it) gained an optional
+`traceId?: string` field. Producers MAY set a short hex id (e.g. `"a3f10b9c"`)
+on the originating publish; downstream pieces propagate it on every follow-up
+publish so a single conversation turn can be filtered end-to-end in the logs
+(`grep traceId=a3f10b9c jarvis.log`).
+
+Backward compatible:
+- Plugins that don't set `traceId` continue to work — the bus auto-fills a
+  fresh id on publish so logs are always correlatable, just without
+  cross-message linkage.
+- Plugins reading messages can ignore `traceId` entirely; it's an additive
+  optional field on existing interfaces.
+
+#### Recommended pattern for plugin authors
+
+When your plugin originates a new conversation turn (e.g. a webhook, a cron
+trigger, an actor dispatch), generate a fresh trace id and pass it on the
+first publish:
+
+```ts
+import { newTraceId } from "../logger/trace.js"; // host app helper, not exported by core
+
+const traceId = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+bus.publish({ channel: "ai.request", source: "my-plugin", target: "main", text: "...", traceId });
+```
+
+When you forward or react to a message, copy the incoming traceId onto your
+publishes so the chain stays linked.
+
 ## [0.5.0] — 2026-04-28
 
 ### Added — `AISession.setStickyModelOverride` and `AISession.setToolFilter`

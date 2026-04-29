@@ -208,8 +208,8 @@ export function ChatPanel({
         case 'error':
           setIsStreaming(false)
           setIsThinking(false)
-          setEntries(prev => [...prev, { kind: 'message', role: 'assistant', text: `[Error: ${data.error}]`, source: data.source }])
           setStreamingText('')
+          setEntries(prev => [...prev, { kind: 'error', message: data.error ?? 'Unknown error', source: data.source, session: data.session }])
           // Even on error, surface the buffered cards so the user isn't blocked.
           flushPendingChoices()
           break
@@ -243,6 +243,14 @@ export function ChatPanel({
           })
           break
         }
+        case 'tool_progress':
+          // Live stdout chunk from a running capability — append to its output
+          // so the user can watch progress in real time (e.g. npm install, build).
+          setEntries(prev => prev.map(e => {
+            if (e.kind !== 'capability' || e.id !== data.id) return e
+            return { ...e, output: ((e.output ?? '') + (data.chunk ?? '')), expanded: true }
+          }))
+          break
         case 'tool_cancelled':
           if (data.name === 'jarvis_ask_choice') break
           toolStartTimes.current.delete(data.id)

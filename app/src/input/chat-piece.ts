@@ -6,6 +6,7 @@ import type { AIRequestMessage, AIStreamMessage, HudUpdateMessage, ChatAnchorMes
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { SessionManager } from "../core/session-manager.js";
 import { log } from "../logger/index.js";
+import { newTraceId, preview } from "../logger/trace.js";
 
 /**
  * ChatPiece — session-agnostic chat bridge.
@@ -278,8 +279,18 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
     const sid = sessionId.trim();
     const prompt: string = parsed.prompt ?? "";
     const images = parsed.images;
+    // One traceId per HTTP /chat/send call. Propagates from here all the
+    // way down through ai.request → ai.stream → capability.* events.
+    const traceId = newTraceId();
 
-    log.info({ sessionId: sid, prompt: typeof prompt === "string" ? prompt.slice(0, 200) : "<non-string>", hasImages: !!images?.length }, "ChatPiece: handleSend");
+    log.info({
+      traceId,
+      sessionId: sid,
+      promptLength: typeof prompt === "string" ? prompt.length : -1,
+      promptPreview: typeof prompt === "string" ? preview(prompt, 200) : "<non-string>",
+      images: Array.isArray(images) ? images.length : 0,
+      imageBytesTotal: Array.isArray(images) ? images.reduce((acc: number, i: any) => acc + (i?.base64?.length ?? 0), 0) : 0,
+    }, "ChatPiece: handleSend (entry)");
 
     // Intercept slash commands (only have semantics for the calling session)
     if (this.registry && typeof prompt === "string" && prompt.startsWith("/")) {
@@ -308,15 +319,17 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
     // `prompt_dispatched` (timeline) when the prompt actually goes to the
     // API and `pending_queue` (queue cards) while it waits. Frontend just
     // renders whatever SSE delivers.
+    log.info({ traceId, sessionId: sid }, "ChatPiece: publishing ai.request");
     this.bus.publish({
       channel: "ai.request",
       source: "chat-input",
       target: sid,
       text: prompt,
       images,
+      traceId,
     } as any);
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify({ ok: true, traceId }));
   }
 
   /** GET /chat-stream?sessionId=X — SSE pool scoped to sessionId. */

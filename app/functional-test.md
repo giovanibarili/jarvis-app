@@ -454,7 +454,7 @@ And all its pieces should be unregistered
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with cron "once:5s" and prompt "Say hello"
+When cron_create is called with cron "once:5s", prompt "Say hello", target "main"
 Then a job should appear in cron_list
 And after ~5 seconds, the prompt "Say hello" should be sent to the target session
 And the job should be removed from cron_list after execution
@@ -464,7 +464,7 @@ And the job should be removed from cron_list after execution
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with cron "*/1 * * * *" and prompt "Status check"
+When cron_create is called with cron "*/1 * * * *", prompt "Status check", target "main"
 Then the prompt should be sent every 1 minute
 And the job should persist in cron_list
 When cron_delete is called with the job ID
@@ -472,7 +472,7 @@ Then the recurring timer should stop
 And the job should be removed from cron_list
 ```
 
-### Scenario: Target session routing
+### Scenario: Target session routing (target is REQUIRED)
 
 ```gherkin
 Given JARVIS is online
@@ -481,6 +481,18 @@ Then the prompt should be published with target "main"
 When cron_create is called with target "custom-session"
 Then the prompt should be published with target "custom-session"
 And there should be no hardcoded session ID prefixes
+```
+
+### Scenario: target is required — no implicit default
+
+```gherkin
+Given JARVIS is online
+When cron_create is called WITHOUT a target field
+Then the call must return { ok: false, error: /target is required/ }
+And no job must be created (cron_list count unchanged)
+And no entry must be persisted in settings.user.json under cron.jobs
+When cron_create is called with target "" (empty string)
+Then the call must also return { ok: false, error: /target is required/ }
 ```
 
 ## Feature: Context Compaction
