@@ -395,7 +395,10 @@ export function ChatPanel({
     if (!panel) return
     const onFocusIn = () => setPanelFocused(true)
     const onFocusOut = (e: FocusEvent) => {
-      if (!panel.contains(e.relatedTarget as Node)) setPanelFocused(false)
+      // relatedTarget is null when focus moves to a non-focusable element or
+      // outside the window — use activeElement as fallback before clearing.
+      const next = (e.relatedTarget as Node) ?? document.activeElement
+      if (!panel.contains(next)) setPanelFocused(false)
     }
     panel.addEventListener('focusin', onFocusIn)
     panel.addEventListener('focusout', onFocusOut)
@@ -405,11 +408,19 @@ export function ChatPanel({
     }
   }, [])
 
-  // Esc to abort — only when THIS panel has focus
+  // Esc to abort — fires when panel has focus OR when no other panel is focused
+  // (panelFocused covers the case where multiple chat panels are open and the
+  // user is focused on a different one — we never abort the wrong session).
   useEffect(() => {
     if (!features.abort) return
     const handleEsc = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape' && !slashActive && (isStreaming || isThinking)) {
+      if (e.key !== 'Escape' || slashActive) return
+      if (!(isStreaming || isThinking)) return
+      // Abort if this panel is focused OR if no chat panel at all is focused
+      // (e.g. user pressed ESC after clicking somewhere outside any chat panel).
+      const anyPanelFocused = document.querySelector('.chatDocked:focus-within')
+      const thisPanelFocused = panelFocused
+      if (thisPanelFocused || !anyPanelFocused) {
         e.preventDefault()
         fetch(abortUrl, {
           method: 'POST',
