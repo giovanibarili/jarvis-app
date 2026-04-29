@@ -172,6 +172,39 @@ app.whenReady().then(() => {
   http.createServer(async (req, res) => {
     const parsed = url.parse(req.url, true);
 
+    if (parsed.pathname === '/notify' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => body += c);
+      req.on('end', () => {
+        try {
+          const { title, message, sound = true, urgency = 'normal' } = JSON.parse(body);
+          const { Notification } = require('electron');
+          if (Notification.isSupported()) {
+            const subtitle = urgency === 'critical' ? '⚠️ ATENÇÃO' : urgency === 'low' ? '' : '';
+            const n = new Notification({
+              title: String(title ?? 'JARVIS'),
+              body: String(message ?? ''),
+              subtitle: subtitle,
+              silent: !sound,
+            });
+            n.on('click', () => {
+              if (win && !win.isDestroyed()) {
+                win.show();
+                win.focus();
+              }
+            });
+            n.show();
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400);
+          res.end(String(e));
+        }
+      });
+      return;
+    }
+
     if (parsed.pathname === '/info' && win) {
       const bounds = win.getBounds();
       const size = win.getContentSize();
