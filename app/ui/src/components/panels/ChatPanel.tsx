@@ -241,7 +241,7 @@ export function ChatPanel({
           ))
           setEntries(prev => {
             const hasRunning = prev.some(e => e.kind === 'capability' && e.status === 'running')
-            if (!hasRunning) setIsThinking(true)
+            if (!hasRunning) setIsThinking(false)
             return prev
           })
           break
@@ -409,7 +409,7 @@ export function ChatPanel({
   useEffect(() => {
     if (!features.abort) return
     const handleEsc = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape' && panelFocused && !slashActive && (isStreaming || isThinking)) {
+      if (e.key === 'Escape' && !slashActive && (isStreaming || isThinking)) {
         e.preventDefault()
         fetch(abortUrl, {
           method: 'POST',
