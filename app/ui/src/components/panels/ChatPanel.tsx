@@ -241,7 +241,7 @@ export function ChatPanel({
           ))
           setEntries(prev => {
             const hasRunning = prev.some(e => e.kind === 'capability' && e.status === 'running')
-            if (!hasRunning) setIsThinking(false)
+            if (!hasRunning) setIsThinking(true)
             return prev
           })
           break
@@ -395,10 +395,7 @@ export function ChatPanel({
     if (!panel) return
     const onFocusIn = () => setPanelFocused(true)
     const onFocusOut = (e: FocusEvent) => {
-      // relatedTarget is null when focus moves to a non-focusable element or
-      // outside the window — use activeElement as fallback before clearing.
-      const next = (e.relatedTarget as Node) ?? document.activeElement
-      if (!panel.contains(next)) setPanelFocused(false)
+      if (!panel.contains(e.relatedTarget as Node)) setPanelFocused(false)
     }
     panel.addEventListener('focusin', onFocusIn)
     panel.addEventListener('focusout', onFocusOut)
@@ -408,19 +405,11 @@ export function ChatPanel({
     }
   }, [])
 
-  // Esc to abort — fires when panel has focus OR when no other panel is focused
-  // (panelFocused covers the case where multiple chat panels are open and the
-  // user is focused on a different one — we never abort the wrong session).
+  // Esc to abort — only when THIS panel has focus
   useEffect(() => {
     if (!features.abort) return
     const handleEsc = (e: globalThis.KeyboardEvent) => {
-      if (e.key !== 'Escape' || slashActive) return
-      if (!(isStreaming || isThinking)) return
-      // Abort if this panel is focused OR if no chat panel at all is focused
-      // (e.g. user pressed ESC after clicking somewhere outside any chat panel).
-      const anyPanelFocused = document.querySelector('.chatDocked:focus-within')
-      const thisPanelFocused = panelFocused
-      if (thisPanelFocused || !anyPanelFocused) {
+      if (e.key === 'Escape' && panelFocused && !slashActive && (isStreaming || isThinking)) {
         e.preventDefault()
         fetch(abortUrl, {
           method: 'POST',
