@@ -131,6 +131,11 @@ export class SessionManager {
         session = this.factory.create({ label: sessionId, restoreMessages });
       }
 
+      // Restore stable apiSessionId so X-Jarvis-Session-Id stays consistent across restarts
+      if (saved?.apiSessionId && typeof (session as any).setApiSessionId === "function") {
+        (session as any).setApiSessionId(saved.apiSessionId);
+      }
+
       if (restoreMessages && !opts?.promptOptions) {
         log.info(
           { sessionId, restored: saved!.messageCount, savedAt: saved!.savedAt },
