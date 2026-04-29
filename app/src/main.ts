@@ -346,6 +346,12 @@ async function main() {
   server.setOnHudRemove((pieceId: string) => {
     bus.publish({ channel: "hud.update", source: "server", action: "remove", pieceId });
   });
+  server.setOnHudShow((pieceId: string) => {
+    bus.publish({ channel: "hud.update", source: "server", action: "update", pieceId, data: {}, visible: true } as any);
+  });
+  server.setOnHudHide((pieceId: string) => {
+    bus.publish({ channel: "hud.update", source: "server", action: "update", pieceId, data: {}, visible: false } as any);
+  });
   server.setOnClearSession((sessionId: string) => {
     log.info({ sessionId }, "ClearSession: clearing conversation for session");
     jarvisCore.abortSession(sessionId);

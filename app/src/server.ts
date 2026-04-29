@@ -101,6 +101,8 @@ export class HttpServer {
   private onClearSession?: (sessionId: string) => void;
   private onCompact?: (sessionId: string) => Promise<void>;
   private onHudRemove?: (pieceId: string) => void;
+  private onHudShow?: (pieceId: string) => void;
+  private onHudHide?: (pieceId: string) => void;
 
   constructor(port: number, chatPiece: ChatPiece, getHudState: HudStateProvider, onAbort?: (sessionId: string) => void, getCapabilities?: CapabilitiesProvider) {
     this.port = port;
@@ -126,6 +128,14 @@ export class HttpServer {
 
   setOnHudRemove(handler: (pieceId: string) => void): void {
     this.onHudRemove = handler;
+  }
+
+  setOnHudShow(handler: (pieceId: string) => void): void {
+    this.onHudShow = handler;
+  }
+
+  setOnHudHide(handler: (pieceId: string) => void): void {
+    this.onHudHide = handler;
   }
 
   registerRoute(method: string, path: string, handler: RouteHandler): void {
@@ -205,6 +215,27 @@ export class HttpServer {
           if (!settings.pieces[pieceId]) settings.pieces[pieceId] = { enabled: true, visible: true };
           settings.pieces[pieceId].visible = false;
           saveSettings(settings);
+          this.onHudHide?.(pieceId);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400); res.end();
+        }
+      });
+      return;
+    }
+
+    if (req.url === "/hud/show" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { pieceId } = JSON.parse(body);
+          const settings = loadSettings();
+          if (!settings.pieces[pieceId]) settings.pieces[pieceId] = { enabled: true, visible: true };
+          settings.pieces[pieceId].visible = true;
+          saveSettings(settings);
+          this.onHudShow?.(pieceId);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch {
