@@ -409,7 +409,7 @@ export function ChatPanel({
   useEffect(() => {
     if (!features.abort) return
     const handleEsc = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape' && panelFocused && !slashActive && (isStreaming || isThinking)) {
+      if (e.key === 'Escape' && panelFocused) {
         e.preventDefault()
         fetch(abortUrl, {
           method: 'POST',
