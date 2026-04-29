@@ -14,7 +14,6 @@ interface PendingImage {
 interface ChatPanelFeatures {
   slashMenu?: boolean
   images?: boolean
-  abort?: boolean
   compaction?: boolean
 }
 
@@ -39,7 +38,6 @@ let imageCounter = 0
 const defaultFeatures: ChatPanelFeatures = {
   slashMenu: true,
   images: true,
-  abort: true,
   compaction: true,
 }
 
@@ -89,7 +87,6 @@ export function ChatPanel({
   const [images, setImages] = useState<PendingImage[]>([])
   const [slashActive, setSlashActive] = useState(false)
   const [slashQuery, setSlashQuery] = useState('')
-  const [panelFocused, setPanelFocused] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toolStartTimes = useRef(new Map<string, number>())
@@ -389,28 +386,12 @@ export function ChatPanel({
     return () => source.close()
   }, [streamUrl, features.compaction, flushPendingChoices])
 
-  // Track focus on this chat panel
+  // ESC to abort — fires when this panel's textarea has focus
   useEffect(() => {
-    const panel = panelRef.current
-    if (!panel) return
-    const onFocusIn = () => setPanelFocused(true)
-    const onFocusOut = (e: FocusEvent) => {
-      if (!panel.contains(e.relatedTarget as Node)) setPanelFocused(false)
-    }
-    panel.addEventListener('focusin', onFocusIn)
-    panel.addEventListener('focusout', onFocusOut)
-    return () => {
-      panel.removeEventListener('focusin', onFocusIn)
-      panel.removeEventListener('focusout', onFocusOut)
-    }
-  }, [])
-
-  // Esc to abort — only when THIS panel has focus
-  useEffect(() => {
-    if (!features.abort) return
     const handleEsc = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape' && panelFocused && !slashActive && (isStreaming || isThinking)) {
+      if (e.key === 'Escape' && panelRef.current?.contains(document.activeElement)) {
         e.preventDefault()
+        e.stopImmediatePropagation()
         fetch(abortUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -420,7 +401,7 @@ export function ChatPanel({
     }
     window.addEventListener('keydown', handleEsc)
     return () => window.removeEventListener('keydown', handleEsc)
-  }, [features.abort, abortUrl, sessionId, isStreaming, isThinking, slashActive, panelFocused])
+  }, [abortUrl, sessionId])
 
   const send = (overrideText?: string) => {
     const prompt = (overrideText ?? input).trim()

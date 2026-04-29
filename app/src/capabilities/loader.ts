@@ -30,6 +30,7 @@ export class CapabilityLoaderPiece implements Piece {
   private bus!: EventBus;
   private registry: CapabilityRegistry;
   private loaded: string[] = [];
+  private abortControllers = new Map<string, AbortController>();
 
   systemContext(): string {
     return `## Capability Loader Piece
@@ -45,6 +46,17 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
     this.loadCapabilities();
+
+    // Listen for abort events to kill running processes
+    this.bus.subscribe("ai.stream", (msg: any) => {
+      if (msg.event === "aborted" && msg.target) {
+        const ctrl = this.abortControllers.get(msg.target);
+        if (ctrl) {
+          ctrl.abort();
+          this.abortControllers.delete(msg.target);
+        }
+      }
+    });
 
     this.bus.publish({
       channel: "hud.update",
@@ -94,9 +106,9 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
     }
   }
 
-  private execWithStdin(command: string, args: string[], stdinData: string): Promise<{ stdout: string; stderr: string }> {
+  private execWithStdin(command: string, args: string[], stdinData: string, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { timeout: 30000 });
+      const child = spawn(command, args, { timeout: 600000 });
       let stdout = "";
       let stderr = "";
 
@@ -117,6 +129,11 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
 
       child.stdin.write(stdinData);
       child.stdin.end();
+
+      signal?.addEventListener("abort", () => {
+        child.kill("SIGTERM");
+        reject(new Error("aborted"));
+      });
     });
   }
 
@@ -182,6 +199,10 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
       description: config.description,
       input_schema: config.input_schema,
       handler: async (input) => {
+        const sessionId = input.__sessionId as string | undefined;
+        const ctrl = new AbortController();
+        if (sessionId) this.abortControllers.set(sessionId, ctrl);
+        const signal = ctrl.signal;
         // Expand ~ and substitute ${param} in args
         const expand = (s: string) => s.replace(/^~/, process.env.HOME ?? "~");
         const args = (config.args ?? []).map(arg =>
@@ -198,19 +219,25 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
 
         try {
           const { stdout, stderr } = stdinData !== undefined
-            ? await this.execWithStdin(config.command, args, stdinData)
+            ? await this.execWithStdin(config.command, args, stdinData, signal)
             : await execFileAsync(config.command, args, {
-                timeout: 30000,
+                timeout: 600000,
                 maxBuffer: 1024 * 1024 * 10,
+                signal,
               });
 
           return this.parseOutput(stdout, stderr);
         } catch (err: any) {
+          if (signal.aborted || err.message === "aborted") {
+            return { error: "aborted", stdout: "", stderr: "" };
+          }
           return {
             error: err.message,
             stderr: err.stderr?.trim(),
             exitCode: err.code,
           };
+        } finally {
+          if (sessionId) this.abortControllers.delete(sessionId);
         }
       },
     });
