@@ -44,7 +44,10 @@ const defaultFeatures: ChatPanelFeatures = {
 const defaultUserLabel = (source?: string) => {
   if (!source || source === 'chat' || source === 'you') return 'YOU'
   if (source === 'jarvis') return 'JARVIS'
+  if (source === 'main') return 'MAIN'
   if (source === 'grpc') return 'GRPC'
+  // actor-alice → ALICE, actor-crash → CRASH
+  if (source.startsWith('actor-')) return source.slice(6).toUpperCase()
   return source.toUpperCase()
 }
 
@@ -52,7 +55,9 @@ const defaultUserLabelColor = (source?: string) => {
   if (!source || source === 'chat' || source === 'you') return 'var(--chat-user-label)'
   if (source === 'system') return '#fa4'
   if (source === 'jarvis') return '#4af'
+  if (source === 'main') return '#4af'
   if (source === 'grpc') return '#fa4'
+  if (source.startsWith('actor-')) return '#a6f'
   return '#4af'
 }
 
