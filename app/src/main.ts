@@ -113,6 +113,22 @@ async function main() {
   // user-typed input as type:"user" SSE immediately so the panel renders it.
   chatPiece.setOwnedSessionMatcher((sid) => jarvisCore.isSessionOwned(sid));
 
+  // clear_session — clears only the calling session (memory + disk), archives first
+  capabilityRegistry.register({
+    name: "clear_session",
+    description: "Archive and clear saved conversation history. Sessions are rolled to sessions/archive/ with timestamps before clearing. Next restart will start fresh with no memory of previous messages.",
+    input_schema: { type: "object", properties: {} },
+    handler: async (input) => {
+      const sessionId = String(input.__sessionId ?? "main");
+      log.info({ sessionId }, "clear_session: clearing");
+      jarvisCore.abortSession(sessionId);
+      sessions.archiveSaved(sessionId);
+      sessions.close(sessionId);
+      chatPiece.broadcastEvent(sessionId, { type: "session_cleared", session: sessionId });
+      return { ok: true, message: `Session '${sessionId}' archived and cleared. Next message will start fresh.` };
+    },
+  });
+
   // Model management tools — now provider-aware
   capabilityRegistry.register({
     name: "model_set",

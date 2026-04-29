@@ -110,6 +110,9 @@ export interface SessionManager {
   /** Clear saved conversation for a session from disk. */
   clearSaved(sessionId: string): void;
 
+  /** Archive a session (move to archive dir) then clear from disk. */
+  archiveSaved(sessionId: string): void;
+
   /** List saved session labels from disk. Optionally filter by prefix (e.g. "actor-"). */
   listSaved(prefix?: string): string[];
 
