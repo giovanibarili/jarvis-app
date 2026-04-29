@@ -6,7 +6,7 @@
 import { lazy, Suspense, useCallback } from 'react'
 import type { HudState, HudComponentState } from '../types/hud'
 import { renderers } from './renderers/index'
-import { ChatPanel } from './panels/ChatPanel'
+import { ChatPanelHudAdapter } from './panels/ChatPanelHudAdapter'
 
 const pluginRendererCache: Record<string, React.LazyExoticComponent<React.ComponentType<{ state: any }>>> = {}
 
@@ -32,11 +32,10 @@ function GenericRenderer({ state }: { state: any }) {
 }
 
 function renderPanel(comp: HudComponentState) {
-  // Root chat docked panel — app hardcodes sessionId "main" here (only place
-  // outside HudRenderer that does so). For any other ChatPanel, piece data
-  // carries sessionId and the core renderer path handles it.
+  // Root chat docked panel — sessionId and assistantLabel come from piece
+  // data (published by ChatPiece), so no hardcoding here.
   if (comp.id === 'chat-output' || comp.id === 'chat-input') {
-    return <ChatPanel sessionId="main" assistantLabel="JARVIS" />
+    return <ChatPanelHudAdapter state={comp} />
   }
 
   // Built-in renderer

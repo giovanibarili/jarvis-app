@@ -201,16 +201,20 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
     // want the user entry to appear in the timeline. Until then, a queued
     // prompt shows only as a card in the pending_queue list.
 
-    // Register HUD panels for the root chat (main session lives in App.tsx)
+    // Register HUD panels for the root chat (main session lives in App.tsx).
+    // data carries sessionId + assistantLabel so ChatPanelHudAdapter (and
+    // DetachedPanelRenderer) can render without hardcoding session identity.
     this.bus.publish({
       channel: "hud.update", source: this.id, action: "add", pieceId: "chat-output",
-      piece: { pieceId: "chat-output", type: "panel", name: "Chat", status: "running", data: {},
+      piece: { pieceId: "chat-output", type: "panel", name: "Chat", status: "running",
+        data: { sessionId: "main", assistantLabel: "JARVIS" },
         position: { x: 10, y: 480 }, size: { width: 1660, height: 280 } },
     });
 
     this.bus.publish({
       channel: "hud.update", source: this.id, action: "add", pieceId: "chat-input",
-      piece: { pieceId: "chat-input", type: "panel", name: "Input", status: "running", data: {},
+      piece: { pieceId: "chat-input", type: "panel", name: "Input", status: "running",
+        data: { sessionId: "main", assistantLabel: "JARVIS" },
         position: { x: 10, y: 768 }, size: { width: 1660, height: 44 } },
     });
 
