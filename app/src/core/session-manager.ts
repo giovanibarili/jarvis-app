@@ -131,9 +131,10 @@ export class SessionManager {
         session = this.factory.create({ label: sessionId, restoreMessages });
       }
 
-      // Restore stable apiSessionId so X-Jarvis-Session-Id stays consistent across restarts
-      if (saved?.apiSessionId && typeof (session as any).setApiSessionId === "function") {
-        (session as any).setApiSessionId(saved.apiSessionId);
+      // Restore stable instanceId so X-Claude-Code-Session-Id stays consistent across restarts
+      const stableId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
+      if (stableId && typeof (session as any).setApiSessionId === "function") {
+        (session as any).setApiSessionId(stableId);
       }
 
       if (restoreMessages && !opts?.promptOptions) {
@@ -178,6 +179,12 @@ export class SessionManager {
         { sessionId, restored: saved.messageCount, savedAt: saved.savedAt },
         "SessionManager: custom session conversation restored",
       );
+    }
+
+    // Restore stable instanceId so X-Claude-Code-Session-Id stays consistent across restarts
+    const stableId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
+    if (stableId && typeof (session as any).setApiSessionId === "function") {
+      (session as any).setApiSessionId(stableId);
     }
 
     managed = {
@@ -244,6 +251,7 @@ export class SessionManager {
         managed.session.getMessages(),
         this.currentProvider,
         config.model,
+        (managed.session as any).sessionId,
       );
     }
   }

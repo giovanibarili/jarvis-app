@@ -53,6 +53,8 @@ function ensureDir(): void {
 
 export interface UsageLogEntry {
   sessionId: string;
+  instanceId?: string;
+  effort?: string;
   model: string;
   input_tokens: number;
   output_tokens: number;
@@ -76,6 +78,8 @@ export function logUsage(entry: UsageLogEntry): void {
   const line = JSON.stringify({
     ts: new Date().toISOString(),
     sessionId: entry.sessionId,
+    ...(entry.instanceId !== undefined ? { instanceId: entry.instanceId } : {}),
+    ...(entry.effort !== undefined ? { effort: entry.effort } : {}),
     model: entry.model,
     input_tokens: entry.input_tokens,
     output_tokens: entry.output_tokens,

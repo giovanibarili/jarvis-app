@@ -120,6 +120,8 @@ export class AnthropicSession implements AISession {
     // is consumed, so the log accurately reflects which model was billed.
     logUsage({
       sessionId: this.label,
+      instanceId: this.sessionId,
+      effort: this.label === "main" ? "xhigh" : "high",
       model: modelUsed,
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
@@ -158,7 +160,7 @@ export class AnthropicSession implements AISession {
   /**
    * Restore a stable session UUID from persisted storage.
    * Called by SessionManager after loading a saved conversation so that
-   * X-Jarvis-Session-Id stays consistent across restarts for the same session.
+   * X-Claude-Code-Session-Id stays consistent across restarts for the same session.
    */
   setApiSessionId(id: string): void {
     this._sessionId = id;
@@ -570,6 +572,16 @@ export class AnthropicSession implements AISession {
       if (compactionConfig.useCompaction && Date.now() >= this.betaDisabledUntil) {
         betas.push("compact-2026-01-12");
       }
+      if (!betas.includes("effort-2025-11-24")) {
+        betas.push("effort-2025-11-24");
+      }
+
+      // effort: xhigh for main session, high for actors/subagents
+      const effort = this.label === "main" ? "xhigh" : "high";
+
+      // metadata.user_id: mirrors CC pattern — session_id for backend cache optimization
+      const metadata = { user_id: JSON.stringify({ session_id: this.sessionId }) };
+
       let message: any | undefined;
 
       // Beta path: used whenever any beta header is needed (1M context,
@@ -593,10 +605,12 @@ export class AnthropicSession implements AISession {
             tools,
             cache_control: { type: "ephemeral" as const },
             betas,
+            metadata,
+            output_config: { effort },
             ...(betas.includes("compact-2026-01-12") && compactionConfig.contextManagement
               ? { context_management: compactionConfig.contextManagement }
               : {}),
-          }, { signal: this.abortController.signal, headers: { "X-Jarvis-Session-Id": this.sessionId } });
+          }, { signal: this.abortController.signal, headers: { "X-Claude-Code-Session-Id": this.sessionId } });
 
           betaStream.on("text", () => {});
           message = await betaStream.finalMessage();
@@ -624,7 +638,9 @@ export class AnthropicSession implements AISession {
           messages: this.messages,
           tools,
           cache_control: { type: "ephemeral" as const },
-        } as any, { signal: this.abortController.signal, headers: { "X-Jarvis-Session-Id": this.sessionId } });
+          metadata,
+          output_config: { effort },
+        } as any, { signal: this.abortController.signal, headers: { "X-Claude-Code-Session-Id": this.sessionId } });
 
         stream.on("text", () => {});
         message = await stream.finalMessage();

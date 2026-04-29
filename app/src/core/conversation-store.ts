@@ -5,10 +5,11 @@ import { join, dirname } from "node:path";
 import { log } from "../logger/index.js";
 
 export interface StoredConversation {
+  /** Stable label for this session (e.g. "main", "actor-jarvis"). */
   sessionId: string;
-  /** Stable UUID for this session — sent as X-Jarvis-Session-Id on every API call.
+  /** Stable UUID for this session — sent as X-Claude-Code-Session-Id on every API call.
    *  Generated once on first save, preserved across restarts. */
-  apiSessionId?: string;
+  instanceId: string;
   provider: string;
   model: string;
   messages: unknown[];
@@ -37,7 +38,7 @@ export function saveConversation(
   messages: unknown[],
   provider: string,
   model: string,
-  apiSessionId?: string,
+  instanceId?: string,
 ): void {
   try {
     ensureDir();
@@ -53,20 +54,20 @@ export function saveConversation(
       }
     }
 
-    // Preserve existing apiSessionId from disk if caller didn't provide one.
+    // Preserve existing instanceId from disk if caller didn't provide one.
     // This ensures the UUID survives auto-saves that don't re-supply it.
-    let stableApiId = apiSessionId;
-    if (!stableApiId) {
+    let stableId = instanceId;
+    if (!stableId) {
       try {
         const existing = JSON.parse(readFileSync(filePath(sessionLabel), "utf-8")) as StoredConversation;
-        stableApiId = existing.apiSessionId;
+        stableId = existing.instanceId ?? (existing as any).apiSessionId; // migrate old field
       } catch { /* no existing file */ }
     }
-    if (!stableApiId) stableApiId = crypto.randomUUID();
+    if (!stableId) stableId = crypto.randomUUID();
 
     const data: StoredConversation = {
       sessionId: sessionLabel,
-      apiSessionId: stableApiId,
+      instanceId: stableId,
       provider,
       model,
       messages: trimmed,
