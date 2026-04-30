@@ -4,6 +4,14 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-02
+
+### Changed
+
+- Version bump for release 0.3. No breaking changes.
+
+---
+
 ## [0.6.0] — 2026-04-29
 
 ### Added — Optional `traceId` on `BusMessage`
