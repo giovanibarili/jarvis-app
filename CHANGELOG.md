@@ -5,6 +5,13 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-05-02
+
+### Fixed
+
+- **Actor sessions no longer inherit JARVIS identity.** `buildCustomSystemBlocks` previously injected `jarvis-system.md` (full JARVIS persona + Asimov's laws) and `getInstructions()` (CLAUDE.md, 236 lines) into every actor session, with `actor-system.md` appended afterward in `<IMPORTANT>`. The LLM read ~10k chars of "you are JARVIS" before reaching "you are NOT JARVIS", causing actors to adopt the JARVIS persona and address the user as "Sir". Fix: when `basePromptOverride` is set (actor sessions), the custom prompt IS the entire base — `jarvis-system.md`, CLAUDE.md, `coreContexts`, and `pluginInstructions` are all excluded. Actor prompt is now: `actor-system.md` + `roleContext` + per-session plugin context (skills).
+- **`actor-system.md` rewritten** with clear actor identity, `session_info` reference for self-discovery, and corrected `bus_publish` channel format (`ai.request`).
+
 ## [0.2.6] - 2026-04-27
 
 ### Changed

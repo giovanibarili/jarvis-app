@@ -42,38 +42,23 @@ export class AnthropicSessionFactory implements AISessionFactory {
   }
 
   /**
-   * Build system blocks for sessions with custom prompt overrides.
-   * Same structure as main (buildSystemBlocks), but with:
-   * - basePromptOverride wrapped in <IMPORTANT> after jarvis-system.md
-   * - roleContext appended inside <system-reminder> after CLAUDE.md instructions
-   * Consolidates into max 2 system blocks (BP2 + BP3) to stay within Anthropic's 4 cache_control limit.
+   * Build system blocks for actor sessions.
+   * Actors get a clean, focused prompt: actor-system.md + role only.
+   * No jarvis-system.md, no CLAUDE.md instructions, no core contexts, no plugin instructions.
+   * This prevents actors from inheriting the JARVIS identity and persona.
    */
   private buildCustomSystemBlocks(basePromptOverride?: string, roleContext?: string, sessionId?: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base prompt + identity override + core contexts + instructions + plugin instructions + role
-    const parts: string[] = [this.basePrompt];
+    // Block 0: actor identity (actor-system.md) + role
+    const parts: string[] = [];
 
     if (basePromptOverride) {
-      parts.push(`<IMPORTANT>\n${basePromptOverride}\n</IMPORTANT>`);
+      parts.push(basePromptOverride);
     }
 
-    const coreContexts = this.getCoreContext().filter(Boolean);
-    if (coreContexts.length > 0) {
-      parts.push(coreContexts.join("\n\n---\n\n"));
-    }
-
-    const instructions = this.getInstructions();
-    if (instructions || roleContext) {
-      const reminderParts: string[] = [];
-      if (instructions) reminderParts.push(instructions);
-      if (roleContext) reminderParts.push(roleContext);
-      parts.push(`<system-reminder>\n${reminderParts.join("\n\n")}\n</system-reminder>`);
-    }
-
-    const pluginInstructions = this.getPluginInstructions().filter(Boolean);
-    if (pluginInstructions.length > 0) {
-      parts.push(pluginInstructions.join("\n\n"));
+    if (roleContext) {
+      parts.push(roleContext);
     }
 
     blocks.push({
@@ -82,7 +67,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
       cache_control: { type: "ephemeral" },
     });
 
-    // Block 1: plugin dynamic context (per-session)
+    // Block 1: plugin dynamic context (per-session — skills etc.)
     const pluginContexts = this.getPluginContext(sessionId).filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
