@@ -16,12 +16,15 @@ Then piece_list should show all core pieces:
   | capability-executor| true    | true      |
   | capability-loader  | true    | true      |
   | chat               | true    | true      |
+  | model-router       | true    | false     |
+  | mcp-manager        | true    | false     |
+  | grpc               | true    | false     |
   | hud-core-node      | true    | false     |
   | cron               | true    | false     |
-  | plugin-manager     | true    | false     |
-  | grpc               | true    | false     |
+  | delegate-task      | true    | false     |
   | diff-viewer        | true    | false     |
   | choice-prompt      | true    | false     |
+  | plugin-manager     | true    | false     |
 And GET /hud should return a JSON with reactor.status "online"
 And GET /hud should return components for all visible pieces
 And the HUD Electron window should render without errors
@@ -324,11 +327,12 @@ And when streaming completes, the display should switch to model name
 ### Scenario: Chat timeline shows only owned sessions
 
 ```gherkin
-Given ChatPiece has timelineSessions = {"main"}
-When an ai.stream event arrives for target "main"
-Then it should appear in the chat timeline
-When an ai.stream event arrives for target "some-plugin-session"
-Then it should NOT appear in the chat timeline
+Given ChatPiece routes SSE events per-session (events keyed by target sessionId in the SSE pool map)
+When an ai.stream event arrives with target "main"
+Then only the SSE pool for sessionId="main" receives the event
+When an ai.stream event arrives with target "some-plugin-session"
+Then the main SSE pool does NOT receive it
+And only SSE clients connected to ?sessionId=some-plugin-session receive it
 ```
 
 ### Scenario: Slash command interception
@@ -659,10 +663,11 @@ Then it should report total subscription count and total event count
 ```gherkin
 Given JARVIS starts with the capabilities/ directory containing JSON definitions
 When CapabilityLoaderPiece loads
-Then the following capabilities should be registered:
-  bash, clear_session, edit_file, glob, grep, list_dir,
+Then the following capabilities should be registered (loaded from capabilities/*.json):
+  bash, edit_file, glob, grep, list_dir,
   multi_edit_file, read_file, jarvis_reset, hud_screenshot,
   web_fetch, web_search, write_file
+And clear_session should also be registered (registered inline by main.ts, not from the JSON dir)
 And each should be callable and return results
 ```
 
