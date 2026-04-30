@@ -120,21 +120,19 @@ export class SessionManager {
       // Try to load saved conversation for restore
       const saved = loadConversation(sessionId, this.currentProvider);
       const restoreMessages = saved && saved.messages.length > 0 ? saved.messages : undefined;
+      // Stable instanceId so X-Claude-Code-Session-Id stays consistent across restarts.
+      // Passed to the factory so the Anthropic client is built with the correct
+      // session header from the start (no post-construction mutation needed).
+      const restoredSessionId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
 
       // If session has saved creation options, restore with custom prompt
       const opts = this.creationOptions.get(sessionId);
       let session: AISession;
       if (opts?.promptOptions) {
-        session = this.factory.createWithPrompt(opts.promptOptions);
+        session = this.factory.createWithPrompt({ ...opts.promptOptions, restoredSessionId });
       } else {
         // Factory handles restore — each provider knows its own message format
-        session = this.factory.create({ label: sessionId, restoreMessages });
-      }
-
-      // Restore stable instanceId so X-Claude-Code-Session-Id stays consistent across restarts
-      const stableId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
-      if (stableId && typeof (session as any).setApiSessionId === "function") {
-        (session as any).setApiSessionId(stableId);
+        session = this.factory.create({ label: sessionId, restoreMessages, restoredSessionId });
       }
 
       if (restoreMessages && !opts?.promptOptions) {
@@ -168,23 +166,20 @@ export class SessionManager {
     // Store creation options for future restore
     this.creationOptions.set(sessionId, { promptOptions: options });
 
-    // Create with custom prompt
-    const session = this.factory.createWithPrompt(options);
-
-    // Try to restore saved conversation
+    // Try to restore saved conversation FIRST so we can pass the stable instanceId
+    // into the factory and have the Anthropic client built with the right header.
     const saved = loadConversation(sessionId, this.currentProvider);
+    const restoredSessionId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
+
+    // Create with custom prompt + stable session id
+    const session = this.factory.createWithPrompt({ ...options, restoredSessionId });
+
     if (saved && saved.messages.length > 0) {
       session.setMessages?.(saved.messages);
       log.info(
         { sessionId, restored: saved.messageCount, savedAt: saved.savedAt },
         "SessionManager: custom session conversation restored",
       );
-    }
-
-    // Restore stable instanceId so X-Claude-Code-Session-Id stays consistent across restarts
-    const stableId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
-    if (stableId && typeof (session as any).setApiSessionId === "function") {
-      (session as any).setApiSessionId(stableId);
     }
 
     managed = {
