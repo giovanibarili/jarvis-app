@@ -1,5 +1,6 @@
 // src/core/session-manager.ts
 import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../ai/types.js";
+import type { EventBus } from "./bus.js";
 import { log } from "../logger/index.js";
 import {
   saveConversation,
@@ -31,6 +32,7 @@ export class SessionManager {
   private currentProvider: string = "anthropic";
   private autoSaveTimer?: ReturnType<typeof setInterval>;
   private ephemeralSessions = new Set<string>();
+  private bus?: EventBus;
   private static AUTO_SAVE_INTERVAL_MS = 30_000; // save every 30s
 
   /**
@@ -41,6 +43,15 @@ export class SessionManager {
 
   constructor(factory: AISessionFactory) {
     this.factory = factory;
+  }
+
+  /**
+   * Attach the EventBus so the manager can publish lifecycle events
+   * (session.closed) that downstream pieces rely on for eviction.
+   * Call once during app bootstrap — all subsequent close() calls will emit.
+   */
+  setBus(bus: EventBus): void {
+    this.bus = bus;
   }
 
   /** Set current provider name (needed for save/restore compatibility checks) */
@@ -69,6 +80,36 @@ export class SessionManager {
   }
 
   /**
+   * Read-only lookup. Returns undefined if the session doesn't exist.
+   * Use when you want to inspect/mutate an existing session WITHOUT
+   * triggering creation (which `get()` does as a side effect).
+   * Required by the ModelRouter — routing must never spawn a session.
+   */
+  peek(sessionId: string): ManagedSession | undefined {
+    return this.sessions.get(sessionId);
+  }
+
+  /**
+   * Listeners fired when a session is created (by `get()` or `getWithPrompt()`).
+   * Used by the ModelRouter to apply sticky model overrides on the FIRST turn —
+   * the router's bus subscriber runs before the session exists, so peek()
+   * returns undefined on turn 1; this hook lets the router catch up immediately
+   * after creation, before sendAndStream() reads getModel().
+   */
+  private createListeners: Array<(sessionId: string, managed: ManagedSession) => void> = [];
+
+  onSessionCreated(listener: (sessionId: string, managed: ManagedSession) => void): void {
+    this.createListeners.push(listener);
+  }
+
+  private fireCreated(sessionId: string, managed: ManagedSession): void {
+    for (const l of this.createListeners) {
+      try { l(sessionId, managed); }
+      catch (err) { log.warn({ sessionId, err }, "SessionManager: onSessionCreated listener threw"); }
+    }
+  }
+
+  /**
    * Get or create a session.
    * Auto-creates with factory.create() and restores saved conversation.
    * For sessions with custom prompts, prefer getWithPrompt().
@@ -79,15 +120,19 @@ export class SessionManager {
       // Try to load saved conversation for restore
       const saved = loadConversation(sessionId, this.currentProvider);
       const restoreMessages = saved && saved.messages.length > 0 ? saved.messages : undefined;
+      // Stable instanceId so X-Claude-Code-Session-Id stays consistent across restarts.
+      // Passed to the factory so the Anthropic client is built with the correct
+      // session header from the start (no post-construction mutation needed).
+      const restoredSessionId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
 
       // If session has saved creation options, restore with custom prompt
       const opts = this.creationOptions.get(sessionId);
       let session: AISession;
       if (opts?.promptOptions) {
-        session = this.factory.createWithPrompt(opts.promptOptions);
+        session = this.factory.createWithPrompt({ ...opts.promptOptions, restoredSessionId });
       } else {
         // Factory handles restore — each provider knows its own message format
-        session = this.factory.create({ label: sessionId, restoreMessages });
+        session = this.factory.create({ label: sessionId, restoreMessages, restoredSessionId });
       }
 
       if (restoreMessages && !opts?.promptOptions) {
@@ -104,6 +149,7 @@ export class SessionManager {
       };
       this.sessions.set(sessionId, managed);
       log.info({ sessionId, restored: !!restoreMessages }, "SessionManager: created new session");
+      this.fireCreated(sessionId, managed);
     }
     return managed;
   }
@@ -120,11 +166,14 @@ export class SessionManager {
     // Store creation options for future restore
     this.creationOptions.set(sessionId, { promptOptions: options });
 
-    // Create with custom prompt
-    const session = this.factory.createWithPrompt(options);
-
-    // Try to restore saved conversation
+    // Try to restore saved conversation FIRST so we can pass the stable instanceId
+    // into the factory and have the Anthropic client built with the right header.
     const saved = loadConversation(sessionId, this.currentProvider);
+    const restoredSessionId = saved?.instanceId ?? (saved as any)?.apiSessionId; // migrate old field
+
+    // Create with custom prompt + stable session id
+    const session = this.factory.createWithPrompt({ ...options, restoredSessionId });
+
     if (saved && saved.messages.length > 0) {
       session.setMessages?.(saved.messages);
       log.info(
@@ -140,14 +189,23 @@ export class SessionManager {
     };
     this.sessions.set(sessionId, managed);
     log.info({ sessionId, hasRestore: !!(saved && saved.messages.length > 0) }, "SessionManager: created session with custom prompt");
+    this.fireCreated(sessionId, managed);
     return managed;
   }
 
   setState(sessionId: string, state: SessionState): void {
     const managed = this.sessions.get(sessionId);
     if (managed) {
+      const prev = managed.state;
       managed.state = state;
-      log.debug({ sessionId, state }, "SessionManager: state changed");
+      // info-level so state transitions are visible without enabling debug.
+      // No-op transitions (idle→idle, processing→processing) are filtered to
+      // avoid noise from defensive callers.
+      if (prev !== state) {
+        log.info({ sessionId, from: prev, to: state }, "SessionManager: state changed");
+      } else {
+        log.trace({ sessionId, state }, "SessionManager: state set (no change)");
+      }
 
       // Save after each complete turn (when going back to idle) — skip ephemeral sessions
       if (state === "idle" && !this.ephemeralSessions.has(sessionId)) {
@@ -196,6 +254,7 @@ export class SessionManager {
         managed.session.getMessages(),
         this.currentProvider,
         config.model,
+        (managed.session as any).sessionId,
       );
     }
   }
@@ -217,6 +276,7 @@ export class SessionManager {
       this.creationOptions.delete(sessionId);
       this.ephemeralSessions.delete(sessionId);
       log.info({ sessionId }, "SessionManager: closed");
+      this.emitClosed(sessionId);
     }
   }
 
@@ -234,15 +294,29 @@ export class SessionManager {
   closeAll(): void {
     // Save all before closing
     this.saveAll();
+    const closedIds: string[] = [];
     for (const [id] of this.sessions) {
       const managed = this.sessions.get(id);
       if (managed) {
         managed.session.close();
         this.sessions.delete(id);
+        closedIds.push(id);
       }
     }
     this.creationOptions.clear();
     this.ephemeralSessions.clear();
+    for (const id of closedIds) this.emitClosed(id);
+  }
+
+  /** Publish session.closed on the bus so downstream pieces can evict per-session state. */
+  private emitClosed(sessionId: string): void {
+    if (!this.bus) return;
+    this.bus.publish({
+      channel: "system.event",
+      source: "session-manager",
+      event: "session.closed",
+      data: { sessionId },
+    });
   }
 
   /** List saved session labels from disk (e.g. ["main", "actor-alice", "actor-bob"]) */

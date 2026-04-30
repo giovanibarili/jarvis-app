@@ -25,7 +25,25 @@ import { AnthropicSessionFactory } from "./ai/anthropic/factory.js";
 import { registerSessionInspectorTools } from "./ai/anthropic/session-inspector.js";
 import { HudCoreNodePiece } from "./core/hud-core-node.js";
 import { DiffViewerPiece } from "./pieces/diff-viewer.js";
+import { ChoicePromptPiece } from "./pieces/choice-prompt.js";
+import { ModelRouterPiece } from "./pieces/model-router.js";
+import { DelegateTaskPiece } from "./pieces/delegate-task.js";
+import { load as loadSettingsForSlash } from "./core/settings.js";
 import { ensureUiBuildIntegrity } from "./server.js";
+import type { IncomingMessage } from "node:http";
+
+/** Read the full request body and JSON-parse it. Rejects on malformed JSON. */
+function readJsonBody(req: IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.on("data", (chunk) => { raw += chunk; });
+    req.on("end", () => {
+      if (!raw) { resolve({}); return; }
+      try { resolve(JSON.parse(raw)); } catch (e) { reject(e); }
+    });
+    req.on("error", reject);
+  });
+}
 
 async function main() {
   // Verify UI build integrity before anything else — if assets are stale, rebuild
@@ -39,7 +57,22 @@ async function main() {
   // sessions wired later after SessionManager is created
   const jarvisCore = new JarvisCore();
 
+  // SessionManager is created here (with null factory placeholder; factory is
+  // wired after provider activation below) so the ModelRouter piece — which
+  // needs a passive reference to look up sessions — can sit at the head of
+  // the pieces array and subscribe to ai.request BEFORE JarvisCore.
+  const sessionsForRouter = new SessionManager(null as any);
+  sessionsForRouter.setBus(bus);
+
+  // Keep a typed handle on the router so /model and other internals can
+  // mutate sticky state without going through the bus.
+  const modelRouter = new ModelRouterPiece(sessionsForRouter, chatPiece);
+
   const pieces: Piece[] = [
+    // ModelRouter MUST come first: bus delivers handlers in subscription
+    // order, so this piece routes (sets per-call model override on the
+    // session) BEFORE JarvisCore reads getModel() in its own handler.
+    modelRouter,
     jarvisCore,
     new CapabilityExecutor(capabilityRegistry),
     new CapabilityLoaderPiece(capabilityRegistry),
@@ -67,10 +100,34 @@ async function main() {
   providerRouter.registerProviderFactory("anthropic", createAnthropicProvider);
   providerRouter.registerProviderFactory("openai", createOpenAIProvider);
 
-  // SessionManager — factory set after provider activation
-  const sessions = new SessionManager(null as any);
+  // SessionManager — factory set after provider activation.
+  // We reuse `sessionsForRouter` created earlier (router holds a passive ref).
+  const sessions = sessionsForRouter;
   jarvisCore.setSessions(sessions);
   chatPiece.setSessions(sessions);
+
+  // Tell ChatPiece which sessions JarvisCore owns. For owned sessions
+  // (main, grpc-*, etc.), JarvisCore emits prompt_dispatched and ChatPiece
+  // stays out of the timeline-mirroring business. For non-owned sessions
+  // (e.g. actor-* handled by the actors plugin), ChatPiece must mirror
+  // user-typed input as type:"user" SSE immediately so the panel renders it.
+  chatPiece.setOwnedSessionMatcher((sid) => jarvisCore.isSessionOwned(sid));
+
+  // clear_session — clears only the calling session (memory + disk), archives first
+  capabilityRegistry.register({
+    name: "clear_session",
+    description: "Archive and clear saved conversation history. Sessions are rolled to sessions/archive/ with timestamps before clearing. Next restart will start fresh with no memory of previous messages.",
+    input_schema: { type: "object", properties: {} },
+    handler: async (input) => {
+      const sessionId = String(input.__sessionId ?? "main");
+      log.info({ sessionId }, "clear_session: clearing");
+      jarvisCore.abortSession(sessionId);
+      sessions.archiveSaved(sessionId);
+      sessions.close(sessionId);
+      chatPiece.broadcastEvent(sessionId, { type: "session_cleared", session: sessionId });
+      return { ok: true, message: `Session '${sessionId}' archived and cleared. Next message will start fresh.` };
+    },
+  });
 
   // Model management tools — now provider-aware
   capabilityRegistry.register({
@@ -129,14 +186,22 @@ async function main() {
     },
   });
 
-  // /compact slash command — force context compaction (Engine B) on the main session
+  // /compact slash command — force context compaction (Engine B) on the CALLING session.
+  // Handler receives ctx.sessionId from ChatPiece, so it acts on whichever session
+  // typed the slash (main, actor-X, etc) instead of hardcoding "main".
   capabilityRegistry.registerSlashCommand({
     name: "compact",
     description: "Force context compaction — summarizes conversation to free tokens",
     hint: "Compacts the current session context (Engine B)",
     source: "system",
-    handler: async () => {
-      const managed = sessions.get("main");
+    handler: async (_args, ctx) => {
+      const sessionId = ctx?.sessionId ?? "main";
+
+      if (!sessions.has(sessionId)) {
+        return { message: `⚠️ Session not found: ${sessionId}` };
+      }
+
+      const managed = sessions.get(sessionId);
       if (!managed.session.forceCompact) {
         return { message: "⚠️ Current provider does not support forced compaction." };
       }
@@ -144,16 +209,24 @@ async function main() {
         return { message: "⚠️ Session is busy — wait for it to finish before compacting." };
       }
 
-      chatPiece.broadcastEvent({ type: "system", text: "⏳ Compacting context…" });
+      chatPiece.broadcastEvent(sessionId, { type: "system", text: "⏳ Compacting context…", session: sessionId });
 
       const stream = managed.session.forceCompact();
       for await (const event of stream) {
-        if (event.type === "compaction" && event.compaction) {
+        if (event.type === "compaction_start" && event.compactionStart) {
+          bus.publish({
+            channel: "ai.stream",
+            source: "jarvis-core",
+            target: sessionId,
+            event: "compaction_start",
+            compactionStart: event.compactionStart,
+          } as any);
+        } else if (event.type === "compaction" && event.compaction) {
           // Publish compaction events to the bus so metrics and chat timeline update
           bus.publish({
             channel: "ai.stream",
             source: "jarvis-core",
-            target: "main",
+            target: sessionId,
             event: "compaction",
             compaction: event.compaction,
           } as any);
@@ -163,7 +236,7 @@ async function main() {
             source: "jarvis-core",
             event: "compaction",
             data: {
-              sessionId: "main",
+              sessionId,
               engine: event.compaction.engine,
               tokensBefore: event.compaction.tokensBefore,
               tokensAfter: event.compaction.tokensAfter,
@@ -173,10 +246,44 @@ async function main() {
         }
       }
 
-      // Save the compacted session
-      sessions.save("main");
+      // Save the compacted session (skips ephemeral)
+      sessions.save(sessionId);
 
-      return { message: "✅ Context compacted successfully." };
+      return { message: `✅ Context compacted successfully (${sessionId}).` };
+    },
+  });
+
+  // /model — change sticky model for the calling session WITHOUT sending a prompt.
+  //   /model               → show current sticky + cost projection
+  //   /model opus          → switch to Opus, banner with reconstruction cost
+  //   /model claude-haiku-4-5  → switch to a specific model id
+  capabilityRegistry.registerSlashCommand({
+    name: "model",
+    description: "Show or change the sticky model for the current session",
+    hint: "/model [opus|sonnet|haiku|<model-id>]",
+    source: "system",
+    handler: async (args, ctx) => {
+      const sessionId = ctx?.sessionId ?? "main";
+      const arg = (args ?? "").trim();
+      const route = modelRouter.getRoute(sessionId);
+
+      if (!arg) {
+        const sticky = route?.sticky ?? "(default)";
+        const switches = route?.switchCount ?? 0;
+        return {
+          message: `🔧 Sticky model for ${sessionId}: \`${sticky}\` (${switches} switches this session)\nUsage: /model opus|sonnet|haiku|<model-id>`,
+        };
+      }
+
+      // Resolve alias or accept full model id
+      const cfg = (loadSettingsForSlash() as any)?.models?.routing ?? {};
+      const aliases = { opus: "claude-opus-4-7", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5", ...(cfg.aliases ?? {}) };
+      const target = aliases[arg.toLowerCase()] ?? arg;
+
+      const newRoute = modelRouter.setStickyModel(sessionId, target, "slash:/model");
+      return {
+        message: `🔧 Sticky model for ${sessionId}: \`${newRoute.sticky}\` (was \`${route?.sticky ?? "(default)"}\`)`,
+      };
     },
   });
 
@@ -186,8 +293,23 @@ async function main() {
   // Diff Viewer — file visualization, diff, and comparison in HUD
   pieces.push(new DiffViewerPiece(capabilityRegistry));
 
+  // Choice Prompt — inline chat choice cards (radio / checkbox / other)
+  pieces.push(new ChoicePromptPiece(capabilityRegistry, chatPiece));
+
   // Cron scheduler
-  pieces.push(new CronPiece(capabilityRegistry));
+  const cronPiece = new CronPiece(capabilityRegistry);
+  pieces.push(cronPiece);
+
+  // Delegate-read-task — ephemeral worker for cheap exploration.
+  // Uses the active provider's factory and the global capability registry.
+  const delegateTaskPiece = new DelegateTaskPiece({
+    getFactory: () => providerRouter.getFactory(),
+    registry: capabilityRegistry,
+  });
+  pieces.push(delegateTaskPiece);
+
+  // Wire delegate into cron so cron jobs can run in delegate mode directly.
+  cronPiece.setDelegatePiece(delegateTaskPiece);
 
   // Plugin manager
   const pluginManager = new PluginManager(capabilityRegistry);
@@ -212,7 +334,13 @@ async function main() {
   const pieceManager = new PieceManager(pieces, bus, capabilityRegistry);
   pluginManager.setPieceManager(pieceManager);
 
-  const server = new HttpServer(50052, chatPiece, () => hudState.getState(), () => jarvisCore.abortSession("main"), () => capabilityRegistry.getSlashCommands());
+  const server = new HttpServer(
+    50052,
+    chatPiece,
+    () => hudState.getState(),
+    (sessionId: string) => jarvisCore.abortSession(sessionId),
+    () => capabilityRegistry.getSlashCommands(),
+  );
   server.setHudStreamHandler((_req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
     // Send full snapshot first so client has complete state
@@ -223,29 +351,46 @@ async function main() {
   server.setOnHudRemove((pieceId: string) => {
     bus.publish({ channel: "hud.update", source: "server", action: "remove", pieceId });
   });
-  server.setOnClearSession(() => {
-    log.info("ClearSession: clearing conversation and resetting session");
-    jarvisCore.abortSession("main");
-    sessions.closeAll();
-    clearAllConversations();
-    // Broadcast to chat UI so it clears the timeline
-    chatPiece.broadcastEvent({ type: "session_cleared" });
+  server.setOnHudShow((pieceId: string) => {
+    bus.publish({ channel: "hud.update", source: "server", action: "update", pieceId, data: {}, visible: true } as any);
   });
-  server.setOnCompact(async () => {
-    const managed = sessions.get("main");
+  server.setOnHudHide((pieceId: string) => {
+    bus.publish({ channel: "hud.update", source: "server", action: "update", pieceId, data: {}, visible: false } as any);
+  });
+  server.setOnClearSession((sessionId: string) => {
+    log.info({ sessionId }, "ClearSession: clearing conversation for session");
+    jarvisCore.abortSession(sessionId);
+    sessions.close(sessionId);
+    sessions.clearSaved(sessionId);
+    // Tell only the SSE pool of this session to clear its timeline
+    chatPiece.broadcastEvent(sessionId, { type: "session_cleared", session: sessionId });
+  });
+  server.setOnCompact(async (sessionId: string) => {
+    if (!sessions.has(sessionId)) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const managed = sessions.get(sessionId);
     if (!managed.session.forceCompact) {
       throw new Error("Current provider does not support forced compaction.");
     }
 
-    chatPiece.broadcastEvent({ type: "system", text: "⏳ Compacting context…" });
+    chatPiece.broadcastEvent(sessionId, { type: "system", text: "⏳ Compacting context…", session: sessionId });
 
     const stream = managed.session.forceCompact();
     for await (const event of stream) {
-      if (event.type === "compaction" && event.compaction) {
+      if (event.type === "compaction_start" && event.compactionStart) {
         bus.publish({
           channel: "ai.stream",
           source: "jarvis-core",
-          target: "main",
+          target: sessionId,
+          event: "compaction_start",
+          compactionStart: event.compactionStart,
+        } as any);
+      } else if (event.type === "compaction" && event.compaction) {
+        bus.publish({
+          channel: "ai.stream",
+          source: "jarvis-core",
+          target: sessionId,
           event: "compaction",
           compaction: event.compaction,
         } as any);
@@ -255,7 +400,7 @@ async function main() {
           source: "jarvis-core",
           event: "compaction",
           data: {
-            sessionId: "main",
+            sessionId,
             engine: event.compaction.engine,
             tokensBefore: event.compaction.tokensBefore,
             tokensAfter: event.compaction.tokensAfter,
@@ -265,10 +410,52 @@ async function main() {
       }
     }
 
-    sessions.save("main");
-    chatPiece.broadcastEvent({ type: "system", text: "✅ Context compacted." });
+    sessions.save(sessionId);
+    chatPiece.broadcastEvent(sessionId, { type: "system", text: "✅ Context compacted.", session: sessionId });
   });
   pluginManager.setHttpServer(server);
+
+  // ─── Provider-scoped HUD scope routes ───
+  // POST /providers/anthropic/scope { scope: "ALL" | "<sessionId>" }
+  //   → switches which session the Anthropic Usage HUD renders.
+  // GET  /providers/anthropic/scope
+  //   → returns current scope + available sessionIds (for UI dropdown).
+  server.registerRoute("POST", "/providers/anthropic/scope", async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const scope = typeof body?.scope === "string" ? body.scope : null;
+      if (!scope) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Missing 'scope' string in body" }));
+        return;
+      }
+      const active = providerRouter.getActiveProvider();
+      const hud = active?.metricsPiece as { setScope?: (s: string) => void; getScope?: () => string; getAvailableScopes?: () => string[] } | undefined;
+      if (!hud?.setScope) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Active provider metrics HUD does not support scope switching" }));
+        return;
+      }
+      hud.setScope(scope);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, scope: hud.getScope?.(), available: hud.getAvailableScopes?.() ?? [] }));
+    } catch (err: any) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(err?.message ?? err) }));
+    }
+  });
+
+  server.registerRoute("GET", "/providers/anthropic/scope", async (_req, res) => {
+    const active = providerRouter.getActiveProvider();
+    const hud = active?.metricsPiece as { getScope?: () => string; getAvailableScopes?: () => string[] } | undefined;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      ok: true,
+      provider: active?.name ?? null,
+      scope: hud?.getScope?.() ?? null,
+      available: hud?.getAvailableScopes?.() ?? [],
+    }));
+  });
 
   await pieceManager.startAll();
 

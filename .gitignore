@@ -6,10 +6,14 @@ dist/
 .jarvis/*
 !.jarvis/settings.json
 app/jarvis.md
+app/mcp.json
 app/mcp.user.json
+jarvis.md
 docs/superpowers/
 app/.jarvis/logs/
 app/.jarvis/sessions/
 app/.jarvis/oauth/
 app/.jarvis/settings.user.json
 app/scripts/__pycache__/
+.DS_Store
+**/.DS_Store

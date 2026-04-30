@@ -100,6 +100,9 @@ export interface DiffViewerData {
   title?: string;
   /** When true, show Accept/Reject buttons. Default: false (view-only). */
   interactive?: boolean;
+  /** Session that opened this tab — replies (accept/reject/dismiss) route
+   *  back to this session. Required for interactive diffs. */
+  sessionId?: string;
   // diff mode
   diffs?: DiffEntry[];
   // file mode
@@ -299,6 +302,7 @@ export class DiffViewerPiece implements Piece {
           activeTab: 0,
           title: input.title as string,
           interactive: input.interactive as boolean | undefined,
+          sessionId: input.__sessionId as string | undefined,
           diffs,
           historyCount: this.history.length + 1,
         };
@@ -356,6 +360,7 @@ export class DiffViewerPiece implements Piece {
           viewMode: "inline",
           activeTab: 0,
           title: (input.title as string) ?? basename(filePath),
+          sessionId: input.__sessionId as string | undefined,
           file,
           historyCount: this.history.length + 1,
         };
@@ -409,6 +414,7 @@ export class DiffViewerPiece implements Piece {
           activeTab: 0,
           title: (input.title as string) ?? `${basename(pathA)} vs ${basename(pathB)}`,
           interactive: input.interactive as boolean | undefined,
+          sessionId: input.__sessionId as string | undefined,
           diffs: [diff],
           historyCount: this.history.length + 1,
         };

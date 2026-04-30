@@ -16,11 +16,15 @@ Then piece_list should show all core pieces:
   | capability-executor| true    | true      |
   | capability-loader  | true    | true      |
   | chat               | true    | true      |
+  | model-router       | true    | false     |
+  | mcp-manager        | true    | false     |
+  | grpc               | true    | false     |
   | hud-core-node      | true    | false     |
   | cron               | true    | false     |
-  | plugin-manager     | true    | false     |
-  | grpc               | true    | false     |
+  | delegate-task      | true    | false     |
   | diff-viewer        | true    | false     |
+  | choice-prompt      | true    | false     |
+  | plugin-manager     | true    | false     |
 And GET /hud should return a JSON with reactor.status "online"
 And GET /hud should return components for all visible pieces
 And the HUD Electron window should render without errors
@@ -323,11 +327,12 @@ And when streaming completes, the display should switch to model name
 ### Scenario: Chat timeline shows only owned sessions
 
 ```gherkin
-Given ChatPiece has timelineSessions = {"main"}
-When an ai.stream event arrives for target "main"
-Then it should appear in the chat timeline
-When an ai.stream event arrives for target "some-plugin-session"
-Then it should NOT appear in the chat timeline
+Given ChatPiece routes SSE events per-session (events keyed by target sessionId in the SSE pool map)
+When an ai.stream event arrives with target "main"
+Then only the SSE pool for sessionId="main" receives the event
+When an ai.stream event arrives with target "some-plugin-session"
+Then the main SSE pool does NOT receive it
+And only SSE clients connected to ?sessionId=some-plugin-session receive it
 ```
 
 ### Scenario: Slash command interception
@@ -453,33 +458,103 @@ And all its pieces should be unregistered
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with cron "once:5s" and prompt "Say hello"
+When cron_create is called with cron "once:5s", prompt "Say hello" from session "main"
 Then a job should appear in cron_list
-And after ~5 seconds, the prompt "Say hello" should be sent to the target session
+And the job's target should be "main" (auto-derived from the calling session)
+And after ~5 seconds, the prompt "Say hello" should be sent to session "main"
 And the job should be removed from cron_list after execution
+And the one-shot job should NOT be persisted in settings.user.json under cron.jobs
 ```
 
 ### Scenario: Create a recurring timer
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with cron "*/1 * * * *" and prompt "Status check"
-Then the prompt should be sent every 1 minute
+When cron_create is called with cron "*/1 * * * *", prompt "Status check" from session "main"
+Then the prompt should be sent every 1 minute to session "main"
 And the job should persist in cron_list
+And the recurring job should be persisted in settings.user.json under cron.jobs with target "main"
 When cron_delete is called with the job ID
 Then the recurring timer should stop
 And the job should be removed from cron_list
+And the entry should be removed from settings.user.json
 ```
 
-### Scenario: Target session routing
+### Scenario: target is auto-derived from the calling session
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with target "main"
-Then the prompt should be published with target "main"
-When cron_create is called with target "custom-session"
-Then the prompt should be published with target "custom-session"
-And there should be no hardcoded session ID prefixes
+When cron_create is called from session "main" (no target field accepted)
+Then the job's target must be "main"
+When cron_create is called from session "actor-alice"
+Then the job's target must be "actor-alice"
+And the LLM must NOT be able to specify target explicitly (field absent from schema)
+```
+
+### Scenario: persisted recurring jobs keep original target across restart
+
+```gherkin
+Given a recurring cron job was created from session "actor-bob" with target "actor-bob"
+When JARVIS restarts
+Then the job should be restored with target "actor-bob"
+And subsequent triggers should fire to session "actor-bob"
+```
+
+### Scenario: delegate mode — cron fires ephemeral worker directly
+
+```gherkin
+Given JARVIS is online
+When cron_create is called with cron "once:10s", prompt "Summarize: hello world", mode "delegate", role "generic", model "haiku"
+Then a job should appear in cron_list with mode "delegate"
+And after ~10 seconds, NO prompt should be sent to the calling session's LLM
+And instead, an ephemeral worker should run with role "generic" and model "haiku"
+And the worker's summary should arrive in the calling session as "[CRON delegate \"<id>\"] <summary>"
+And the one-shot delegate job should be removed from cron_list after execution
+```
+
+### Scenario: delegate mode — error is reported to reply_to session
+
+```gherkin
+Given JARVIS is online
+When cron_create is called with mode "delegate" and role "nonexistent-role"
+And the job fires
+Then the calling session should receive "[CRON delegate \"<id>\" ERROR] Unknown role: nonexistent-role..."
+```
+
+### Scenario: delegate mode — reply_to routes result to different session
+
+```gherkin
+Given JARVIS is online and session "main" exists
+When cron_create is called from session "actor-worker" with mode "delegate", reply_to "main"
+And the job fires
+Then the delegate summary should arrive in session "main" (not "actor-worker")
+```
+
+### Scenario: catch_up — missed daily slot fires immediately on restore
+
+```gherkin
+Given a recurring daily job at "09:00" with catch_up: true, lastRun 2 days ago
+When JARVIS restarts at 13:00 (slot already missed today)
+Then the job should fire within 1s of restore (catch-up execution)
+And the next scheduled run should be tomorrow at 09:00
+```
+
+### Scenario: no catch_up — missed daily slot is skipped
+
+```gherkin
+Given a recurring daily job at "09:00" with catch_up: false (default), lastRun 2 days ago
+When JARVIS restarts at 13:00
+Then the job should NOT fire immediately
+And the next scheduled run should be tomorrow at 09:00
+```
+
+### Scenario: catch_up — only applies to daily/weekly, not interval
+
+```gherkin
+Given a recurring interval job "*/5 * * * *" with catch_up: true
+When JARVIS restarts after a missed run
+Then catch_up has no effect (interval already uses elapsed-time scheduling)
+And the job should fire at the normal next interval slot
 ```
 
 ## Feature: Context Compaction
@@ -588,10 +663,11 @@ Then it should report total subscription count and total event count
 ```gherkin
 Given JARVIS starts with the capabilities/ directory containing JSON definitions
 When CapabilityLoaderPiece loads
-Then the following capabilities should be registered:
-  bash, clear_session, edit_file, glob, grep, list_dir,
+Then the following capabilities should be registered (loaded from capabilities/*.json):
+  bash, edit_file, glob, grep, list_dir,
   multi_edit_file, read_file, jarvis_reset, hud_screenshot,
   web_fetch, web_search, write_file
+And clear_session should also be registered (registered inline by main.ts, not from the JSON dir)
 And each should be callable and return results
 ```
 
@@ -623,6 +699,240 @@ When hud_show_file is called with a file path
 Then a file viewer tab should appear with syntax highlighting
 When hud_compare_files is called with two file paths
 Then a side-by-side comparison should appear
+```
+
+## Feature: MCP Manager
+
+### Scenario: Canonical config path
+
+```gherkin
+Given JARVIS is installed
+When the McpManager starts with no explicit configPath argument
+Then it reads `~/.jarvis/mcp.json` (user home), NOT `<cwd>/mcp.json`
+And the user-override file is `~/.jarvis/mcp.user.json`
+```
+
+### Scenario: mcp_refresh adds a new server
+
+```gherkin
+Given ~/.jarvis/mcp.json lists [prometheus-mcp, clojure]
+When the user edits the file to add a new server "foo" and calls mcp_refresh
+Then the tool returns a string including "Added: foo"
+And mcp_list shows "foo" with status:"disconnected"
+And if foo has autoConnect:true, the server auto-connects after refresh
+```
+
+### Scenario: mcp_refresh removes a deleted server
+
+```gherkin
+Given a connected server "bar" exists in memory
+When the user removes "bar" from ~/.jarvis/mcp.json and calls mcp_refresh
+Then the tool returns a string including "Removed: bar"
+And mcp_list no longer contains "bar"
+And if the server had an open client, it is closed gracefully
+```
+
+### Scenario: mcp_refresh detects CHANGED config (new)
+
+```gherkin
+Given a server "prometheus-mcp" exists with command:"uv" and args:["run","python","-m","x"]
+And the server is currently connected
+When the user edits the config to command:"/path/to/run_stdio.sh" and args:[]
+And calls mcp_refresh
+Then the tool returns a string including "Updated: prometheus-mcp"
+And the in-memory server.config.command is now "/path/to/run_stdio.sh"
+And the previous client is closed
+And auto-reconnect fires: server transitions through disconnected → connecting → (connected | error)
+And server.toolNames is reset to [] before reconnect completes
+```
+
+### Scenario: mcp_refresh is a no-op when only whitespace changes
+
+```gherkin
+Given a server "alpha" exists in config
+When the user re-saves mcp.json with pretty-printed indentation but same values
+And calls mcp_refresh
+Then the tool returns "No changes. Total: N servers"
+And no reconnect is triggered
+```
+
+### Scenario: configsEqual semantics
+
+```gherkin
+Given two McpServerConfig objects
+Then configsEqual treats them as equal when they have the same top-level keys and values,
+     regardless of key ORDER (top-level or nested env/headers)
+And unequal when args order differs (args is meaningful-order)
+And unequal when command, url, type, or autoConnect differ
+And equal when one has an explicit `env: undefined` and the other omits `env`
+```
+
+### Scenario: autoConnect=true is picked up on refresh
+
+```gherkin
+Given a disconnected server "beta" with autoConnect:false
+When the user flips autoConnect to true in config and calls mcp_refresh
+Then "beta" is reported as "Updated: beta"
+And an auto-connect attempt fires without manual mcp_connect
+```
+
+## Feature: Choice Prompt (jarvis_ask_choice)
+
+### Scenario: Tool is registered (dual shape — single + multi-question)
+
+```gherkin
+Given the choice-prompt piece is running
+When session_get_tools filter="jarvis_ask_choice"
+Then the tool is listed with schema containing BOTH shapes:
+  - Single: question, options, multi, allow_other (legacy, backward-compat)
+  - Multi: questions[] with nested {question, options, multi, allow_other}
+And the tool description documents both the single and multi response formats
+```
+
+### Scenario: Single-choice card renders inline in chat
+
+```gherkin
+Given a live chat session with SSE connected
+When the AI calls jarvis_ask_choice with question "Which DB?" and 3 options
+Then the chat SSE broadcasts event type:"choice" with choice_id, question, options, multi:false
+And ChatPanel appends an entry of kind:"choice" to the timeline
+And the ChoiceCard renders radio buttons (one per option)
+And the CONFIRM button is disabled until a selection is made
+And NO capability entry for jarvis_ask_choice appears (suppressed in favor of the card)
+```
+
+### Scenario: Single choice submission sends [choice] prompt
+
+```gherkin
+Given a pending single-choice card "Which DB? → Postgres|DynamoDB|Redis"
+When the user clicks "Postgres" and presses CONFIRM
+Then POST /chat/send is called with prompt exactly "[choice] Which DB? → Postgres"
+And the card becomes answered (opacity reduced, inputs disabled)
+And the answer summary "→ Postgres" renders below the options
+And the AI receives the prompt as the next user turn
+```
+
+### Scenario: Multi-choice selects multiple values
+
+```gherkin
+Given the AI calls jarvis_ask_choice with multi:true and 4 options
+When the user checks options A and C
+And presses CONFIRM
+Then POST /chat/send is called with prompt "[choice] <question> → A-label, C-label"
+And the answer summary shows both labels joined by ", "
+```
+
+### Scenario: "Other (write your own)" with free-text input
+
+```gherkin
+Given a choice card with allow_other:true (default)
+When the user selects "Other (write your own)"
+Then a textarea appears below with autofocus
+And CONFIRM remains disabled until the textarea has non-empty content
+When the user types "Cassandra" and presses Enter (or clicks CONFIRM)
+Then POST /chat/send is called with prompt "[choice] <question> → Cassandra"
+And the answered card shows the free text in italic quotes
+```
+
+### Scenario: allow_other=false hides the "Other" option
+
+```gherkin
+Given the AI calls jarvis_ask_choice with allow_other:false
+Then the choice card renders WITHOUT the "Other (write your own)" row
+```
+
+### Scenario: Persistence — answered choice survives session reload
+
+```gherkin
+Given the user has completed a single-choice prompt in the main session
+When GET /chat/history?sessionId=main is fetched
+Then the response contains an entry with kind:"choice", question, options, multi
+And that entry has answer field populated with the chosen value(s)
+And the preceding assistant text (if any) appears before the choice entry
+And the "[choice]" user message is NOT emitted as a separate entry (consumed as the answer)
+```
+
+### Scenario: Persistence — pending choice (no answer yet) survives reload
+
+```gherkin
+Given a choice prompt was published but the user hasn't clicked CONFIRM
+And JARVIS is restarted before submission
+When GET /chat/history?sessionId=main returns the history
+Then the choice entry exists with no answer field
+And the ChoiceCard renders in its pending state (inputs enabled, CONFIRM present)
+When the user now clicks an option and CONFIRM
+Then the submission flow proceeds normally
+```
+
+### Scenario: "Other" free text round-trips through reload
+
+```gherkin
+Given the user answered a choice via "Other" with text "Cassandra"
+When the session is reloaded via GET /chat/history
+Then the choice entry has answer:["__other__"] and other_text:"Cassandra"
+And the card re-renders with the italic quoted free text
+```
+
+### Scenario: Invalid input returns error
+
+```gherkin
+Given the AI calls jarvis_ask_choice with neither `question` nor `questions`
+Then the tool returns { ok:false, error: /must provide either/ }
+And no SSE choice event is broadcast
+
+Given the AI calls jarvis_ask_choice with a `question` but empty `options` array
+Then the tool returns { ok:false, error: /must provide either/ }
+
+Given the AI calls jarvis_ask_choice with `questions:[]` (empty array)
+Then the tool returns { ok:false, error: /must provide either/ }
+
+Given the AI calls jarvis_ask_choice with `questions:[{question:"", options:[...]}]`
+Then the empty-question item is filtered out and, if none remain, error is returned
+```
+
+### Scenario: Enter key confirms the card
+
+```gherkin
+Given a single-question card with a selection made (any option clicked)
+When the user presses Enter (focus anywhere in the card except a textarea)
+Then the card submits as if CONFIRM was clicked
+And the prompt "[choice] <question> → <label>" is sent to /chat/send
+
+Given the user has selected "Other" and typed text in the textarea
+When the user presses Enter inside the textarea (without Shift)
+Then the card submits immediately with the free-text answer
+```
+
+### Scenario: Multi-question card (NEW)
+
+```gherkin
+Given the AI calls jarvis_ask_choice with `questions: [{question:"Q1", options:[...]}, {question:"Q2", options:[...], multi:true}]`
+Then ONE SSE event type:"choice" is broadcast with questions[] containing 2 items
+And the ChatPanel renders a single card with header "CHOICE · 2 QUESTIONS"
+And each question has its own radio/checkbox group separated by a dashed divider
+And CONFIRM is disabled until BOTH questions have a valid selection
+When the user picks one option for Q1 and checks 2 options for Q2, then presses Enter
+Then POST /chat/send is called with a multi-line prompt:
+  "[choice]\nQ1 → <label>\nQ2 → <labelA>, <labelB>"
+And the card becomes answered with per-question summaries "→ ..." below each group
+```
+
+### Scenario: Multi-question persistence survives reload
+
+```gherkin
+Given the user completed a 2-question choice
+When GET /chat/history?sessionId=main is fetched
+Then the choice entry has kind:"choice" with questions[] (2 items) and answers[] (2 items)
+And the "[choice]\n..." user message is NOT emitted as a separate entry
+```
+
+### Scenario: Session scoping — choice only reaches the caller session
+
+```gherkin
+Given two sessions exist: main and actor-alice
+When the AI in session "main" calls jarvis_ask_choice
+Then only the SSE pool for sessionId="main" receives the type:"choice" event
+And the actor-alice SSE pool receives nothing
 ```
 
 ## Execution Checklist

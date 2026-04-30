@@ -73,12 +73,29 @@ export class CapabilityExecutor implements Piece {
   private async handleRequest(msg: CapabilityRequestMessage): Promise<void> {
     const sessionId = msg.target!;
     const calls = msg.calls;
+    const traceId = (msg as any).traceId;
     const t0 = Date.now();
-    log.info({ sessionId, count: calls.length, names: calls.map(c => c.name) }, "CapabilityExecutor: executing");
+    log.info({ sessionId, traceId, count: calls.length, names: calls.map(c => c.name) }, "CapabilityExecutor: executing");
 
     // Inject sessionId into inputs so capabilities know the calling context
     const enrichedCalls = calls.map(c => ({ ...c, input: { ...c.input, __sessionId: sessionId } }));
-    const results = await this.registry.execute(enrichedCalls);
+
+    // Progress callback — publishes tool_progress on ai.stream so the chat
+    // timeline can show live stdout while the tool is running.
+    const onProgress = (toolId: string, toolName: string, chunk: string) => {
+      this.bus.publish({
+        channel: "ai.stream",
+        source: "capability-executor",
+        target: sessionId,
+        event: "tool_progress",
+        toolId,
+        toolName,
+        chunk,
+        traceId,
+      } as any);
+    };
+
+    const results = await this.registry.execute(enrichedCalls, onProgress);
 
     // Metrics tracked via registry.onExecution listener
 

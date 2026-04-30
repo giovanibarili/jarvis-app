@@ -34,6 +34,26 @@ export interface CompactionSettings {
   pauseAfterCompaction: boolean;
 }
 
+export interface PersistedCronJob {
+  cron: string;
+  prompt: string;
+  target: string;
+  recurring: boolean;
+  createdAt: number;
+  lastRun?: number; // epoch ms of last execution
+  // delegate mode fields (optional)
+  mode?: "prompt" | "delegate";
+  role?: string;
+  model?: string;
+  reply_to?: string;
+  // catch-up: if true, runs immediately when a missed execution is detected on restore
+  catchUp?: boolean;
+}
+
+export interface CronSettings {
+  jobs: Record<string, PersistedCronJob>;
+}
+
 export interface Settings {
   pieces: Record<string, PieceSettings & { config?: PieceConfig }>;
   plugins?: Record<string, PluginSettings>;
@@ -41,6 +61,7 @@ export interface Settings {
   model?: string;
   compaction?: CompactionSettings;
   theme?: string; // active theme name (maps to ~/.jarvis/themes/<name>/theme.json)
+  cron?: CronSettings;
 }
 
 const SETTINGS_DIR = join(process.cwd(), ".jarvis");
@@ -116,6 +137,9 @@ function deepMerge(base: Settings, override: Settings): Settings {
       ? { ...DEFAULT_COMPACTION, ...base.compaction, ...override.compaction }
       : base.compaction,
     theme: override.theme ?? base.theme,
+    cron: {
+      jobs: { ...base.cron?.jobs, ...override.cron?.jobs },
+    },
   };
 }
 

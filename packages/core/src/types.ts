@@ -3,7 +3,7 @@
 import type { CapabilityCall, CapabilityResult } from "./tools.js";
 import type { HudPieceData } from "./piece.js";
 
-export type Channel = "ai.request" | "ai.stream" | "capability.request" | "capability.result" | "hud.update" | "system.event";
+export type Channel = "ai.request" | "ai.stream" | "capability.request" | "capability.result" | "hud.update" | "system.event" | "chat.anchor";
 
 export interface BusMessage {
   id: string;
@@ -11,6 +11,14 @@ export interface BusMessage {
   source: string;
   target?: string;
   channel: Channel;
+  /**
+   * Trace ID — propagates across an end-to-end conversation turn so logs
+   * for chat→bus→core→provider→stream→SSE can be correlated by a single id.
+   * Set by the originating publisher (e.g. ChatPiece for user input,
+   * JarvisCore for follow-up streams). Optional for backward compatibility:
+   * messages without traceId still work, just without correlation.
+   */
+  traceId?: string;
 }
 
 // Image attachment for multi-modal messages
@@ -29,8 +37,19 @@ export interface AIRequestMessage extends BusMessage {
   text: string;
   images?: ImageAttachment[];
   replyTo?: string;
-  /** Optional payload for dispatch metadata (e.g. actor role, context) */
-  data?: Record<string, unknown>;
+  /**
+   * Optional payload for dispatch metadata.
+   *
+   * Conventional keys (consumed by core pieces):
+   *   - `utility: true` — this is a utility call (summary, classification,
+   *     title generation, etc). The ModelRouter routes it to the configured
+   *     utility model (Haiku by default) WITHOUT touching the session's
+   *     sticky model. Use for isolated, one-shot calls that don't share
+   *     cache with the main loop.
+   *   - `actorRole`, `actorContext` — actor-runner plugin metadata.
+   *   - any other plugin-specific key.
+   */
+  data?: Record<string, unknown> & { utility?: boolean };
 }
 
 // ai.stream — tokens coming from any AI session
@@ -84,7 +103,44 @@ export interface SystemEventMessage extends BusMessage {
   data: Record<string, unknown>;
 }
 
-export type AnyBusMessage = AIRequestMessage | AIStreamMessage | CapabilityRequestMessage | CapabilityResultMessage | HudUpdateMessage | SystemEventMessage;
+// chat.anchor — pieces declare/remove/clear UI anchors that float above the
+// chat composer (per-session). Generic mechanism: any piece can publish.
+// The frontend AnchorRegistry consumes via SSE forwarding in ChatPiece.
+export interface ChatAnchor {
+  /** Unique within (sessionId, source). */
+  id: string;
+  /** Session scope — anchors NEVER cross sessions. Required. */
+  sessionId: string;
+  /** Owner identifier (piece id, plugin name, etc.) for diagnostics. */
+  source: string;
+  /** Higher = rendered higher in the stack. Default 0. */
+  priority?: number;
+  /** Discriminator interpreted by the front renderer registry.
+   *  Built-in: "choice". Plugins can register their own kinds. */
+  rendererKind: string;
+  /** Arbitrary data the renderer consumes. */
+  payload: unknown;
+  /** Optional plugin renderer (loaded via /plugins/<plugin>/renderers/<file>.js)
+   *  if the kind is not built-in. */
+  renderer?: { plugin: string; file: string };
+  /** Auto-remove after this many ms (clock starts at set time). */
+  ttlMs?: number;
+  /** Wallclock ms; set automatically by the registry if missing. */
+  createdAt?: number;
+}
+
+export interface ChatAnchorMessage extends BusMessage {
+  channel: "chat.anchor";
+  /** Always carries sessionId for routing — even on remove/clear. */
+  sessionId: string;
+  action: "set" | "remove" | "clear";
+  /** Required when action === "set". */
+  anchor?: ChatAnchor;
+  /** Required when action === "remove". */
+  anchorId?: string;
+}
+
+export type AnyBusMessage = AIRequestMessage | AIStreamMessage | CapabilityRequestMessage | CapabilityResultMessage | HudUpdateMessage | SystemEventMessage | ChatAnchorMessage;
 
 // Distributive Omit — preserves union discrimination when omitting keys
 type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never;

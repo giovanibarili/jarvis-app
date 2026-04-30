@@ -15,6 +15,10 @@ This package follows **Semantic Versioning (semver)**:
 | 1.x | `state` prop only | ❌ polling `/hud` every 2s | Original architecture |
 | 2.x | `state` prop + `useHudPiece()` | ✅ SSE `/hud-stream` | Backward compatible — `state` prop still works |
 | 0.2.1 | + `sessionManager?` in PluginContext | ✅ SSE `/hud-stream` | Optional field — plugins without it still work |
+| **0.2.2** | **Unified chat — sessionId required everywhere** | ✅ SSE per sessionId | **BREAKING** — see CHANGELOG. Chat endpoints, `ChatPanel` props, and `HttpServer` callbacks all changed. `renderer.plugin` accepts `null` for core renderers. |
+| **0.3.0** | + `chat.anchor` channel + `ChatAnchor` types + `window.__JARVIS_CHAT_ANCHORS` | ✅ Unchanged | Additive. Pieces can pin per-session UI anchors above the chat composer. |
+| **0.5.0** | + `AISession.setStickyModelOverride?` + `AISession.setToolFilter?` | ✅ Unchanged | Additive. Both optional — plugins that don't call them keep working. Actor-runner uses them to apply per-role model + tool restrictions. |
+| **0.6.0** | + `BusMessage.traceId?` | ✅ Unchanged | Additive optional field. Plugins that don't set it keep working — bus auto-fills a fresh id per publish. Plugins that DO set it on the originating publish (and propagate it on follow-ups) get end-to-end log correlation across chat→bus→core→provider→stream. |
 
 ## Public API Surface
 
@@ -26,7 +30,7 @@ These are consumed by plugins and must remain backward compatible:
 - `Piece` — `id`, `name`, `start(bus)`, `stop()`, `systemContext?()`
 - `PluginContext` — `bus`, `capabilityRegistry`, `config`, `pluginDir`, `sessionFactory`, `sessionManager?`, `registerRoute`, `saveConfig`, `registerSlashCommand`, `unregisterSlashCommand`
 - `PluginManifest` — `name`, `version`, `description`, `author?`, `entry?`, `capabilities?`
-- `HudPieceData` — `pieceId`, `type`, `name`, `status`, `data`, `position?`, `size?`, `visible?`, `ephemeral?`, `renderer?`
+- `HudPieceData` — `pieceId`, `type`, `name`, `status`, `data`, `position?`, `size?`, `visible?`, `ephemeral?`, `renderer?` (renderer.plugin: `string` for plugin renderer, `null` for core renderer resolved from `window.__JARVIS_COMPONENTS`)
 - `EventBus` — `publish(msg)`, `subscribe(channel, handler)`, `stats`
 - `CapabilityRegistry` — `register(def)`, `getDefinitions()`, `execute(calls)`, `registerSlashCommand`, `unregisterSlashCommand`, `getSlashCommands()`, `names`, `size`
 - Bus channels: `ai.request`, `ai.stream`, `capability.request`, `capability.result`, `hud.update`, `system.event`
@@ -39,10 +43,12 @@ These are consumed by plugins and must remain backward compatible:
 #### HTTP Endpoints (consumed by plugins via `registerRoute` and `fetch`)
 - `GET /hud` — full HUD state snapshot (JSON)
 - `GET /hud-stream` — SSE delta stream (added in 2.0)
-- `POST /chat/send` — send message to AI
-- `GET /chat-stream` — SSE chat event stream
-- `GET /chat/history` — message history for UI hydration
-- `POST /chat/abort` — abort current AI operation
+- `POST /chat/send` — body `{ sessionId, prompt, images? }` — **sessionId required (0.2.2)**
+- `GET /chat-stream?sessionId=X` — SSE chat event stream scoped to `sessionId` — **required (0.2.2)**
+- `GET /chat/history?sessionId=X` — message history for UI hydration — **sessionId required (0.2.2)**
+- `POST /chat/abort` — body `{ sessionId }` — **required (0.2.2)**
+- `POST /chat/clear-session` — body `{ sessionId }` — **required (0.2.2)**
+- `POST /chat/compact` — body `{ sessionId }` — **required (0.2.2)**
 - `GET /plugins/{name}/renderers/{file}.js` — compiled plugin renderer
 
 #### Plugin Renderer esbuild Banner
@@ -66,6 +72,73 @@ These are implementation details NOT consumed by plugins:
 - Settings file format (`.jarvis/settings.user.json`)
 - Conversation store format (`.jarvis/sessions/*.json`)
 - Log format and log buffer API
+
+## Migration Guide: 0.2.1 → 0.2.2
+
+### For plugins that embed `ChatPanel` or call `/chat/*`
+
+**Required:** always pass `sessionId`. No fallback, no default.
+
+```ts
+// Before (0.2.1)
+fetch('/chat/send', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ prompt: 'hello' }),
+})
+
+// After (0.2.2)
+fetch('/chat/send', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ sessionId: mySessionId, prompt: 'hello' }),
+})
+```
+
+### For plugins that mount a chat panel in the HUD
+
+Use the core renderer via `renderer.plugin = null`:
+
+```ts
+bus.publish({
+  channel: "hud.update",
+  source: myPieceId,
+  action: "add",
+  pieceId: `chat-${name}`,
+  piece: {
+    pieceId: `chat-${name}`,
+    type: "panel",
+    name: `Chat: ${name}`,
+    status: "running",
+    data: {
+      sessionId: `my-session-${name}`,  // opaque — core knows nothing about "actor" etc.
+      assistantLabel: name.toUpperCase(),
+    },
+    position: { x: 100, y: 100 },
+    size: { width: 480, height: 400 },
+    ephemeral: true,
+    renderer: { plugin: null, file: "ChatPanel" },
+  },
+});
+```
+
+### For plugins that import `ChatPanel` as a React component
+
+Change from URL props to `sessionId`:
+
+```tsx
+// Before (0.2.1)
+<ChatPanel
+  streamUrl={`/plugins/x/${name}/stream`}
+  sendUrl={`/plugins/x/${name}/send`}
+  abortUrl={`/plugins/x/${name}/abort`}
+  historyUrl={`/plugins/x/${name}/history`}
+  assistantLabel={name}
+/>
+
+// After (0.2.2)
+<ChatPanel sessionId={`my-session-${name}`} assistantLabel={name} />
+```
 
 ## Migration Guide: 1.x → 2.x
 

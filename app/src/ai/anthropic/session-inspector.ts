@@ -32,15 +32,14 @@ export function registerSessionInspectorTools(
       required: [],
     },
     handler: async (input) => {
-      const sessionId = (input.session_id as string | undefined) ?? "main";
+      const sessionId = (input.session_id as string | undefined) ?? (input.__sessionId as string | undefined) ?? "main";
       const managed = sessions.get(sessionId);
       const messages = managed.session.getMessages() as unknown[];
       const breakdown = factory.getTokenBreakdown();
 
       log.debug({ sessionId }, "session_info: called");
       return {
-        sessionId: managed.session.sessionId,
-        label: sessionId,
+        sessionId,
         state: sessions.getState(sessionId),
         messageCount: messages.length,
         provider: "anthropic",
@@ -76,7 +75,7 @@ export function registerSessionInspectorTools(
       required: [],
     },
     handler: async (input) => {
-      const sessionId = (input.session_id as string | undefined) ?? "main";
+      const sessionId = (input.session_id as string | undefined) ?? (input.__sessionId as string | undefined) ?? "main";
       const offset = (input.offset as number | undefined) ?? 0;
       const limit = (input.limit as number | undefined) ?? 20;
 
@@ -113,7 +112,8 @@ export function registerSessionInspectorTools(
     },
     handler: async (input) => {
       const raw = (input.raw as boolean | undefined) ?? false;
-      const blocks = factory.buildSystemBlocks("main");
+      const sessionId = (input.__sessionId as string | undefined) ?? "main";
+      const blocks = factory.buildSystemBlocks(sessionId);
 
       log.debug({ blockCount: blocks.length, raw }, "session_get_system: called");
 

@@ -2,23 +2,39 @@
 import type { CapabilityCall, CapabilityResult } from "../ai/types.js";
 import { log } from "../logger/index.js";
 
-export type CapabilityHandler = (input: Record<string, unknown>) => Promise<unknown>;
+/** Called by the executor while a tool is running to push partial stdout. */
+export type ProgressCallback = (chunk: string) => void;
+
+export type CapabilityHandler = (input: Record<string, unknown>, onProgress?: ProgressCallback) => Promise<unknown>;
 
 export interface CapabilityDefinition {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
   handler: CapabilityHandler;
+  /** If true, the handler accepts a progress callback and will stream partial output. */
+  supportsProgress?: boolean;
 }
 
 export type CapabilityExecutionListener = (toolName: string, isError: boolean, timeMs: number) => void;
+
+/**
+ * Context provided to a slash command handler at invocation time.
+ * Plumbed through from whoever dispatches the command (e.g. ChatPiece)
+ * so handlers can act on the session that typed the slash, instead of
+ * hardcoding "main".
+ */
+export interface SlashCommandContext {
+  /** Session that issued the command ("main", "actor-alice", etc). */
+  sessionId?: string;
+}
 
 export interface SlashCommand {
   name: string;
   description: string;
   hint?: string;
   source: string;
-  handler: (args: string) => Promise<SlashCommandResult>;
+  handler: (args: string, ctx?: SlashCommandContext) => Promise<SlashCommandResult>;
 }
 
 export interface SlashCommandResult {
@@ -47,7 +63,10 @@ export class CapabilityRegistry {
     }));
   }
 
-  async execute(calls: CapabilityCall[]): Promise<CapabilityResult[]> {
+  async execute(
+    calls: CapabilityCall[],
+    onProgress?: (toolId: string, toolName: string, chunk: string) => void,
+  ): Promise<CapabilityResult[]> {
     return Promise.all(
       calls.map(async (tc) => {
         const def = this.tools.get(tc.name);
@@ -57,7 +76,10 @@ export class CapabilityRegistry {
         const t0 = Date.now();
         try {
           log.info({ tool: tc.name, input: tc.input }, "CapabilityRegistry: executing");
-          const result = await def.handler(tc.input);
+          const progressCb: ProgressCallback | undefined = (onProgress && def.supportsProgress)
+            ? (chunk) => onProgress(tc.id, tc.name, chunk)
+            : undefined;
+          const result = await def.handler(tc.input, progressCb);
           // If handler returns an array of content blocks (image/text), pass as-is
           if (Array.isArray(result) && result.length > 0 && result[0]?.type && ["image", "text", "document"].includes(result[0].type)) {
             log.info({ tool: tc.name, contentBlocks: result.length, types: result.map((b: any) => b.type) }, "CapabilityRegistry: result (content blocks)");

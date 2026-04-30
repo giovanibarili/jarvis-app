@@ -61,6 +61,8 @@ export class ProviderRouter {
 
     // Create and start new provider
     this.active = createProvider(this.providerConfig);
+    // Give the factory the bus so provider sessions can publish telemetry.
+    this.active.factory.setBus?.(bus);
     await this.active.metricsPiece.start(bus);
     log.info({ provider: this.active.name }, "ProviderRouter: provider active");
 

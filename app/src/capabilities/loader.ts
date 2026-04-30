@@ -30,6 +30,7 @@ export class CapabilityLoaderPiece implements Piece {
   private bus!: EventBus;
   private registry: CapabilityRegistry;
   private loaded: string[] = [];
+  private abortControllers = new Map<string, AbortController>();
 
   systemContext(): string {
     return `## Capability Loader Piece
@@ -45,6 +46,17 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
   async start(bus: EventBus): Promise<void> {
     this.bus = bus;
     this.loadCapabilities();
+
+    // Listen for abort events to kill running processes
+    this.bus.subscribe("ai.stream", (msg: any) => {
+      if (msg.event === "aborted" && msg.target) {
+        const ctrl = this.abortControllers.get(msg.target);
+        if (ctrl) {
+          ctrl.abort();
+          this.abortControllers.delete(msg.target);
+        }
+      }
+    });
 
     this.bus.publish({
       channel: "hud.update",
@@ -94,17 +106,55 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
     }
   }
 
-  private execWithStdin(command: string, args: string[], stdinData: string): Promise<{ stdout: string; stderr: string }> {
+  /**
+   * Unified spawn-based executor. Replaces both `execWithStdin` and
+   * `execFileAsync` paths so ALL capabilities get live stdout streaming
+   * via the optional `onProgress` callback.
+   *
+   * Throttle: progress events are emitted at most every PROGRESS_THROTTLE_MS
+   * to avoid flooding the SSE channel on very chatty tools (e.g. npm install).
+   */
+  private execWithProgress(
+    command: string,
+    args: string[],
+    stdinData: string | undefined,
+    signal: AbortSignal | undefined,
+    onProgress: ((chunk: string) => void) | undefined,
+  ): Promise<{ stdout: string; stderr: string }> {
+    const PROGRESS_THROTTLE_MS = 100;
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { timeout: 30000 });
+      const child = spawn(command, args, { timeout: 600000 });
       let stdout = "";
       let stderr = "";
+      let pendingChunk = "";
+      let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-      child.stdout.on("data", (chunk) => { stdout += chunk; });
-      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      const flushProgress = () => {
+        if (pendingChunk && onProgress) {
+          onProgress(pendingChunk);
+          pendingChunk = "";
+        }
+        flushTimer = undefined;
+      };
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        stdout += text;
+        if (onProgress) {
+          pendingChunk += text;
+          if (!flushTimer) {
+            flushTimer = setTimeout(flushProgress, PROGRESS_THROTTLE_MS);
+          }
+        }
+      });
+      child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
       child.on("error", reject);
       child.on("close", (code) => {
+        // Flush any remaining buffered progress
+        if (flushTimer) clearTimeout(flushTimer);
+        flushProgress();
+
         if (code !== 0 && code !== null) {
           const err: any = new Error(`Process exited with code ${code}`);
           err.stderr = stderr;
@@ -115,9 +165,22 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
         }
       });
 
-      child.stdin.write(stdinData);
+      if (stdinData !== undefined) {
+        child.stdin.write(stdinData);
+      }
       child.stdin.end();
+
+      signal?.addEventListener("abort", () => {
+        if (flushTimer) clearTimeout(flushTimer);
+        child.kill("SIGTERM");
+        reject(new Error("aborted"));
+      });
     });
+  }
+
+  /** @deprecated Use execWithProgress instead. Kept for backward compat with any external callers. */
+  private execWithStdin(command: string, args: string[], stdinData: string, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
+    return this.execWithProgress(command, args, stdinData, signal, undefined);
   }
 
   private parseOutput(stdout: string, stderr: string): unknown {
@@ -181,7 +244,12 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
       name: config.name,
       description: config.description,
       input_schema: config.input_schema,
-      handler: async (input) => {
+      supportsProgress: true,
+      handler: async (input, onProgress) => {
+        const sessionId = input.__sessionId as string | undefined;
+        const ctrl = new AbortController();
+        if (sessionId) this.abortControllers.set(sessionId, ctrl);
+        const signal = ctrl.signal;
         // Expand ~ and substitute ${param} in args
         const expand = (s: string) => s.replace(/^~/, process.env.HOME ?? "~");
         const args = (config.args ?? []).map(arg =>
@@ -197,20 +265,23 @@ The user's home directory is ${process.env.HOME}. Current working directory is $
           : undefined;
 
         try {
-          const { stdout, stderr } = stdinData !== undefined
-            ? await this.execWithStdin(config.command, args, stdinData)
-            : await execFileAsync(config.command, args, {
-                timeout: 30000,
-                maxBuffer: 1024 * 1024 * 10,
-              });
-
+          // Always use spawn so we can stream stdout via onProgress.
+          // For stdin-based configs (execWithStdin path) the logic is the same.
+          const { stdout, stderr } = await this.execWithProgress(
+            config.command, args, stdinData, signal, onProgress,
+          );
           return this.parseOutput(stdout, stderr);
         } catch (err: any) {
+          if (signal.aborted || err.message === "aborted") {
+            return { error: "aborted", stdout: "", stderr: "" };
+          }
           return {
             error: err.message,
             stderr: err.stderr?.trim(),
             exitCode: err.code,
           };
+        } finally {
+          if (sessionId) this.abortControllers.delete(sessionId);
         }
       },
     });

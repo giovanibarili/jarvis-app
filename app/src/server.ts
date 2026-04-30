@@ -97,12 +97,14 @@ export class HttpServer {
   private getCapabilities?: CapabilitiesProvider;
   private rendererCache = new Map<string, { js: string; mtime: number }>();
   private pluginRoutes = new Map<string, RouteHandler>();
-  private onAbort?: () => void;
-  private onClearSession?: () => void;
-  private onCompact?: () => Promise<void>;
+  private onAbort?: (sessionId: string) => void;
+  private onClearSession?: (sessionId: string) => void;
+  private onCompact?: (sessionId: string) => Promise<void>;
   private onHudRemove?: (pieceId: string) => void;
+  private onHudShow?: (pieceId: string) => void;
+  private onHudHide?: (pieceId: string) => void;
 
-  constructor(port: number, chatPiece: ChatPiece, getHudState: HudStateProvider, onAbort?: () => void, getCapabilities?: CapabilitiesProvider) {
+  constructor(port: number, chatPiece: ChatPiece, getHudState: HudStateProvider, onAbort?: (sessionId: string) => void, getCapabilities?: CapabilitiesProvider) {
     this.port = port;
     this.chatPiece = chatPiece;
     this.getHudState = getHudState;
@@ -112,11 +114,11 @@ export class HttpServer {
     this.server.listen(port, () => log.info({ port }, "HttpServer: listening"));
   }
 
-  setOnClearSession(handler: () => void): void {
+  setOnClearSession(handler: (sessionId: string) => void): void {
     this.onClearSession = handler;
   }
 
-  setOnCompact(handler: () => Promise<void>): void {
+  setOnCompact(handler: (sessionId: string) => Promise<void>): void {
     this.onCompact = handler;
   }
 
@@ -126,6 +128,14 @@ export class HttpServer {
 
   setOnHudRemove(handler: (pieceId: string) => void): void {
     this.onHudRemove = handler;
+  }
+
+  setOnHudShow(handler: (pieceId: string) => void): void {
+    this.onHudShow = handler;
+  }
+
+  setOnHudHide(handler: (pieceId: string) => void): void {
+    this.onHudHide = handler;
   }
 
   registerRoute(method: string, path: string, handler: RouteHandler): void {
@@ -148,6 +158,7 @@ export class HttpServer {
 
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
+    // ─── Chat endpoints — sessionId required on every call ───
     if (req.url === "/chat/send" && req.method === "POST") {
       log.info("HttpServer: POST /chat/send");
       this.chatPiece.handleSend(req, res);
@@ -156,36 +167,25 @@ export class HttpServer {
 
     if (req.url === "/chat/abort" && req.method === "POST") {
       log.info("HttpServer: POST /chat/abort");
-      if (this.onAbort) this.onAbort();
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
+      this.handleSessionScopedAction(req, res, (sid) => {
+        if (this.onAbort) this.onAbort(sid);
+      });
       return;
     }
 
     if (req.url === "/chat/clear-session" && req.method === "POST") {
       log.info("HttpServer: POST /chat/clear-session");
-      if (this.onClearSession) this.onClearSession();
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
+      this.handleSessionScopedAction(req, res, (sid) => {
+        if (this.onClearSession) this.onClearSession(sid);
+      });
       return;
     }
 
     if (req.url === "/chat/compact" && req.method === "POST") {
       log.info("HttpServer: POST /chat/compact");
-      if (this.onCompact) {
-        this.onCompact()
-          .then(() => {
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ ok: true }));
-          })
-          .catch((err: any) => {
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ ok: false, error: err.message }));
-          });
-      } else {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
-      }
+      this.handleSessionScopedAction(req, res, async (sid) => {
+        if (this.onCompact) await this.onCompact(sid);
+      });
       return;
     }
 
@@ -195,18 +195,12 @@ export class HttpServer {
       return;
     }
 
-    if (req.url === "/chat" && req.method === "POST") {
-      this.chatPiece.handleChat(req, res);
-      return;
-    }
-
-    if (req.url === "/chat-stream") {
+    if (req.url?.startsWith("/chat-stream") && req.method === "GET") {
       this.chatPiece.handleStream(req, res);
       return;
     }
 
-    // Return chat history from the current session for UI hydration
-    if (req.url === "/chat/history" && req.method === "GET") {
+    if (req.url?.startsWith("/chat/history") && req.method === "GET") {
       this.chatPiece.handleHistory(req, res);
       return;
     }
@@ -221,6 +215,27 @@ export class HttpServer {
           if (!settings.pieces[pieceId]) settings.pieces[pieceId] = { enabled: true, visible: true };
           settings.pieces[pieceId].visible = false;
           saveSettings(settings);
+          this.onHudHide?.(pieceId);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400); res.end();
+        }
+      });
+      return;
+    }
+
+    if (req.url === "/hud/show" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { pieceId } = JSON.parse(body);
+          const settings = loadSettings();
+          if (!settings.pieces[pieceId]) settings.pieces[pieceId] = { enabled: true, visible: true };
+          settings.pieces[pieceId].visible = true;
+          saveSettings(settings);
+          this.onHudShow?.(pieceId);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch {
@@ -620,15 +635,53 @@ export class HttpServer {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, output, exitCode, ms }));
 
-        // Broadcast result to chat timeline
-        this.chatPiece.broadcastEvent({
+        // Bash is a global side-effect — broadcast to the root session only.
+        // Actor/other-session bash would need its own endpoint carrying sessionId.
+        this.chatPiece.broadcastEvent("main", {
           type: "bash_result",
           command,
           output,
           exitCode,
           ms,
+          session: "main",
         });
       });
+    });
+  }
+
+  /**
+   * Helper for endpoints that take { sessionId } body and forward to a callback.
+   * Returns 400 if sessionId is missing/empty. Accepts sync or async callbacks.
+   */
+  private handleSessionScopedAction(
+    req: IncomingMessage,
+    res: ServerResponse,
+    action: (sessionId: string) => void | Promise<void>,
+  ): void {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", async () => {
+      let parsed: any;
+      try { parsed = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Invalid JSON: ${e}` }));
+        return;
+      }
+      const sid = typeof parsed.sessionId === "string" ? parsed.sessionId.trim() : "";
+      if (!sid) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "sessionId is required" }));
+        return;
+      }
+      try {
+        await action(sid);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err?.message ?? String(err) }));
+      }
     });
   }
 

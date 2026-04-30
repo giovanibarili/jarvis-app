@@ -1,7 +1,7 @@
 // src/ai/types.ts
 
 export interface AIStreamEvent {
-  type: 'text_delta' | 'tool_use' | 'message_complete' | 'error' | 'compaction';
+  type: 'text_delta' | 'tool_use' | 'message_complete' | 'error' | 'compaction' | 'compaction_start';
   text?: string;
   toolUse?: { id: string; name: string; input: Record<string, unknown> };
   stopReason?: 'end_turn' | 'tool_use' | 'max_tokens' | 'compaction';
@@ -12,6 +12,18 @@ export interface AIStreamEvent {
     cache_read_input_tokens: number;
   };
   error?: string;
+  /**
+   * Emitted at the START of a compaction operation. Only Engine B (fallback /
+   * manual `forceCompact`) emits this — Engine A (server-side, API-native) is
+   * effectively instantaneous from the client's perspective and only emits the
+   * final `compaction` event.
+   */
+  compactionStart?: {
+    engine: 'fallback';
+    tokensBefore: number;
+    /** Optional reason for why compaction started ('forced' | 'threshold'). */
+    reason?: 'forced' | 'threshold';
+  };
   compaction?: {
     summary: string;
     engine: 'api' | 'fallback';
@@ -66,6 +78,27 @@ export interface AISession {
   setContextInjector?(injector: () => InjectedContext[]): void;
   /** Force context compaction (Engine B) regardless of token threshold */
   forceCompact?(): AsyncGenerator<AIStreamEvent, void>;
+
+  // ─── Per-call model routing (optional) ──────────────────────────────────
+  // Providers that support per-call model selection implement these.
+  // The ModelRouter piece sets the override BEFORE sendAndStream/continueAndStream;
+  // the session consumes it on the next API call. Providers without
+  // per-call routing simply leave these unimplemented (router becomes no-op).
+
+  /** One-shot model for the next API call. Cleared after consumption. */
+  setNextModelOverride?(model: string | undefined): void;
+  /** Sticky model for all subsequent calls. `undefined` clears. */
+  setStickyModelOverride?(model: string | undefined): void;
+  /** Effective model for the next call without consuming any override. */
+  peekModel?(): string;
+
+  // ─── Per-session tool filtering (optional) ──────────────────────────────
+  // Plugins (e.g. actor-runner) can restrict the visible tool surface by role.
+  // Implemented by wrapping `getTools()` — the filter is consulted on every
+  // API call, so tools registered later still respect it.
+
+  /** Set a predicate that filters which tools are sent to the model. `undefined` clears. */
+  setToolFilter?(filter: ((toolName: string) => boolean) | undefined): void;
 }
 
 export interface CreateWithPromptOptions {
@@ -77,7 +110,13 @@ export interface CreateWithPromptOptions {
 }
 
 export interface AISessionFactory {
-  create(options?: { label?: string; restoreMessages?: unknown[] }): AISession;
-  createWithPrompt(options: CreateWithPromptOptions): AISession;
+  create(options?: { label?: string; restoreMessages?: unknown[]; restoredSessionId?: string }): AISession;
+  createWithPrompt(options: CreateWithPromptOptions & { restoredSessionId?: string }): AISession;
   getToolDefinitions(): Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
+  /**
+   * Optional: attach the EventBus so sessions created by the factory can publish
+   * provider-specific telemetry (e.g. per-session usage). Providers that do not
+   * emit usage events on the bus may leave this unimplemented.
+   */
+  setBus?(bus: import("../core/bus.js").EventBus): void;
 }

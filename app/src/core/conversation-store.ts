@@ -5,7 +5,11 @@ import { join, dirname } from "node:path";
 import { log } from "../logger/index.js";
 
 export interface StoredConversation {
+  /** Stable label for this session (e.g. "main", "actor-jarvis"). */
   sessionId: string;
+  /** Stable UUID for this session — sent as X-Claude-Code-Session-Id on every API call.
+   *  Generated once on first save, preserved across restarts. */
+  instanceId: string;
   provider: string;
   model: string;
   messages: unknown[];
@@ -34,6 +38,7 @@ export function saveConversation(
   messages: unknown[],
   provider: string,
   model: string,
+  instanceId?: string,
 ): void {
   try {
     ensureDir();
@@ -49,8 +54,20 @@ export function saveConversation(
       }
     }
 
+    // Preserve existing instanceId from disk if caller didn't provide one.
+    // This ensures the UUID survives auto-saves that don't re-supply it.
+    let stableId = instanceId;
+    if (!stableId) {
+      try {
+        const existing = JSON.parse(readFileSync(filePath(sessionLabel), "utf-8")) as StoredConversation;
+        stableId = existing.instanceId ?? (existing as any).apiSessionId; // migrate old field
+      } catch { /* no existing file */ }
+    }
+    if (!stableId) stableId = crypto.randomUUID();
+
     const data: StoredConversation = {
       sessionId: sessionLabel,
+      instanceId: stableId,
       provider,
       model,
       messages: trimmed,
@@ -110,12 +127,71 @@ export function clearConversation(sessionLabel: string): void {
   }
 }
 
+// ─── Route state (ModelRouter sticky per session) ──────────────────────
+// Stored separately from the conversation file. Conversation gets trimmed
+// to MAX_MESSAGES, archived, restored across providers — route state has
+// different lifecycle. Filename: <label>.route.json.
+
+interface StoredRoute {
+  sessionId: string;
+  sticky: string;
+  switchCount: number;
+  lastSwitchAt?: number;
+  lastReason?: string;
+  savedAt: string;
+}
+
+function routeFilePath(sessionLabel: string): string {
+  const safe = sessionLabel.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return join(SESSIONS_DIR, `${safe}.route.json`);
+}
+
+/**
+ * Save the ModelRouter route state for a session.
+ * Idempotent. Failures are swallowed — never break a turn because of route I/O.
+ */
+export function saveRouteState(
+  sessionLabel: string,
+  route: { sticky: string; switchCount: number; lastSwitchAt?: number; lastReason?: string },
+): void {
+  try {
+    ensureDir();
+    const data: StoredRoute = {
+      sessionId: sessionLabel,
+      sticky: route.sticky,
+      switchCount: route.switchCount,
+      lastSwitchAt: route.lastSwitchAt,
+      lastReason: route.lastReason,
+      savedAt: new Date().toISOString(),
+    };
+    writeFileSync(routeFilePath(sessionLabel), JSON.stringify(data, null, 2), "utf-8");
+    log.debug({ sessionLabel, sticky: route.sticky }, "ConversationStore: route saved");
+  } catch (err) {
+    log.warn({ sessionLabel, err }, "ConversationStore: route save failed");
+  }
+}
+
+/** Load the ModelRouter route state. Returns null if not found. */
+export function loadRouteState(sessionLabel: string): StoredRoute | null {
+  try {
+    const path = routeFilePath(sessionLabel);
+    if (!existsSync(path)) return null;
+    const raw = readFileSync(path, "utf-8");
+    const data: StoredRoute = JSON.parse(raw);
+    if (!data.sticky) return null;
+    return data;
+  } catch (err) {
+    log.warn({ sessionLabel, err }, "ConversationStore: route load failed");
+    return null;
+  }
+}
+
 /** List all saved session labels from disk */
 export function listSavedSessions(): string[] {
   try {
     if (!existsSync(SESSIONS_DIR)) return [];
     return readdirSync(SESSIONS_DIR)
-      .filter(f => f.endsWith(".json"))
+      .filter(f => f.endsWith(".json") && !f.endsWith(".route.json"))
       .map(f => f.replace(/\.json$/, ""));
   } catch {
     return [];

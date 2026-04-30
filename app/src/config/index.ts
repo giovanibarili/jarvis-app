@@ -63,9 +63,43 @@ export function getCurrentProvider(): string {
   return getProviderForModel(config.model);
 }
 
-export function getMaxContext(model?: string): number {
+/**
+ * Models that support 1M context via the `context-1m-2025-08-07` beta header.
+ * Without the header, all Claude 4.x models cap at 200k.
+ *
+ * Source: https://docs.anthropic.com/en/docs/build-with-claude/context-windows
+ * Confirmed members (2026-04): opus-4-7, opus-4-6, sonnet-4-6.
+ * Sonnet 4.5, Sonnet 4, Haiku 4.5, all 3.x models → 200k only.
+ */
+export function supportsLongContext(model?: string): boolean {
   const m = model ?? config.model;
-  if (m.includes("opus")) return 1_000_000;
-  if (m.includes("haiku")) return 200_000;
-  return 200_000; // sonnet and others
+  // Match exact model IDs (and dated variants like "claude-opus-4-7-20260101").
+  return /(?:^|-)(opus-4-7|opus-4-6|sonnet-4-6)(?:-|$)/.test(m);
+}
+
+export function getMaxContext(model?: string): number {
+  return supportsLongContext(model) ? 1_000_000 : 200_000;
+}
+
+/**
+ * Max output tokens per single completion/stream.
+ *
+ * Anthropic models as of 2026-04:
+ * - Opus 4.7:    128k output tokens
+ * - Sonnet 4.6:   64k output tokens
+ * - Haiku 4.5:    64k output tokens
+ *
+ * This directly limits:
+ * - How large a single tool_use `input` JSON can be (big write_file/bash payloads)
+ * - How long a single assistant text block can be
+ *
+ * Set too low → model truncates tool_use JSON mid-stream → capability receives
+ * empty/partial args → `command is required` / `content is required` errors.
+ */
+export function getMaxOutput(model?: string): number {
+  const m = model ?? config.model;
+  if (m.includes("opus")) return 128_000;
+  if (m.includes("haiku")) return 64_000;
+  if (m.includes("sonnet")) return 64_000;
+  return 16_000; // safe default for unknown models (OpenAI etc)
 }

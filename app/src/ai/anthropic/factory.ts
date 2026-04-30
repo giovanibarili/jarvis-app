@@ -1,8 +1,8 @@
 // src/ai/anthropic/factory.ts
 import { readFileSync, existsSync } from "node:fs";
-import Anthropic from "@anthropic-ai/sdk";
 import type { TextBlockParam } from "@anthropic-ai/sdk/resources/messages";
 import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../types.js";
+import type { EventBus } from "../../core/bus.js";
 import { AnthropicSession } from "./session.js";
 import { config } from "../../config/index.js";
 import { log } from "../../logger/index.js";
@@ -11,13 +11,13 @@ type CapabilityDef = { name: string; description: string; input_schema: Record<s
 type CapabilityProvider = () => CapabilityDef[];
 
 export class AnthropicSessionFactory implements AISessionFactory {
-  private client: Anthropic;
   private basePrompt: string;
   private getTools: CapabilityProvider;
   private getCoreContext: () => string[];
   private getPluginInstructions: () => string[];
   private getPluginContext: (sessionId?: string) => string[];
   private getInstructions: () => string;
+  private bus?: EventBus;
   private sessionCounter = 0;
 
   constructor(
@@ -27,7 +27,6 @@ export class AnthropicSessionFactory implements AISessionFactory {
     getPluginContext?: (sessionId?: string) => string[],
     getInstructions?: () => string,
   ) {
-    this.client = new Anthropic();
     this.basePrompt = this.loadBasePrompt();
     this.getTools = getTools;
     this.getCoreContext = getCoreContext ?? (() => []);
@@ -37,39 +36,29 @@ export class AnthropicSessionFactory implements AISessionFactory {
     log.info({ model: config.model, basePromptLength: this.basePrompt.length }, "AnthropicSessionFactory: initialized");
   }
 
+  /** Attach the EventBus so new sessions can publish per-session usage telemetry. */
+  setBus(bus: EventBus): void {
+    this.bus = bus;
+  }
+
   /**
-   * Build system blocks for sessions with custom prompt overrides.
-   * Same structure as main (buildSystemBlocks), but with:
-   * - basePromptOverride wrapped in <IMPORTANT> after jarvis-system.md
-   * - roleContext appended inside <system-reminder> after CLAUDE.md instructions
-   * Consolidates into max 2 system blocks (BP2 + BP3) to stay within Anthropic's 4 cache_control limit.
+   * Build system blocks for actor sessions.
+   * Actors get a clean, focused prompt: actor-system.md + role only.
+   * No jarvis-system.md, no CLAUDE.md instructions, no core contexts, no plugin instructions.
+   * This prevents actors from inheriting the JARVIS identity and persona.
    */
   private buildCustomSystemBlocks(basePromptOverride?: string, roleContext?: string, sessionId?: string): TextBlockParam[] {
     const blocks: TextBlockParam[] = [];
 
-    // Block 0: base prompt + identity override + core contexts + instructions + plugin instructions + role
-    const parts: string[] = [this.basePrompt];
+    // Block 0: actor identity (actor-system.md) + role
+    const parts: string[] = [];
 
     if (basePromptOverride) {
-      parts.push(`<IMPORTANT>\n${basePromptOverride}\n</IMPORTANT>`);
+      parts.push(basePromptOverride);
     }
 
-    const coreContexts = this.getCoreContext().filter(Boolean);
-    if (coreContexts.length > 0) {
-      parts.push(coreContexts.join("\n\n---\n\n"));
-    }
-
-    const instructions = this.getInstructions();
-    if (instructions || roleContext) {
-      const reminderParts: string[] = [];
-      if (instructions) reminderParts.push(instructions);
-      if (roleContext) reminderParts.push(roleContext);
-      parts.push(`<system-reminder>\n${reminderParts.join("\n\n")}\n</system-reminder>`);
-    }
-
-    const pluginInstructions = this.getPluginInstructions().filter(Boolean);
-    if (pluginInstructions.length > 0) {
-      parts.push(pluginInstructions.join("\n\n"));
+    if (roleContext) {
+      parts.push(roleContext);
     }
 
     blocks.push({
@@ -78,7 +67,7 @@ export class AnthropicSessionFactory implements AISessionFactory {
       cache_control: { type: "ephemeral" },
     });
 
-    // Block 1: plugin dynamic context (per-session)
+    // Block 1: plugin dynamic context (per-session — skills etc.)
     const pluginContexts = this.getPluginContext(sessionId).filter(Boolean);
     if (pluginContexts.length > 0) {
       blocks.push({
@@ -92,16 +81,17 @@ export class AnthropicSessionFactory implements AISessionFactory {
   }
 
   /** Create a session with custom system prompt overrides and prompt caching */
-  createWithPrompt(options: CreateWithPromptOptions): AISession {
-    const { label, basePromptOverride, roleContext } = options;
+  createWithPrompt(options: CreateWithPromptOptions & { restoredSessionId?: string }): AISession {
+    const { label, basePromptOverride, roleContext, restoredSessionId } = options;
     const blockBuilder = () => this.buildCustomSystemBlocks(basePromptOverride, roleContext, label);
-    log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext }, "AnthropicSessionFactory: creating custom session with cache");
+    log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext, restoredSessionId: !!restoredSessionId }, "AnthropicSessionFactory: creating custom session with cache");
     return new AnthropicSession({
-      client: this.client,
       model: () => config.model,
       systemPrompt: blockBuilder,
       getTools: this.getTools,
       label,
+      bus: this.bus,
+      restoredSessionId,
     });
   }
 
@@ -162,16 +152,17 @@ export class AnthropicSessionFactory implements AISessionFactory {
     return blocks;
   }
 
-  create(options?: { label?: string; restoreMessages?: unknown[] }): AISession {
+  create(options?: { label?: string; restoreMessages?: unknown[]; restoredSessionId?: string }): AISession {
     const label = options?.label ?? `session-${this.sessionCounter++}`;
-    log.debug({ label, contextBlocks: this.getCoreContext().length + this.getPluginContext().length }, "AnthropicSessionFactory: creating session");
+    log.debug({ label, contextBlocks: this.getCoreContext().length + this.getPluginContext().length, restoredSessionId: !!options?.restoredSessionId }, "AnthropicSessionFactory: creating session");
 
     const session = new AnthropicSession({
-      client: this.client,
       model: () => config.model,
       systemPrompt: () => this.buildSystemBlocks(label),
       getTools: this.getTools,
       label,
+      bus: this.bus,
+      restoredSessionId: options?.restoredSessionId,
     });
 
     if (options?.restoreMessages && options.restoreMessages.length > 0) {

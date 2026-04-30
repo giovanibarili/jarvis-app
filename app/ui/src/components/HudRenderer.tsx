@@ -4,6 +4,15 @@ import { DraggablePanel } from './DraggablePanel'
 import { renderers } from './renderers/index'
 import { CoreNodeOverlay } from './CoreNodeOverlay'
 import { ChatPanel } from './panels/ChatPanel'
+import { ChatPanelHudAdapter } from './panels/ChatPanelHudAdapter'
+
+// Core renderer registry — resolved when a HUD piece declares
+// `renderer: { plugin: null, file: '<name>' }`. Plugins (including
+// jarvis-plugin-actors) use this to mount the unified ChatPanel for any
+// session by passing `data.sessionId` in the HUD payload.
+const CORE_RENDERERS: Record<string, React.ComponentType<{ state: any }>> = {
+  ChatPanel: ChatPanelHudAdapter,
+}
 
 // ErrorBoundary — catches runtime errors in plugin renderers so they don't
 // take down the entire HUD. Only the broken panel shows an error message.
@@ -66,6 +75,150 @@ const STATUS_LABELS: Record<string, string> = {
   offline:       'OFFLINE',
 }
 
+// ─── Context Menu ──────────────────────────────────────────────────────────
+
+interface CtxMenuState { x: number; y: number }
+
+function HudContextMenu({
+  menu,
+  onClose,
+  allComponents,
+  hiddenPanels,
+  onTogglePanel,
+}: {
+  menu: CtxMenuState
+  onClose: () => void
+  allComponents: HudState['components']
+  hiddenPanels: Set<string>
+  onTogglePanel: (id: string, visible: boolean) => void
+}) {
+  // Close on click-outside or Escape
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  // Group components by plugin/piece prefix
+  const groups: Record<string, typeof allComponents> = {}
+  for (const c of allComponents) {
+    // derive group from pieceId: "jarvis-plugin-actors/actor-pool" → "actors"
+    // or plain "anthropic-metrics" → "anthropic"
+    let group = 'core'
+    if (c.id.startsWith('actor-')) group = 'actors'
+    else if (c.id.includes('anthropic')) group = 'anthropic'
+    else if (c.id.includes('capability')) group = 'capabilities'
+    else if (c.id.includes('task')) group = 'tasks'
+    else if (c.id.includes('canvas')) group = 'canvas'
+    else if (c.id.includes('chat')) group = 'chat'
+    else if (c.id.includes('model') || c.id.includes('provider')) group = 'model'
+    else if (c.id.includes('diff') || c.id.includes('hud-show')) group = 'viewer'
+    if (!groups[group]) groups[group] = []
+    groups[group].push(c)
+  }
+
+  const statusDot = (c: typeof allComponents[0]) => {
+    const visible = !hiddenPanels.has(c.id) && c.visible !== false
+    const color = !visible ? '#444'
+      : c.status === 'running' ? '#50fa7b'
+      : c.status === 'error' ? '#ff5555'
+      : '#4af'
+    return (
+      <span style={{
+        display: 'inline-block', width: 6, height: 6,
+        borderRadius: '50%', background: color,
+        marginRight: 6, flexShrink: 0, marginTop: 1,
+      }} />
+    )
+  }
+
+  return (
+    <>
+      {/* backdrop */}
+      <div
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, zIndex: 9998 }}
+      />
+      {/* menu */}
+      <div
+        style={{
+          position: 'fixed',
+          left: menu.x, top: menu.y,
+          zIndex: 9999,
+          background: '#0d1117',
+          border: '1px solid #2a3040',
+          borderRadius: 6,
+          minWidth: 220,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          color: '#cfd8e8',
+          overflow: 'hidden',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* header */}
+        <div style={{
+          padding: '6px 12px 5px',
+          fontSize: 9, letterSpacing: '1.5px',
+          color: '#4a5a6a', borderBottom: '1px solid #1a2030',
+          fontFamily: 'var(--font-display)', textTransform: 'uppercase',
+        }}>
+          HUDs
+        </div>
+
+        {Object.entries(groups).sort().map(([group, comps]) => (
+          <div key={group}>
+            {/* group label */}
+            <div style={{
+              padding: '4px 12px 2px',
+              fontSize: 9, letterSpacing: '1px',
+              color: '#3a4a5a', textTransform: 'uppercase',
+              fontFamily: 'var(--font-display)',
+            }}>
+              {group}
+            </div>
+            {comps.map(c => {
+              const visible = !hiddenPanels.has(c.id) && c.visible !== false
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => { onTogglePanel(c.id, visible); onClose() }}
+                  style={{
+                    display: 'flex', alignItems: 'flex-start',
+                    padding: '4px 12px',
+                    cursor: 'pointer',
+                    opacity: visible ? 1 : 0.45,
+                    transition: 'background 0.1s',
+                  }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(68,170,255,0.08)'}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                >
+                  {statusDot(c)}
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {c.name || c.id}
+                  </span>
+                  <span style={{ marginLeft: 8, color: '#3a4a5a', fontSize: 9 }}>
+                    {visible ? 'hide' : 'show'}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        ))}
+
+        {allComponents.length === 0 && (
+          <div style={{ padding: '8px 12px', color: '#4a5a6a', fontSize: 10 }}>
+            No panels registered
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+
 export function HudRenderer({ state }: { state: HudState }) {
   const coreComp = state.components.find(c => c.id === 'jarvis-core')
   const coreNodeComp = state.components.find(c => c.id === 'hud-core-node')
@@ -75,6 +228,7 @@ export function HudRenderer({ state }: { state: HudState }) {
 
   const [hiddenPanels, setHiddenPanels] = useState<Set<string>>(new Set())
   const [detachedPanels, setDetachedPanels] = useState<Set<string>>(new Set())
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null)
 
 
 
@@ -108,6 +262,29 @@ export function HudRenderer({ state }: { state: HudState }) {
       }).catch(() => {})
     }
   }, [state.components])
+
+  const openContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setCtxMenu({ x: e.clientX, y: e.clientY })
+  }, [])
+
+  const togglePanel = useCallback((id: string, currentlyVisible: boolean) => {
+    if (currentlyVisible) {
+      setHiddenPanels(prev => new Set([...prev, id]))
+      fetch('/hud/hide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pieceId: id }),
+      }).catch(() => {})
+    } else {
+      setHiddenPanels(prev => { const next = new Set(prev); next.delete(id); return next })
+      fetch('/hud/show', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pieceId: id }),
+      }).catch(() => {})
+    }
+  }, [])
 
   const detachPanel = useCallback((pieceId: string) => {
     const comp = state.components.find(c => c.id === pieceId)
@@ -157,7 +334,16 @@ export function HudRenderer({ state }: { state: HudState }) {
     : '#f44'
 
   return (
-    <div className="hudRoot">
+    <div className="hudRoot" onContextMenu={openContextMenu}>
+      {ctxMenu && (
+        <HudContextMenu
+          menu={ctxMenu}
+          onClose={() => setCtxMenu(null)}
+          allComponents={state.components.filter(c => c.id !== 'hud-core-node')}
+          hiddenPanels={hiddenPanels}
+          onTogglePanel={togglePanel}
+        />
+      )}
       <div className="hudDragBar">
         <div className="hudDragBarHandle" />
       </div>
@@ -191,12 +377,9 @@ export function HudRenderer({ state }: { state: HudState }) {
             minWidth={300}
             minHeight={120}
           >
-            <ChatPanel
-              streamUrl="/chat-stream"
-              sendUrl="/chat/send"
-              abortUrl="/chat/abort"
-              assistantLabel="JARVIS"
-            />
+            {/* App-level responsibility: the root chat is sessionId "main".
+                This is the ONLY place in the app that hardcodes it. */}
+            <ChatPanel sessionId="main" assistantLabel="JARVIS" />
           </DraggablePanel>
         )}
 
@@ -226,7 +409,34 @@ export function HudRenderer({ state }: { state: HudState }) {
             )
           }
 
-          // 2. Try plugin renderer (lazy loaded)
+          // 2. Core renderer — piece declares { plugin: null, file: 'ChatPanel' }
+          if (comp.renderer && comp.renderer.plugin === null) {
+            const CoreRenderer = CORE_RENDERERS[comp.renderer.file]
+            if (CoreRenderer) {
+              return (
+                <DraggablePanel
+                  key={comp.id}
+                  id={comp.name.toUpperCase()}
+                  pieceId={comp.id}
+                  defaultX={comp.position.x}
+                  defaultY={comp.position.y}
+                  defaultWidth={comp.size.width}
+                  defaultHeight={comp.size.height}
+                  minWidth={100}
+                  minHeight={60}
+                  onClose={() => hidePanel(comp.id)}
+                  onDetach={detachPanel}
+                  persistLayout={!comp.ephemeral}
+                >
+                  <PluginErrorBoundary fallback={<GenericRenderer state={comp} />}>
+                    <CoreRenderer state={comp} />
+                  </PluginErrorBoundary>
+                </DraggablePanel>
+              )
+            }
+          }
+
+          // 3. Plugin renderer (lazy loaded)
           if (comp.renderer) {
             const PluginRenderer = getPluginRenderer(comp.renderer.plugin, comp.renderer.file)
             return (
