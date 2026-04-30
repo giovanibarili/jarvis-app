@@ -4,11 +4,11 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0] — 2026-05-02
+## [0.3.0] — 2026-05-02
 
 ### Changed
 
-- Version bump for release 0.3. No breaking changes.
+- Version aligned with app release cadence. `@jarvis/core` now tracks `app` major.minor (0.3.x). Patch increments (`0.3.1`, `0.3.2`, …) for any API changes within the release. No breaking changes.
 
 ---
 
