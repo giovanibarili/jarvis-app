@@ -41,6 +41,13 @@ export interface PersistedCronJob {
   recurring: boolean;
   createdAt: number;
   lastRun?: number; // epoch ms of last execution
+  // delegate mode fields (optional)
+  mode?: "prompt" | "delegate";
+  role?: string;
+  model?: string;
+  reply_to?: string;
+  // catch-up: if true, runs immediately when a missed execution is detected on restore
+  catchUp?: boolean;
 }
 
 export interface CronSettings {

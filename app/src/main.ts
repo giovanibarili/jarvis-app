@@ -297,14 +297,19 @@ async function main() {
   pieces.push(new ChoicePromptPiece(capabilityRegistry, chatPiece));
 
   // Cron scheduler
-  pieces.push(new CronPiece(capabilityRegistry));
+  const cronPiece = new CronPiece(capabilityRegistry);
+  pieces.push(cronPiece);
 
   // Delegate-read-task — ephemeral worker for cheap exploration.
   // Uses the active provider's factory and the global capability registry.
-  pieces.push(new DelegateTaskPiece({
+  const delegateTaskPiece = new DelegateTaskPiece({
     getFactory: () => providerRouter.getFactory(),
     registry: capabilityRegistry,
-  }));
+  });
+  pieces.push(delegateTaskPiece);
+
+  // Wire delegate into cron so cron jobs can run in delegate mode directly.
+  cronPiece.setDelegatePiece(delegateTaskPiece);
 
   // Plugin manager
   const pluginManager = new PluginManager(capabilityRegistry);

@@ -78,15 +78,31 @@ export class AnthropicSession implements AISession {
   private lastRealInputTokens = 0;
 
   constructor(opts: {
-    client: Anthropic;
     model: string | (() => string);
     systemPrompt: string | (() => SystemPrompt);
     getTools: () => CapabilityDef[];
     label: string;
     bus?: EventBus;
+    /** If provided (e.g. restoring a saved conversation), reuse this UUID;
+     *  otherwise generate a fresh one. Either way, it is fixed for the lifetime
+     *  of this session and embedded in defaultHeaders below. */
+    restoredSessionId?: string;
   }) {
-    this._sessionId = crypto.randomUUID(); // overwritten by setApiSessionId() if restoring
-    this.client = opts.client;
+    this._sessionId = opts.restoredSessionId ?? crypto.randomUUID();
+    // One Anthropic client per session, with NuLLM/LiteLLM identity headers
+    // mirroring Claude Code CLI so traffic is attributed to the `claude_code`
+    // bucket in nullm_vendor_usage_by_event (AI Tools Dashboard pipeline).
+    // X-Claude-Code-Session-Id is set here once and reused for every request
+    // this session ever issues — no per-call header overrides needed.
+    this.client = new Anthropic({
+      defaultHeaders: {
+        "User-Agent": "claude-cli/2.1.112 (external, cli)",
+        "X-Claude-Code-Session-Id": this._sessionId,
+        "x-app": "cli",
+        "x-llm-application-name": "claude_code",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+    });
     const model = opts.model;
     this.getBaseModel = typeof model === "function" ? model : () => model;
     this.getSystemPrompt = typeof opts.systemPrompt === "function"
@@ -155,15 +171,6 @@ export class AnthropicSession implements AISession {
 
   setContextInjector(injector: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
     this.contextInjector = injector;
-  }
-
-  /**
-   * Restore a stable session UUID from persisted storage.
-   * Called by SessionManager after loading a saved conversation so that
-   * X-Claude-Code-Session-Id stays consistent across restarts for the same session.
-   */
-  setApiSessionId(id: string): void {
-    this._sessionId = id;
   }
 
   /**
@@ -618,14 +625,16 @@ export class AnthropicSession implements AISession {
       if (compactionConfig.useCompaction && Date.now() >= this.betaDisabledUntil) {
         betas.push("compact-2026-01-12");
       }
-      if (!betas.includes("effort-2025-11-24")) {
+      // effort is only supported by Sonnet and Opus — Haiku rejects it.
+      const modelSupportsEffort = !modelForCall.includes("haiku");
+      if (modelSupportsEffort && !betas.includes("effort-2025-11-24")) {
         betas.push("effort-2025-11-24");
       }
 
       // effort: "max" for main session (highest available), "high" for actors/subagents.
       // NOTE: some models don't support "xhigh" — use "max" which is universally
       // accepted by all models that support the effort-2025-11-24 beta header.
-      const effort = this.label === "main" ? "max" : "high";
+      const effort = modelSupportsEffort ? (this.label === "main" ? "max" : "high") : undefined;
 
       // metadata.user_id: mirrors CC pattern — session_id for backend cache optimization
       const metadata = { user_id: JSON.stringify({ session_id: this.sessionId }) };
@@ -654,11 +663,11 @@ export class AnthropicSession implements AISession {
             cache_control: { type: "ephemeral" as const },
             betas,
             metadata,
-            output_config: { effort },
+            ...(effort !== undefined ? { output_config: { effort } } : {}),
             ...(betas.includes("compact-2026-01-12") && compactionConfig.contextManagement
               ? { context_management: compactionConfig.contextManagement }
               : {}),
-          }, { signal: this.abortController.signal, headers: { "X-Claude-Code-Session-Id": this.sessionId } });
+          }, { signal: this.abortController.signal });
 
           betaStream.on("text", () => {});
           message = await betaStream.finalMessage();
@@ -687,8 +696,8 @@ export class AnthropicSession implements AISession {
           tools,
           cache_control: { type: "ephemeral" as const },
           metadata,
-          output_config: { effort },
-        } as any, { signal: this.abortController.signal, headers: { "X-Claude-Code-Session-Id": this.sessionId } });
+          ...(effort !== undefined ? { output_config: { effort } } : {}),
+        } as any, { signal: this.abortController.signal });
 
         stream.on("text", () => {});
         message = await stream.finalMessage();

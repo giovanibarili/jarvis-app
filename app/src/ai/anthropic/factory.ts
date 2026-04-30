@@ -1,6 +1,5 @@
 // src/ai/anthropic/factory.ts
 import { readFileSync, existsSync } from "node:fs";
-import Anthropic from "@anthropic-ai/sdk";
 import type { TextBlockParam } from "@anthropic-ai/sdk/resources/messages";
 import type { AISession, AISessionFactory, CreateWithPromptOptions } from "../types.js";
 import type { EventBus } from "../../core/bus.js";
@@ -12,7 +11,6 @@ type CapabilityDef = { name: string; description: string; input_schema: Record<s
 type CapabilityProvider = () => CapabilityDef[];
 
 export class AnthropicSessionFactory implements AISessionFactory {
-  private client: Anthropic;
   private basePrompt: string;
   private getTools: CapabilityProvider;
   private getCoreContext: () => string[];
@@ -29,7 +27,6 @@ export class AnthropicSessionFactory implements AISessionFactory {
     getPluginContext?: (sessionId?: string) => string[],
     getInstructions?: () => string,
   ) {
-    this.client = new Anthropic();
     this.basePrompt = this.loadBasePrompt();
     this.getTools = getTools;
     this.getCoreContext = getCoreContext ?? (() => []);
@@ -99,17 +96,17 @@ export class AnthropicSessionFactory implements AISessionFactory {
   }
 
   /** Create a session with custom system prompt overrides and prompt caching */
-  createWithPrompt(options: CreateWithPromptOptions): AISession {
-    const { label, basePromptOverride, roleContext } = options;
+  createWithPrompt(options: CreateWithPromptOptions & { restoredSessionId?: string }): AISession {
+    const { label, basePromptOverride, roleContext, restoredSessionId } = options;
     const blockBuilder = () => this.buildCustomSystemBlocks(basePromptOverride, roleContext, label);
-    log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext }, "AnthropicSessionFactory: creating custom session with cache");
+    log.debug({ label, hasBaseOverride: !!basePromptOverride, hasRoleContext: !!roleContext, restoredSessionId: !!restoredSessionId }, "AnthropicSessionFactory: creating custom session with cache");
     return new AnthropicSession({
-      client: this.client,
       model: () => config.model,
       systemPrompt: blockBuilder,
       getTools: this.getTools,
       label,
       bus: this.bus,
+      restoredSessionId,
     });
   }
 
@@ -170,17 +167,17 @@ export class AnthropicSessionFactory implements AISessionFactory {
     return blocks;
   }
 
-  create(options?: { label?: string; restoreMessages?: unknown[] }): AISession {
+  create(options?: { label?: string; restoreMessages?: unknown[]; restoredSessionId?: string }): AISession {
     const label = options?.label ?? `session-${this.sessionCounter++}`;
-    log.debug({ label, contextBlocks: this.getCoreContext().length + this.getPluginContext().length }, "AnthropicSessionFactory: creating session");
+    log.debug({ label, contextBlocks: this.getCoreContext().length + this.getPluginContext().length, restoredSessionId: !!options?.restoredSessionId }, "AnthropicSessionFactory: creating session");
 
     const session = new AnthropicSession({
-      client: this.client,
       model: () => config.model,
       systemPrompt: () => this.buildSystemBlocks(label),
       getTools: this.getTools,
       label,
       bus: this.bus,
+      restoredSessionId: options?.restoredSessionId,
     });
 
     if (options?.restoreMessages && options.restoreMessages.length > 0) {

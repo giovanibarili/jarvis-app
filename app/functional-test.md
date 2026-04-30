@@ -454,45 +454,103 @@ And all its pieces should be unregistered
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with cron "once:5s", prompt "Say hello", target "main"
+When cron_create is called with cron "once:5s", prompt "Say hello" from session "main"
 Then a job should appear in cron_list
-And after ~5 seconds, the prompt "Say hello" should be sent to the target session
+And the job's target should be "main" (auto-derived from the calling session)
+And after ~5 seconds, the prompt "Say hello" should be sent to session "main"
 And the job should be removed from cron_list after execution
+And the one-shot job should NOT be persisted in settings.user.json under cron.jobs
 ```
 
 ### Scenario: Create a recurring timer
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with cron "*/1 * * * *", prompt "Status check", target "main"
-Then the prompt should be sent every 1 minute
+When cron_create is called with cron "*/1 * * * *", prompt "Status check" from session "main"
+Then the prompt should be sent every 1 minute to session "main"
 And the job should persist in cron_list
+And the recurring job should be persisted in settings.user.json under cron.jobs with target "main"
 When cron_delete is called with the job ID
 Then the recurring timer should stop
 And the job should be removed from cron_list
+And the entry should be removed from settings.user.json
 ```
 
-### Scenario: Target session routing (target is REQUIRED)
+### Scenario: target is auto-derived from the calling session
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called with target "main"
-Then the prompt should be published with target "main"
-When cron_create is called with target "custom-session"
-Then the prompt should be published with target "custom-session"
-And there should be no hardcoded session ID prefixes
+When cron_create is called from session "main" (no target field accepted)
+Then the job's target must be "main"
+When cron_create is called from session "actor-alice"
+Then the job's target must be "actor-alice"
+And the LLM must NOT be able to specify target explicitly (field absent from schema)
 ```
 
-### Scenario: target is required — no implicit default
+### Scenario: persisted recurring jobs keep original target across restart
+
+```gherkin
+Given a recurring cron job was created from session "actor-bob" with target "actor-bob"
+When JARVIS restarts
+Then the job should be restored with target "actor-bob"
+And subsequent triggers should fire to session "actor-bob"
+```
+
+### Scenario: delegate mode — cron fires ephemeral worker directly
 
 ```gherkin
 Given JARVIS is online
-When cron_create is called WITHOUT a target field
-Then the call must return { ok: false, error: /target is required/ }
-And no job must be created (cron_list count unchanged)
-And no entry must be persisted in settings.user.json under cron.jobs
-When cron_create is called with target "" (empty string)
-Then the call must also return { ok: false, error: /target is required/ }
+When cron_create is called with cron "once:10s", prompt "Summarize: hello world", mode "delegate", role "generic", model "haiku"
+Then a job should appear in cron_list with mode "delegate"
+And after ~10 seconds, NO prompt should be sent to the calling session's LLM
+And instead, an ephemeral worker should run with role "generic" and model "haiku"
+And the worker's summary should arrive in the calling session as "[CRON delegate \"<id>\"] <summary>"
+And the one-shot delegate job should be removed from cron_list after execution
+```
+
+### Scenario: delegate mode — error is reported to reply_to session
+
+```gherkin
+Given JARVIS is online
+When cron_create is called with mode "delegate" and role "nonexistent-role"
+And the job fires
+Then the calling session should receive "[CRON delegate \"<id>\" ERROR] Unknown role: nonexistent-role..."
+```
+
+### Scenario: delegate mode — reply_to routes result to different session
+
+```gherkin
+Given JARVIS is online and session "main" exists
+When cron_create is called from session "actor-worker" with mode "delegate", reply_to "main"
+And the job fires
+Then the delegate summary should arrive in session "main" (not "actor-worker")
+```
+
+### Scenario: catch_up — missed daily slot fires immediately on restore
+
+```gherkin
+Given a recurring daily job at "09:00" with catch_up: true, lastRun 2 days ago
+When JARVIS restarts at 13:00 (slot already missed today)
+Then the job should fire within 1s of restore (catch-up execution)
+And the next scheduled run should be tomorrow at 09:00
+```
+
+### Scenario: no catch_up — missed daily slot is skipped
+
+```gherkin
+Given a recurring daily job at "09:00" with catch_up: false (default), lastRun 2 days ago
+When JARVIS restarts at 13:00
+Then the job should NOT fire immediately
+And the next scheduled run should be tomorrow at 09:00
+```
+
+### Scenario: catch_up — only applies to daily/weekly, not interval
+
+```gherkin
+Given a recurring interval job "*/5 * * * *" with catch_up: true
+When JARVIS restarts after a missed run
+Then catch_up has no effect (interval already uses elapsed-time scheduling)
+And the job should fire at the normal next interval slot
 ```
 
 ## Feature: Context Compaction

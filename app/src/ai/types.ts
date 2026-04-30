@@ -110,8 +110,8 @@ export interface CreateWithPromptOptions {
 }
 
 export interface AISessionFactory {
-  create(options?: { label?: string; restoreMessages?: unknown[] }): AISession;
-  createWithPrompt(options: CreateWithPromptOptions): AISession;
+  create(options?: { label?: string; restoreMessages?: unknown[]; restoredSessionId?: string }): AISession;
+  createWithPrompt(options: CreateWithPromptOptions & { restoredSessionId?: string }): AISession;
   getToolDefinitions(): Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
   /**
    * Optional: attach the EventBus so sessions created by the factory can publish

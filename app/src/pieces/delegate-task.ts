@@ -93,6 +93,13 @@ function loadRole(roleId: string, rolesDir: string): RoleDefinition | null {
   }
 }
 
+export interface DelegateRunOptions {
+  task: string;
+  role?: string;
+  model?: string;
+  timeout_seconds?: number;
+}
+
 export class DelegateTaskPiece implements Piece {
   readonly id = "delegate-task";
   readonly name = "DelegateTask";
@@ -148,6 +155,20 @@ export class DelegateTaskPiece implements Piece {
 
   async stop(): Promise<void> {
     // No persistent state.
+  }
+
+  /** Public API — callable by other pieces (e.g. CronPiece in delegate mode). */
+  async runDelegate(opts: DelegateRunOptions): Promise<{ summary: string; error?: string }> {
+    const result = await this.handleDelegate({
+      task: opts.task,
+      role: opts.role,
+      model: opts.model,
+      timeout_seconds: opts.timeout_seconds,
+    }) as any;
+    return {
+      summary: result.summary ?? result.partialOutput ?? "",
+      error: result.error,
+    };
   }
 
   private async handleDelegate(input: Record<string, unknown>): Promise<unknown> {
