@@ -136,29 +136,37 @@ export function parseCron(cron: string): ParsedCron | null {
  * Returns true if a daily/weekly job missed its last expected slot.
  * Used to detect catch-up scenarios on restore.
  */
-export function hasMissedSlot(parsed: ParsedCron, lastRun?: number): boolean {
-  if (!lastRun) return false;
+export function hasMissedSlot(parsed: ParsedCron, lastRun?: number, createdAt?: number): boolean {
   if (parsed.type !== "daily" && parsed.type !== "weekly") return false;
 
   const now = Date.now();
-  const hour = parsed.hour ?? 0;
+  const hours = parsed.hours ?? (parsed.hour != null ? [parsed.hour] : [0]);
   const minute = parsed.minute ?? 0;
   const dow = parsed.dow ?? [0, 1, 2, 3, 4, 5, 6];
 
-  // Walk backwards up to 7 days to find the most recent expected slot
-  const candidate = new Date();
-  candidate.setSeconds(0, 0);
-  candidate.setHours(hour, minute);
-
-  for (let offset = 0; offset <= 7; offset++) {
-    const d = new Date(candidate.getTime() - offset * 86_400_000);
-    if (d.getTime() > now) continue; // skip future slots
-    if (!dow.includes(d.getDay())) continue;
-    // Found the most recent expected slot — was it after lastRun?
-    return d.getTime() > lastRun;
+  // Walk backwards up to 7 days × all hours to find the most recent expected slot
+  let mostRecent = -Infinity;
+  for (let dayOffset = 0; dayOffset <= 7; dayOffset++) {
+    for (const hour of hours) {
+      const candidate = new Date(now);
+      candidate.setSeconds(0, 0);
+      candidate.setHours(hour, minute);
+      candidate.setTime(candidate.getTime() - dayOffset * 86_400_000);
+      if (candidate.getTime() <= now && dow.includes(candidate.getDay())) {
+        if (candidate.getTime() > mostRecent) mostRecent = candidate.getTime();
+      }
+    }
   }
 
-  return false;
+  if (mostRecent === -Infinity) return false;
+
+  // Never ran: catch-up if the most recent slot is after job was created
+  if (!lastRun) {
+    const anchor = createdAt ?? 0;
+    return mostRecent > anchor;
+  }
+
+  return mostRecent > lastRun;
 }
 
 export function msUntilNextRun(parsed: ParsedCron, lastRun?: number): number {
@@ -329,7 +337,7 @@ export class CronPiece implements Piece {
       };
 
       // Catch-up: if enabled and a slot was missed, fire immediately (1s delay)
-      const shouldCatchUp = p.catchUp && hasMissedSlot(parsed, p.lastRun);
+      const shouldCatchUp = p.catchUp && hasMissedSlot(parsed, p.lastRun, p.createdAt);
       if (shouldCatchUp) {
         log.info({ id, lastRun: p.lastRun }, "CronPiece: catch-up detected, scheduling immediate execution");
       }

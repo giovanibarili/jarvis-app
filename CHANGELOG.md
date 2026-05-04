@@ -5,6 +5,14 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-02
+
+### Changed
+
+- **Release 0.3 open.** Starting new iteration.
+
+---
+
 ## [0.2.7] - 2026-05-02
 
 ### Fixed
