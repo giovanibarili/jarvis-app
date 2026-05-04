@@ -545,16 +545,22 @@ export class HttpServer {
   }
 
   private async servePluginRenderer(pluginName: string, fileName: string, res: ServerResponse): Promise<void> {
-    const settings = (await import("./core/settings.js")).load();
-    const pluginPath = settings.plugins?.[pluginName]?.path;
+    // "core" is a special plugin name — resolves to the built-in renderers directory.
+    let filePath: string;
+    if (pluginName === "core") {
+      const coreRenderersDir = join(new URL(".", import.meta.url).pathname, "..", "ui", "src", "renderers");
+      filePath = join(coreRenderersDir, fileName);
+    } else {
+      const settings = (await import("./core/settings.js")).load();
+      const pluginPath = settings.plugins?.[pluginName]?.path;
 
-    if (!pluginPath) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: `Plugin not found: ${pluginName}` }));
-      return;
+      if (!pluginPath) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Plugin not found: ${pluginName}` }));
+        return;
+      }
+      filePath = join(pluginPath, "renderers", fileName);
     }
-
-    const filePath = join(pluginPath, "renderers", fileName);
     if (!existsSync(filePath)) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: `Renderer not found: ${fileName}` }));
