@@ -11,7 +11,7 @@ import type { Piece } from "./piece.js";
 import type { HudUpdateMessage } from "./types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { PieceManager } from "./piece-manager.js";
-import type { PluginContext, ContextInjectorFn, InjectedContext } from "@jarvis/core";
+import type { PluginContext, ContextInjectorFn } from "@jarvis/core";
 import type { AISessionFactory } from "../ai/types.js";
 // Note: getMessageInjectedSkills was removed — skill injection is a plugin concern
 import type { SessionManager } from "./session-manager.js";
@@ -97,7 +97,7 @@ export class PluginManager implements Piece {
   /**
    * Install (or refresh) the composite context injector on a session.
    * The aggregator iterates every registered injector, concatenates their
-   * contributions, and returns the combined InjectedContext[]. Idempotent —
+   * contributions, and returns the combined string[]. Idempotent —
    * calling twice on the same session just replaces the previous aggregator
    * with one that closes over the current Set, so additions/removals to
    * `this.contextInjectors` are picked up live.
@@ -105,9 +105,9 @@ export class PluginManager implements Piece {
   private installAggregatorOnSession(session: unknown): void {
     const setter = (session as { setContextInjector?: (fn: ContextInjectorFn) => void }).setContextInjector;
     if (typeof setter !== "function") return; // provider doesn't support
-    const inject: ContextInjectorFn = (sessionId: string): InjectedContext[] => {
+    const inject: ContextInjectorFn = (sessionId: string): string[] => {
       if (this.contextInjectors.size === 0) return [];
-      const out: InjectedContext[] = [];
+      const out: string[] = [];
       for (const fn of this.contextInjectors) {
         try {
           const contribs = fn(sessionId);

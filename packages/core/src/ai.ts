@@ -10,27 +10,19 @@ export interface AIStreamEvent {
 }
 
 /**
- * Ephemeral context injected as user messages before each API call.
- * Lives between the stable history and the new user message — preserves
- * system-prompt cache because the prefix up to the injection is stable.
- *
- * @since 0.4.0
- */
-export interface InjectedContext {
-  role: "user";
-  content: string;
-  cache_control?: { type: "ephemeral" };
-}
-
-/**
  * Callback invoked by AISession before each API call to gather ephemeral
- * context to inject as messages. Receives the session's identifier (label)
- * so the callback can scope per-session caches, privacy filters, or
- * multi-tenant logic. Return [] to contribute nothing for this call.
+ * context to prepend (as a cache_control:ephemeral block) to the user message.
+ * Receives the session's identifier (label) so the callback can scope
+ * per-session caches, privacy filters, or multi-tenant logic.
+ * Return [] to contribute nothing for this call.
+ *
+ * Each string in the returned array is a context block. Multiple blocks
+ * are concatenated and prepended to the user message content with
+ * cache_control: { type: "ephemeral" }.
  *
  * @since 0.4.0
  */
-export type ContextInjectorFn = (sessionId: string) => InjectedContext[];
+export type ContextInjectorFn = (sessionId: string) => string[];
 
 export interface AISession {
   readonly sessionId: string;
@@ -41,8 +33,8 @@ export interface AISession {
 
   /**
    * Set the single context injector for this session. Receives sessionId,
-   * returns ephemeral InjectedContext[] to be inserted as user messages
-   * (with cache_control: ephemeral) before each API call.
+   * returns string[] of context blocks to prepend (with cache_control:ephemeral)
+   * to the next user message content array before each API call.
    *
    * Plugins should normally use `PluginContext.registerContextInjector`
    * (composes multiple injectors) instead of calling this directly.

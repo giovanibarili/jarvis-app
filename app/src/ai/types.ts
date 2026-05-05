@@ -54,20 +54,14 @@ export interface ImageBlock {
   mediaType: string;
 }
 
-/** Ephemeral context injected as user messages before each API call */
-export interface InjectedContext {
-  role: "user";
-  content: string;
-  cache_control?: { type: "ephemeral" };
-}
-
 /**
  * Callback invoked by AISession before each API call to gather ephemeral
- * context to inject as messages. Receives the session's identifier (label)
- * so the callback can scope per-session caches, privacy filters, or
- * multi-tenant logic. Return [] to contribute nothing for this call.
+ * context to prepend (as a cache_control:ephemeral block) to the user message.
+ * Returns string[] — each string is a context block. Multiple blocks are
+ * joined and prepended to the user message content with cache_control:ephemeral.
+ * Return [] to contribute nothing for this call.
  */
-export type ContextInjectorFn = (sessionId: string) => InjectedContext[];
+export type ContextInjectorFn = (sessionId: string) => string[];
 
 export interface AISession {
   readonly sessionId: string;
