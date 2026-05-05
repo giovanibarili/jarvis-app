@@ -245,9 +245,6 @@ export class AnthropicSession implements AISession {
       lastMessageRole: this.messages[this.messages.length - 1]?.role,
     }, "AnthropicSession: sendAndStream (entry)");
 
-    // Inject message-mode context (e.g. skills with injection: message)
-    this.injectEphemeralContext();
-
     if (images && images.length > 0) {
       const content: ContentBlockParam[] = [];
       for (const img of images) {
@@ -262,6 +259,11 @@ export class AnthropicSession implements AISession {
     } else {
       this.messages.push({ role: "user", content: prompt });
     }
+
+    // Inject ephemeral context AFTER the user message is in the history so
+    // that retriever plugins can read the current prompt from lastUserMsg.
+    // (Previously this ran before the push — retriever saw no lastUserMsg yet.)
+    this.injectEphemeralContext();
 
     // Detect alternation violations — Anthropic API rejects two consecutive
     // user messages (or two consecutive assistants) with HTTP 400. This pass
@@ -357,7 +359,14 @@ export class AnthropicSession implements AISession {
   }
 
   getMessages(): unknown[] {
-    return this.messages;
+    // Filter out any injected ephemeral messages before exposing the history
+    // (defensive — they're normally removed before saves, but if a save races
+    // with an in-flight API call, this prevents leaking them to disk and
+    // accumulating across restarts).
+    return this.messages.filter((m: any) => {
+      if (!Array.isArray(m.content)) return true;
+      return !m.content.some((b: any) => b?._injected === true);
+    });
   }
 
   setMessages(messages: unknown[]): void {
@@ -658,7 +667,7 @@ export class AnthropicSession implements AISession {
             model: modelForCall,
             max_tokens: maxOutForCall,
             system: this.getSystemPrompt(),
-            messages: this.messages,
+            messages: this.stripInjectedMarkers(this.messages),
             tools,
             cache_control: { type: "ephemeral" as const },
             betas,
@@ -692,7 +701,7 @@ export class AnthropicSession implements AISession {
           model: modelForCall,
           max_tokens: maxOutForCall,
           system: this.getSystemPrompt(),
-          messages: this.messages,
+          messages: this.stripInjectedMarkers(this.messages),
           tools,
           cache_control: { type: "ephemeral" as const },
           metadata,
@@ -867,36 +876,118 @@ export class AnthropicSession implements AISession {
    */
   private injectedContextCount = 0;
 
+  /**
+   * Returns true if the last assistant message contains an unresolved tool_use block
+   * (one whose tool_use_id has no matching tool_result anywhere later in history).
+   * Anthropic API requires the next user message after a tool_use to start with the
+   * matching tool_result block — injecting ephemeral text breaks this and produces 400.
+   */
+  private hasPendingToolUse(): boolean {
+    // Collect all unresolved tool_use ids by walking forward.
+    const pending = new Set<string>();
+    for (const m of this.messages) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content as any[]) {
+        if (b?.type === "tool_use" && b.id) pending.add(b.id);
+        if (b?.type === "tool_result" && b.tool_use_id) pending.delete(b.tool_use_id);
+      }
+    }
+    return pending.size > 0;
+  }
+
   private injectEphemeralContext(): void {
     // Remove previously injected context messages (they're always at the end, before the new user message)
     this.removeInjectedContext();
 
     if (!this.contextInjector) return;
+
+    // Skip injection if we have a pending tool_use — the next user message MUST be a tool_result,
+    // and Anthropic rejects any other content in between (HTTP 400: "tool_use ids were found
+    // without tool_result blocks immediately after").
+    if (this.hasPendingToolUse()) {
+      log.debug({ label: this.label }, "AnthropicSession: skipping ephemeral context injection (pending tool_use)");
+      return;
+    }
+
     // Pass session label as the identifier — plugins use it to scope per-session
     // caches, privacy filters, or multi-tenant logic.
     const contexts = this.contextInjector(this.label);
     if (contexts.length === 0) return;
 
-    for (const ctx of contexts) {
-      this.messages.push({
-        role: "user",
-        content: [{ type: "text", text: ctx.content, ...(ctx.cache_control ? { cache_control: ctx.cache_control } : {}) }],
-      } as any);
-      // Anthropic requires alternating user/assistant — add a synthetic assistant ack
-      this.messages.push({
-        role: "assistant",
-        content: [{ type: "text", text: "Understood." }],
-      });
+    let injected = 0;
+    try {
+      for (const ctx of contexts) {
+        this.messages.push({
+          role: "user",
+          // _injected marker is stripped before send (see stripInjectedMarkers).
+          // It survives in-memory bookkeeping but is removed from the wire payload.
+          content: [{ type: "text", text: ctx.content, ...(ctx.cache_control ? { cache_control: ctx.cache_control } : {}), _injected: true }],
+        } as any);
+        injected++;
+        // Anthropic requires alternating user/assistant — add a synthetic assistant ack
+        this.messages.push({
+          role: "assistant",
+          content: [{ type: "text", text: "Understood.", _injected: true }],
+        } as any);
+        injected++;
+      }
+    } finally {
+      // Always update counter to reflect what's actually in messages,
+      // even if we threw mid-loop (so cleanup still finds them).
+      this.injectedContextCount = injected;
     }
-    this.injectedContextCount = contexts.length * 2; // user + assistant pairs
     log.debug({ label: this.label, injected: contexts.length }, "AnthropicSession: ephemeral context injected");
   }
 
+  /**
+   * Remove ephemeral injected context messages from `this.messages`.
+   *
+   * Robustness strategy (defends against counter desync from restore/persist/
+   * compaction/mid-flight errors):
+   *   1. Full scan — filter out any message that carries the `_injected` marker,
+   *      regardless of position. This handles the edge case where a non-injected
+   *      message was appended after the injected ones (e.g. the new user prompt
+   *      was pushed before removeInjectedContext ran), which broke the old
+   *      backwards-scan-until-break approach.
+   *
+   * The `_injected` marker is set on every message added by injectEphemeralContext
+   * and never appears anywhere else, so this is safe to scan blindly.
+   */
   private removeInjectedContext(): void {
-    if (this.injectedContextCount > 0) {
-      this.messages.splice(this.messages.length - this.injectedContextCount, this.injectedContextCount);
-      this.injectedContextCount = 0;
+    const before = this.messages.length;
+    // Filter in-place: keep only non-injected messages.
+    const filtered = this.messages.filter((m: any) => {
+      const c = m?.content;
+      return !(Array.isArray(c) && c.some((b: any) => b?._injected === true));
+    });
+    this.messages.length = 0;
+    for (const m of filtered) this.messages.push(m);
+    const removed = before - this.messages.length;
+    if (removed > 0) {
+      log.debug({ label: this.label, removed }, "AnthropicSession: removed injected context messages");
     }
+    this.injectedContextCount = 0;
+  }
+
+  /**
+   * Strip the `_injected` marker from message content blocks before sending to the API.
+   * Returns a shallow-cloned messages array safe to send. We don't mutate this.messages
+   * because removeInjectedContext() needs the marker to find them later.
+   */
+  private stripInjectedMarkers(msgs: MessageParam[]): MessageParam[] {
+    return msgs.map((m: any) => {
+      if (!Array.isArray(m.content)) return m;
+      const hasMarker = m.content.some((b: any) => b?._injected === true);
+      if (!hasMarker) return m;
+      return {
+        ...m,
+        content: m.content.map((b: any) => {
+          if (!b || b._injected !== true) return b;
+          const { _injected, ...rest } = b;
+          return rest;
+        }),
+      };
+    });
   }
 
   private stripImagesFromMessages(): number {
