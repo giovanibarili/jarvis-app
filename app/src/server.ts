@@ -591,7 +591,25 @@ export class HttpServer {
         write: false,
         external: ["@jarvis/core"],
         banner: {
-          js: `const { createElement: __jarvis_jsx, createElement, Fragment: __jarvis_Fragment, Fragment, useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } = window.__JARVIS_REACT;\nconst { useHudState, useHudPiece, useHudReactor } = window.__JARVIS_HUD_HOOKS || {};`,
+          // The banner exposes React + HUD hooks as top-level identifiers
+          // so plugin renderer code can use bare names (`createElement`,
+          // `useState`, etc.). PROBLEM: when a renderer pulls in a heavy
+          // third-party lib (e.g. neovis.js → vis-network), the bundled
+          // output may itself contain a top-level `var createElement` from
+          // that lib, which collides with our `const createElement` and
+          // throws "Identifier 'createElement' has already been declared".
+          //
+          // Mitigation: use `var` (function-scoped, hoisted, redeclarable)
+          // instead of `const`. If a bundled dep also declares a top-level
+          // `var createElement`, both are merged into a single binding
+          // hoisted to the top of the module — the dep's later assignment
+          // wins for its internal scope, but the dep typically only uses
+          // its own local references, not our bare `createElement`.
+          //
+          // For our own JSX factory we use a scoped alias `__jarvis_jsx`
+          // captured BEFORE any later code runs (set as a `var` too, so
+          // it survives any subsequent reassignment).
+          js: `var __JARVIS_REACT__ = window.__JARVIS_REACT;\nvar __JARVIS_HUD__ = window.__JARVIS_HUD_HOOKS || {};\nvar createElement = __JARVIS_REACT__.createElement;\nvar Fragment = __JARVIS_REACT__.Fragment;\nvar useEffect = __JARVIS_REACT__.useEffect;\nvar useRef = __JARVIS_REACT__.useRef;\nvar useState = __JARVIS_REACT__.useState;\nvar useCallback = __JARVIS_REACT__.useCallback;\nvar useMemo = __JARVIS_REACT__.useMemo;\nvar useSyncExternalStore = __JARVIS_REACT__.useSyncExternalStore;\nvar __jarvis_jsx = __JARVIS_REACT__.createElement;\nvar __jarvis_Fragment = __JARVIS_REACT__.Fragment;\nvar useHudState = __JARVIS_HUD__.useHudState;\nvar useHudPiece = __JARVIS_HUD__.useHudPiece;\nvar useHudReactor = __JARVIS_HUD__.useHudReactor;`,
         },
       });
 
