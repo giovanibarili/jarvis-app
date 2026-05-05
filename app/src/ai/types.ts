@@ -61,6 +61,14 @@ export interface InjectedContext {
   cache_control?: { type: "ephemeral" };
 }
 
+/**
+ * Callback invoked by AISession before each API call to gather ephemeral
+ * context to inject as messages. Receives the session's identifier (label)
+ * so the callback can scope per-session caches, privacy filters, or
+ * multi-tenant logic. Return [] to contribute nothing for this call.
+ */
+export type ContextInjectorFn = (sessionId: string) => InjectedContext[];
+
 export interface AISession {
   readonly sessionId: string;
   sendAndStream(prompt: string, images?: ImageBlock[]): AsyncGenerator<AIStreamEvent, void>;
@@ -75,7 +83,7 @@ export interface AISession {
   /** Clean up message history after abort during waiting_tools */
   cleanupAbortedTools?(pendingCalls: CapabilityCall[]): void;
   /** Set a callback to provide ephemeral context injected as messages (not system prompt) */
-  setContextInjector?(injector: () => InjectedContext[]): void;
+  setContextInjector?(injector: ContextInjectorFn): void;
   /** Force context compaction (Engine B) regardless of token threshold */
   forceCompact?(): AsyncGenerator<AIStreamEvent, void>;
 

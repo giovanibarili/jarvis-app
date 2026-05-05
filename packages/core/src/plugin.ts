@@ -1,7 +1,7 @@
 import type { EventBus } from "./bus.js";
 import type { Piece } from "./piece.js";
 import type { CapabilityRegistry } from "./tools.js";
-import type { AISessionFactory, SessionManager } from "./ai.js";
+import type { AISessionFactory, ContextInjectorFn, SessionManager } from "./ai.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export interface PluginManifest {
@@ -51,6 +51,24 @@ export interface PluginContext {
   unregisterSlashCommand: (name: string) => void;
   /** Scoped graph handle for registering children on the piece's graph node (added in 0.3.0) */
   graphHandle?: (pieceId: string) => GraphHandle;
+  /**
+   * Register a context injector that contributes ephemeral messages to
+   * every owned AISession (current and future). The callback receives the
+   * session id (label) so plugins can scope per-session, filter by privacy,
+   * or short-circuit by returning [].
+   *
+   * Multiple plugins may register injectors independently — the core
+   * composes them and concatenates their contributions in registration order.
+   *
+   * Returns an unregister function. Call it on plugin shutdown to remove
+   * the injector cleanly.
+   *
+   * Use this instead of mutating session.setContextInjector directly: this
+   * API supports multi-plugin composition without conflict.
+   *
+   * @since 0.4.0
+   */
+  registerContextInjector?: (fn: ContextInjectorFn) => () => void;
 }
 
 export interface JarvisPlugin {

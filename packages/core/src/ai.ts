@@ -9,12 +9,50 @@ export interface AIStreamEvent {
   error?: string;
 }
 
+/**
+ * Ephemeral context injected as user messages before each API call.
+ * Lives between the stable history and the new user message — preserves
+ * system-prompt cache because the prefix up to the injection is stable.
+ *
+ * @since 0.4.0
+ */
+export interface InjectedContext {
+  role: "user";
+  content: string;
+  cache_control?: { type: "ephemeral" };
+}
+
+/**
+ * Callback invoked by AISession before each API call to gather ephemeral
+ * context to inject as messages. Receives the session's identifier (label)
+ * so the callback can scope per-session caches, privacy filters, or
+ * multi-tenant logic. Return [] to contribute nothing for this call.
+ *
+ * @since 0.4.0
+ */
+export type ContextInjectorFn = (sessionId: string) => InjectedContext[];
+
 export interface AISession {
   readonly sessionId: string;
   sendAndStream(prompt: string): AsyncGenerator<AIStreamEvent, void>;
   addToolResults(toolCalls: CapabilityCall[], results: CapabilityResult[]): void;
   continueAndStream(): AsyncGenerator<AIStreamEvent, void>;
   close(): void;
+
+  /**
+   * Set the single context injector for this session. Receives sessionId,
+   * returns ephemeral InjectedContext[] to be inserted as user messages
+   * (with cache_control: ephemeral) before each API call.
+   *
+   * Plugins should normally use `PluginContext.registerContextInjector`
+   * (composes multiple injectors) instead of calling this directly.
+   *
+   * Optional — providers that don't support ephemeral message injection
+   * leave this unimplemented.
+   *
+   * @since 0.4.0
+   */
+  setContextInjector?(injector: ContextInjectorFn): void;
 
   /**
    * Set a sticky model override for ALL subsequent calls on this session.

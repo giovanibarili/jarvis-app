@@ -62,7 +62,7 @@ export class AnthropicSession implements AISession {
   private messages: MessageParam[] = [];
   private label: string;
   private abortController?: AbortController;
-  private contextInjector?: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>;
+  private contextInjector?: (sessionId: string) => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>;
   private bus?: EventBus;
   private betaDisabledUntil = 0;
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
@@ -169,7 +169,7 @@ export class AnthropicSession implements AISession {
     });
   }
 
-  setContextInjector(injector: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
+  setContextInjector(injector: (sessionId: string) => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
     this.contextInjector = injector;
   }
 
@@ -872,7 +872,9 @@ export class AnthropicSession implements AISession {
     this.removeInjectedContext();
 
     if (!this.contextInjector) return;
-    const contexts = this.contextInjector();
+    // Pass session label as the identifier — plugins use it to scope per-session
+    // caches, privacy filters, or multi-tenant logic.
+    const contexts = this.contextInjector(this.label);
     if (contexts.length === 0) return;
 
     for (const ctx of contexts) {
