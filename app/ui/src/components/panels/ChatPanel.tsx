@@ -206,6 +206,11 @@ export function ChatPanel({
             }
             return ''
           })
+          // Turn finished — collapse any live `thinking_text` entries (intermediate
+          // model text emitted between tool calls) into their compact, clickable form.
+          setEntries(prev => prev.map(e =>
+            e.kind === 'thinking_text' && e.live ? { ...e, live: false, expanded: false } : e
+          ))
           // Turn finished — choice cards captured during the turn now land
           // at the very end of the conversation, AFTER any final assistant text.
           flushPendingChoices()
@@ -214,7 +219,11 @@ export function ChatPanel({
           setIsStreaming(false)
           setIsThinking(false)
           setStreamingText('')
-          setEntries(prev => [...prev, { kind: 'error', message: data.error ?? 'Unknown error', source: data.source, session: data.session }])
+          setEntries(prev => [
+            // Collapse any live thinking_text from this turn before appending the error.
+            ...prev.map(e => e.kind === 'thinking_text' && e.live ? { ...e, live: false, expanded: false } : e),
+            { kind: 'error', message: data.error ?? 'Unknown error', source: data.source, session: data.session },
+          ])
           // Even on error, surface the buffered cards so the user isn't blocked.
           flushPendingChoices()
           break
@@ -225,7 +234,11 @@ export function ChatPanel({
           setStreamingText(prev => {
             if (prev) {
               setIsStreaming(false)
-              setEntries(msgs => [...msgs, { kind: 'message', role: 'assistant', text: prev, source: data.source, session: data.session }])
+              // Intermediate text between tool calls is "thinking out loud" —
+              // record as `thinking_text` (live) so it gets de-emphasized now and
+              // collapsed when the turn ends. The final answer lands separately
+              // as a `message` entry on `done`.
+              setEntries(msgs => [...msgs, { kind: 'thinking_text', text: prev, source: data.source, session: data.session, live: true, expanded: true }])
             }
             return ''
           })
@@ -272,6 +285,10 @@ export function ChatPanel({
             }
             return ''
           })
+          // Collapse intermediate thinking_text entries from this turn.
+          setEntries(prev => prev.map(e =>
+            e.kind === 'thinking_text' && e.live ? { ...e, live: false, expanded: false } : e
+          ))
           flushPendingChoices()
           break
         case 'compaction_start':
@@ -297,6 +314,10 @@ export function ChatPanel({
             }
             return ''
           })
+          // Compaction implies the turn ended — collapse any live thinking_text.
+          setEntries(prev => prev.map(e =>
+            e.kind === 'thinking_text' && e.live ? { ...e, live: false, expanded: false } : e
+          ))
           // If a `compaction_pending` banner exists (Engine B path), REPLACE
           // it in place — keeps timeline ordering clean. Otherwise just
           // append the final entry (Engine A path: no pending banner ever).
@@ -347,8 +368,32 @@ export function ChatPanel({
         case 'system':
           // System notifications — shown in chat timeline but never sent to LLM.
           if (data?.session && data.session !== sessionId) break
-          setEntries(prev => [...prev, { kind: 'system', text: data.text ?? '', session: data.session }])
+          setEntries(prev => [...prev, {
+            kind: 'system',
+            text: data.text ?? '',
+            subtype: data.subtype,
+            detail: data.detail,
+            session: data.session,
+          }])
           break
+        case 'timeline_entry': {
+          // Generic plugin timeline entry. The `entry` payload carries `text`
+          // (fallback), optional `renderer` (external plugin component), and
+          // `payload` (structured data for that component). The ChatPanel
+          // stays completely agnostic — it just passes the entry through.
+          const e = data?.entry
+          if (!e) break
+          if (e.sessionId && e.sessionId !== sessionId) break
+          setEntries(prev => [...prev, {
+            kind: 'timeline_entry',
+            text: e.text ?? '',
+            rendererKind: e.rendererKind,
+            renderer: e.renderer,
+            payload: e.payload,
+            session: e.sessionId ?? sessionId,
+          }])
+          break
+        }
         case 'pending_queue':
           // Backend snapshot of the user-message queue for this session.
           // Empty array clears the UI list (drained or aborted).
@@ -658,6 +703,7 @@ export function ChatPanel({
       if (j !== index) return e
       if (e.kind === 'capability') return { ...e, expanded: !e.expanded }
       if (e.kind === 'compaction') return { ...e, expanded: !e.expanded }
+      if (e.kind === 'thinking_text') return { ...e, expanded: !e.expanded }
       return e
     }))
   }, [])
