@@ -8,7 +8,7 @@ import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync } from "node:f
 import { join } from "node:path";
 import type { EventBus } from "./bus.js";
 import type { Piece } from "./piece.js";
-import type { HudUpdateMessage } from "./types.js";
+import type { HudUpdateMessage, ChatTimelineEntry } from "./types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { PieceManager } from "./piece-manager.js";
 import type { PluginContext, ContextInjectorFn } from "@jarvis/core";
@@ -61,6 +61,8 @@ export class PluginManager implements Piece {
   private factory?: AISessionFactory;
   private sessions?: SessionManager;
   private httpServer?: HttpServerLike;
+  /** Chat-piece reference for timeline entry broadcasting. Set by main.ts. */
+  private chatPiece?: { broadcastEvent(sessionId: string, data: Record<string, unknown>): void };
 
   /**
    * Set of context injectors registered by plugins. Composed into a single
@@ -105,16 +107,19 @@ export class PluginManager implements Piece {
   private installAggregatorOnSession(session: unknown): void {
     const setter = (session as { setContextInjector?: (fn: ContextInjectorFn) => void }).setContextInjector;
     if (typeof setter !== "function") return; // provider doesn't support
-    const inject: ContextInjectorFn = (sessionId: string): string[] => {
+    const inject: ContextInjectorFn = async (sessionId: string): Promise<string[]> => {
       if (this.contextInjectors.size === 0) return [];
       const out: string[] = [];
-      for (const fn of this.contextInjectors) {
-        try {
-          const contribs = fn(sessionId);
-          if (Array.isArray(contribs)) out.push(...contribs);
-        } catch (err) {
-          log.warn({ sessionId, err: String(err) }, "PluginManager: context injector threw — skipped");
+      // Run injectors in parallel — they're independent and may all touch async stores.
+      const results = await Promise.allSettled(
+        Array.from(this.contextInjectors).map(async (fn) => fn(sessionId)),
+      );
+      for (const r of results) {
+        if (r.status === "rejected") {
+          log.warn({ sessionId, err: String(r.reason) }, "PluginManager: context injector threw — skipped");
+          continue;
         }
+        if (Array.isArray(r.value)) out.push(...r.value);
       }
       return out;
     };
@@ -143,6 +148,10 @@ export class PluginManager implements Piece {
       this.contextInjectors.delete(fn);
       log.debug({ count: this.contextInjectors.size }, "PluginManager: context injector unregistered");
     };
+  }
+
+  setChatPiece(cp: { broadcastEvent(sessionId: string, data: Record<string, unknown>): void }): void {
+    this.chatPiece = cp;
   }
 
   setHttpServer(server: HttpServerLike): void {
@@ -369,6 +378,16 @@ export class PluginManager implements Piece {
                 },
               }),
               registerContextInjector: (fn: ContextInjectorFn) => this.registerContextInjector(fn),
+              addChatTimelineEntry: (
+                sessionId: string,
+                entry: Omit<ChatTimelineEntry, "sessionId" | "source">,
+              ) => {
+                this.chatPiece?.broadcastEvent(sessionId, {
+                  type: "timeline_entry",
+                  entry: { ...entry, sessionId, source: name },
+                  session: sessionId,
+                });
+              },
             };
             const pieces = mod.createPieces(ctx);
             for (const piece of pieces) {

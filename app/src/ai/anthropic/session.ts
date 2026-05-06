@@ -62,7 +62,7 @@ export class AnthropicSession implements AISession {
   private messages: MessageParam[] = [];
   private label: string;
   private abortController?: AbortController;
-  private contextInjector?: (sessionId: string) => string[];
+  private contextInjector?: (sessionId: string) => string[] | Promise<string[]>;
   private bus?: EventBus;
   private betaDisabledUntil = 0;
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
@@ -248,8 +248,18 @@ export class AnthropicSession implements AISession {
     // Build user message content — prepend ephemeral context block if available.
     // Concat approach: memory block + prompt in one user message content array.
     // No extra messages, no alternation issues, no markers needed.
-    const memoryBlocks = this.contextInjector ? this.contextInjector(this.label) : [];
+    const memoryBlocks = this.contextInjector ? await this.contextInjector(this.label) : [];
     const memoryText = memoryBlocks.join("\n\n").trim();
+
+    // Strip cache_control from any prior memory blocks in the history.
+    // We add a fresh ephemeral cache_control on the new memory block below,
+    // and Anthropic enforces a hard limit of 4 cache_control blocks per request
+    // (system + tools + messages combined). Old memory blocks shouldn't keep
+    // their cache_control — they're stale, won't get cache hits, and just eat
+    // breakpoints. Only the most recent memory block (this turn) is worth caching.
+    if (memoryText) {
+      this.stripStaleMemoryCacheControl();
+    }
 
     if (images && images.length > 0) {
       const content: ContentBlockParam[] = [];
@@ -284,6 +294,42 @@ export class AnthropicSession implements AISession {
     this.warnIfBadAlternation();
 
     yield* this.streamFromAPI();
+  }
+
+  /**
+   * Remove cache_control from old memory/context text blocks in history.
+   *
+   * Background: every turn that injects memory adds a `cache_control: ephemeral`
+   * marker on the memory text block. Without cleanup these accumulate, and
+   * Anthropic rejects requests with more than 4 cache_control blocks total
+   * (system + tools + messages). The actor pool was hitting "Found 6" / "Found 5"
+   * after a few dozen turns.
+   *
+   * Strategy: a memory block is identifiable as a user-role text block whose
+   * text starts with "<system-reminder>" (the wrapper Mnemosyne uses) AND
+   * carries cache_control. Strip the marker — leave the text intact so the
+   * model still sees the past memories, just without paying for a stale
+   * cache breakpoint.
+   *
+   * We also strip any other text blocks in user messages that have
+   * cache_control set, to be defensive against future injectors that follow
+   * the same pattern.
+   */
+  private stripStaleMemoryCacheControl(): void {
+    let stripped = 0;
+    for (const m of this.messages) {
+      if (m.role !== "user") continue;
+      if (!Array.isArray(m.content)) continue;
+      for (const block of m.content as any[]) {
+        if (block?.type === "text" && block?.cache_control) {
+          delete block.cache_control;
+          stripped++;
+        }
+      }
+    }
+    if (stripped > 0) {
+      log.info({ label: this.label, stripped }, "AnthropicSession: stripped stale cache_control markers from prior memory blocks");
+    }
   }
 
   /**

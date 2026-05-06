@@ -22,7 +22,10 @@ export interface AIStreamEvent {
  *
  * @since 0.4.0
  */
-export type ContextInjectorFn = (sessionId: string) => string[];
+/** Context injector — may return a Promise so retrievers can await async
+ *  stores (vector DB, graph) before sendAndStream sends the request.
+ *  The session calls it with await; sync return is also valid. */
+export type ContextInjectorFn = (sessionId: string) => string[] | Promise<string[]>;
 
 export interface AISession {
   readonly sessionId: string;
