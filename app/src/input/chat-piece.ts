@@ -2,7 +2,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { EventBus } from "../core/bus.js";
 import type { Piece } from "../core/piece.js";
-import type { AIRequestMessage, AIStreamMessage, HudUpdateMessage, ChatAnchorMessage } from "../core/types.js";
+import type { AIRequestMessage, AIStreamMessage, HudUpdateMessage, ChatAnchorMessage, ChatTimelineMessage } from "../core/types.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { SessionManager } from "../core/session-manager.js";
 import { log } from "../logger/index.js";
@@ -160,6 +160,19 @@ Your text responses are shown in the chat panel. Additional I/O available via pl
           break;
         }
       }
+    });
+
+    // chat.timeline → typed SSE bridge for per-session timeline entries.
+    // Any piece or plugin publishes a ChatTimelineMessage; the chat-piece
+    // bridges it to the client as type:"timeline_entry" with the entry
+    // payload. The client owns all rendering — core has zero plugin knowledge.
+    this.bus.subscribe<ChatTimelineMessage>("chat.timeline", (msg) => {
+      if (!msg.entry?.sessionId) return;
+      this.broadcast(msg.entry.sessionId, {
+        type: "timeline_entry",
+        entry: msg.entry,
+        session: msg.entry.sessionId,
+      });
     });
 
     // chat.anchor → forward to the SSE pool of the matching sessionId.
