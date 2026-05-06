@@ -2,6 +2,7 @@ import type { EventBus } from "./bus.js";
 import type { Piece } from "./piece.js";
 import type { CapabilityRegistry } from "./tools.js";
 import type { AISessionFactory, ContextInjectorFn, SessionManager } from "./ai.js";
+import type { ChatTimelineEntry } from "./types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export interface PluginManifest {
@@ -69,6 +70,25 @@ export interface PluginContext {
    * @since 0.4.0
    */
   registerContextInjector?: (fn: ContextInjectorFn) => () => void;
+  /**
+   * Append a notification to the chat timeline for `sessionId`.
+   *
+   * `text` is always shown as a plain-text fallback. For rich rendering,
+   * provide `rendererKind` + `renderer` (a React component in the plugin's
+   * renderers/ dir) + `payload` (structured data for that component).
+   *
+   * Follows the same renderer contract as `chat.anchor`: the client loads
+   * the external bundle on demand; unknown kinds fall back silently to text.
+   *
+   * The core is completely agnostic — it bridges the entry verbatim via SSE.
+   * No plugin-specific logic lives in chat-piece or ChatPanel.
+   *
+   * @since 0.5.0
+   */
+  addChatTimelineEntry?: (
+    sessionId: string,
+    entry: Omit<ChatTimelineEntry, "sessionId" | "source">,
+  ) => void;
 }
 
 export interface JarvisPlugin {
