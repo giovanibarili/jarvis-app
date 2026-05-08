@@ -668,8 +668,10 @@ export class PluginManager implements Piece {
         const remote = execSync(`git -C "${dir}" rev-parse @{u}`, { timeout: 5000 }).toString().trim();
 
         if (local !== remote) {
-          const behind = execSync(`git -C "${dir}" rev-list HEAD..@{u} --count`, { timeout: 5000 }).toString().trim();
-          outdated.push(`${name} (${behind} commits behind)`);
+          const behind = parseInt(execSync(`git -C "${dir}" rev-list HEAD..@{u} --count`, { timeout: 5000 }).toString().trim(), 10);
+          if (behind > 0) {
+            outdated.push(`${name} (${behind} commits behind)`);
+          }
         }
       } catch (err: any) {
         // No remote / no upstream — skip silently (local-only plugins)
@@ -687,8 +689,8 @@ export class PluginManager implements Piece {
         const local = execSync(`git -C "${appDir}" rev-parse HEAD`, { timeout: 5000 }).toString().trim();
         const remote = execSync(`git -C "${appDir}" rev-parse @{u}`, { timeout: 5000 }).toString().trim();
         if (local !== remote) {
-          const behind = execSync(`git -C "${appDir}" rev-list HEAD..@{u} --count`, { timeout: 5000 }).toString().trim();
-          outdated.unshift(`jarvis-app (${behind} commits behind)`);
+          const behind = parseInt(execSync(`git -C "${appDir}" rev-list HEAD..@{u} --count`, { timeout: 5000 }).toString().trim(), 10);
+          if (behind > 0) outdated.unshift(`jarvis-app (${behind} commits behind)`);
         }
       }
     } catch {

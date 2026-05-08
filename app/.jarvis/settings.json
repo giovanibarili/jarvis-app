@@ -35,6 +35,26 @@
     "plugin-manager": {
       "enabled": true,
       "visible": true
+    },
+    "mnemosyne-observer": {
+      "enabled": true,
+      "visible": true
+    },
+    "mnemosyne-encoder": {
+      "enabled": true,
+      "visible": true
+    },
+    "mnemosyne-retriever": {
+      "enabled": true,
+      "visible": true
+    },
+    "mnemosyne-consolidator": {
+      "enabled": true,
+      "visible": true
+    },
+    "mnemosyne-panel": {
+      "enabled": true,
+      "visible": true
     }
   },
   "plugins": {
