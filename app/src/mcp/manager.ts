@@ -71,6 +71,8 @@ export class McpManager implements Piece {
   private registry: CapabilityRegistry;
   private servers = new Map<string, McpServerState>();
   private configPath: string;
+  /** Per-session AbortControllers — aborted when ai.stream "aborted" fires. */
+  private abortControllers = new Map<string, AbortController>();
 
   systemContext(): string {
     const serverList = [...this.servers.entries()]
@@ -93,6 +95,18 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
     this.bus = bus;
     this.loadServers();
     this.registerManagementTools();
+
+    // Cancel in-flight MCP calls when the user aborts (ESC)
+    this.bus.subscribe("ai.stream", (msg: any) => {
+      if (msg.event === "aborted" && msg.target) {
+        const ctrl = this.abortControllers.get(msg.target);
+        if (ctrl) {
+          ctrl.abort();
+          this.abortControllers.delete(msg.target);
+          log.info({ sessionId: msg.target }, "McpManager: aborted in-flight MCP call");
+        }
+      }
+    });
 
     this.bus.publish({
       channel: "hud.update",
@@ -551,14 +565,30 @@ Connect servers on demand when the user needs external services (Jira, Slack, Co
         description: tool.description ?? `Tool ${tool.name} from MCP server ${server.name}`,
         input_schema: (tool.inputSchema as Record<string, unknown>) ?? { type: "object", properties: {} },
         handler: async (input) => {
-          const result = await server.client!.callTool({ name: tool.name, arguments: input });
-          if (Array.isArray(result.content)) {
-            return (result.content as Array<{ type: string; text?: string }>)
-              .filter((c) => c.type === "text")
-              .map((c) => c.text)
-              .join("\n");
+          const sessionId = input.__sessionId as string | undefined;
+          const ctrl = new AbortController();
+          if (sessionId) this.abortControllers.set(sessionId, ctrl);
+          try {
+            const result = await server.client!.callTool(
+              { name: tool.name, arguments: input },
+              undefined,
+              { signal: ctrl.signal },
+            );
+            if (Array.isArray(result.content)) {
+              return (result.content as Array<{ type: string; text?: string }>)
+                .filter((c) => c.type === "text")
+                .map((c) => c.text)
+                .join("\n");
+            }
+            return result.content;
+          } catch (err: any) {
+            if (ctrl.signal.aborted || err?.name === "AbortError") {
+              return { error: "aborted" };
+            }
+            throw err;
+          } finally {
+            if (sessionId) this.abortControllers.delete(sessionId);
           }
-          return result.content;
         },
       });
     }
