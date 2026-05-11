@@ -4,6 +4,28 @@ All notable changes to this package will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-08
+
+### Added
+
+- **`registerContextInjector(fn)`** in `PluginContext`. Plugins can register an ephemeral context injector that runs per-turn before `sendAndStream`. The callback receives `sessionId` and returns `string[] | Promise<string[]>`. Each returned string becomes a user-message block with `cache_control:ephemeral` — keeps the system-prompt cache warm while still letting plugins inject mutable per-turn context (e.g. Mnemosyne memory). Multiple plugins compose via an aggregator that runs them in parallel (`Promise.allSettled`).
+- **`ChatTimelineEntry` + `ChatTimelineMessage` types** and the `chat.timeline` bus channel. New `PluginContext.addChatTimelineEntry()` API lets plugins push structured, plugin-rendered entries into the chat timeline (loaded lazily on the frontend from `/plugins/<plugin>/renderers/<file>.js`).
+
+### Changed
+
+- `ContextInjectorFn` signature simplified: returns `string[] | Promise<string[]>` (was `InjectedContext[]`). `role` and `cache_control` are fixed by the core — callers no longer specify them. The session no longer pushes synthetic `Understood.` assistant turns; injected content is concatenated as ephemeral blocks into the actual user message. Removes the `_injected` marker scheme, `removeInjectedContext()` scans, `stripInjectedMarkers()`, and `hasPendingToolUse()` guards.
+- Version aligned with app release cadence. `@jarvis/core` now tracks `app` major.minor (0.3.x); patch increments for additive API changes within a release.
+
+### Fixed
+
+- Async injectors no longer silently dropped. Previously the aggregator filtered with `Array.isArray`, discarding any `Promise<string[]>` result and producing an empty injection. Aggregator now awaits via `Promise.allSettled` before collecting.
+
+### Notes for plugin authors
+
+- Prefer `registerContextInjector` over `Piece.systemContext` for any context that mutates per-turn — `systemContext` rebuilds the system prompt and invalidates prompt cache; injectors don't.
+
+---
+
 ## [0.6.0] — 2026-04-29
 
 ### Added — Optional `traceId` on `BusMessage`

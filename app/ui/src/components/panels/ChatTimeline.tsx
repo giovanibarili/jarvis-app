@@ -1,6 +1,113 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { MarkdownText } from '../MarkdownText'
 
+// ─── TimelineEntryRenderer ────────────────────────────────────────────────────
+// Generic renderer for `kind: 'timeline_entry'` entries. Attempts to load the
+// external plugin renderer if `renderer` is specified, falls back to `text`.
+// Mirrors the HUD plugin renderer pattern — no core coupling to plugin logic.
+
+const _rendererCache = new Map<string, React.ComponentType<{ payload: unknown; text: string; expanded?: boolean }>>()
+
+function TimelineEntryRenderer({
+  index,
+  entry,
+  onToggleExpand,
+}: {
+  index: number
+  entry: Extract<ReturnType<() => import('./ChatTimeline').ChatEntry>, { kind: 'timeline_entry' }>
+  onToggleExpand: (i: number) => void
+}) {
+  const [ExternalRenderer, setExternalRenderer] = React.useState<
+    React.ComponentType<{ payload: unknown; text: string; expanded?: boolean }> | null
+  >(null)
+  const [loadFailed, setLoadFailed] = React.useState(false)
+
+  React.useEffect(() => {
+    if (!entry.renderer || loadFailed) return
+    const key = `${entry.renderer.plugin}/${entry.renderer.file}`
+    if (_rendererCache.has(key)) {
+      setExternalRenderer(() => _rendererCache.get(key)!)
+      return
+    }
+    const url = `/plugins/${entry.renderer.plugin}/renderers/${entry.renderer.file}.js`
+    import(/* @vite-ignore */ url)
+      .then((mod) => {
+        const comp = mod.default ?? mod[entry.renderer!.file]
+        if (typeof comp === 'function') {
+          _rendererCache.set(key, comp)
+          setExternalRenderer(() => comp)
+        } else {
+          setLoadFailed(true)
+        }
+      })
+      .catch(() => setLoadFailed(true))
+  }, [entry.renderer?.plugin, entry.renderer?.file])
+
+  // If renderer loaded — delegate entirely, no core chrome
+  if (ExternalRenderer) {
+    return (
+      <div key={index} style={{ marginBottom: '2px' }}>
+        <ExternalRenderer
+          payload={entry.payload}
+          text={entry.text}
+          expanded={entry.expanded}
+        />
+      </div>
+    )
+  }
+
+  // Fallback — plain system-style pill, collapsible if payload has a `detail` string
+  const fallbackDetail =
+    typeof (entry.payload as any)?.detail === 'string'
+      ? (entry.payload as any).detail as string
+      : null
+  const hasDetail = !!fallbackDetail
+
+  return (
+    <div style={{ marginBottom: '2px' }}>
+      <div
+        style={{
+          padding: '3px 8px',
+          borderRadius: hasDetail ? (entry.expanded ? '4px 4px 0 0' : '4px') : '4px',
+          fontSize: '10px',
+          borderLeft: '3px solid #a78bfa',
+          background: '#1a1e2e',
+          color: '#c4b5fd',
+          fontFamily: 'var(--font-mono)',
+          cursor: hasDetail ? 'pointer' : 'default',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px',
+        }}
+        onClick={hasDetail ? () => onToggleExpand(index) : undefined}
+      >
+        <span style={{ flex: 1 }}>{entry.text}</span>
+        {hasDetail && (
+          <span style={{ opacity: 0.5, flexShrink: 0 }}>{entry.expanded ? '▾' : '▸'}</span>
+        )}
+      </div>
+      {hasDetail && entry.expanded && (
+        <div style={{
+          padding: '6px 10px 6px 14px',
+          background: '#0d1117',
+          borderLeft: '3px solid #a78bfa44',
+          borderRadius: '0 0 4px 4px',
+          fontSize: '10px',
+          color: '#c4b5fd99',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word' as const,
+          lineHeight: '1.5',
+          fontFamily: 'var(--font-mono)',
+          maxHeight: '300px',
+          overflowY: 'auto' as const,
+        }}>
+          {fallbackDetail}
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface ChatImage {
   label: string
   base64: string
@@ -30,11 +137,27 @@ export interface ChoiceAnswer {
 
 export type ChatEntry =
   | { kind: 'message'; role: 'user' | 'assistant'; text: string; images?: ChatImage[]; source?: string; session?: string; aborted?: boolean }
+  /**
+   * Intermediate assistant text emitted between tool calls within a single turn.
+   * Visually de-emphasized while the turn is live; collapses into a clickable
+   * "thinking" block once the turn ends (done / error / aborted). The model's
+   * actual final answer lands as a regular `kind:'message'` entry.
+   */
+  | { kind: 'thinking_text'; text: string; source?: string; session?: string; live?: boolean; expanded?: boolean }
   | { kind: 'capability'; name: string; id: string; args?: string; status: 'running' | 'done' | 'cancelled'; ms?: number; output?: string; expanded?: boolean }
   | { kind: 'compaction'; engine: 'api' | 'fallback'; tokensBefore: number; tokensAfter: number; summary: string; expanded?: boolean }
   | { kind: 'compaction_pending'; engine: 'fallback'; tokensBefore: number; reason?: 'forced' | 'threshold'; startedAt: number }
   | { kind: 'bash_result'; command: string; output: string; exitCode: number; ms: number; expanded?: boolean }
-  | { kind: 'system'; text: string; session?: string }
+  | { kind: 'system'; text: string; subtype?: string; detail?: string; session?: string; expanded?: boolean }
+  | {
+      kind: 'timeline_entry'
+      text: string
+      rendererKind?: string
+      renderer?: { plugin: string; file: string }
+      payload?: unknown
+      session?: string
+      expanded?: boolean
+    }
   | { kind: 'error'; message: string; source?: string; session?: string }
   | {
       kind: 'choice'
@@ -608,6 +731,80 @@ export const ChatTimeline = React.memo(function ChatTimeline({
           )
         }
 
+        if (entry.kind === 'thinking_text') {
+          // Live (turn still running): show de-emphasized inline text in italic, no toggle.
+          // Collapsed (turn ended): show a clickable bar that expands to reveal the text.
+          if (entry.live) {
+            return (
+              <div
+                key={i}
+                style={{
+                  color: 'var(--color-muted, #888)',
+                  fontStyle: 'italic',
+                  opacity: 0.75,
+                  whiteSpace: 'pre-wrap',
+                  lineHeight: '1.5',
+                  marginBottom: '4px',
+                  borderLeft: '2px solid #444',
+                  paddingLeft: '8px',
+                }}
+              >
+                <div style={{ color: '#666', fontFamily: 'var(--font-display)', fontSize: '9px', fontWeight: 600, marginBottom: '2px', fontStyle: 'normal', letterSpacing: '0.5px' }}>
+                  THINKING
+                </div>
+                <MarkdownText text={entry.text} />
+              </div>
+            )
+          }
+
+          // Collapsed/expanded historical thinking block.
+          const lines = entry.text.split('\n')
+          const previewText = lines[0]?.slice(0, 80) ?? ''
+          const hasMore = entry.text.length > 80 || lines.length > 1
+          return (
+            <div key={i} style={{ marginBottom: '2px' }}>
+              <div
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: entry.expanded ? '4px 4px 0 0' : '4px',
+                  fontSize: '10px',
+                  borderLeft: '3px solid #555',
+                  background: '#1a1e2e',
+                  color: '#888',
+                  cursor: 'pointer',
+                  fontStyle: 'italic',
+                }}
+                onClick={() => onToggleExpand(i)}
+              >
+                <span style={{ marginRight: '4px' }}>💭</span>
+                <span style={{ fontStyle: 'normal', fontWeight: 600, letterSpacing: '0.5px' }}>thinking</span>
+                {!entry.expanded && previewText && (
+                  <span style={{ marginLeft: '6px', opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '60%', verticalAlign: 'bottom' }}>
+                    — {previewText}{hasMore ? '…' : ''}
+                  </span>
+                )}
+                <span style={{ marginLeft: '4px', opacity: 0.5, fontStyle: 'normal' }}>{entry.expanded ? '▾' : '▸'}</span>
+              </div>
+              {entry.expanded && (
+                <div
+                  style={{
+                    padding: '6px 10px 6px 14px',
+                    background: '#0d1117',
+                    borderLeft: '3px solid #444',
+                    borderRadius: '0 0 4px 4px',
+                    fontSize: '12px',
+                    color: '#aaa',
+                    lineHeight: '1.5',
+                    fontStyle: 'italic',
+                  }}
+                >
+                  <MarkdownText text={entry.text} />
+                </div>
+              )}
+            </div>
+          )
+        }
+
         if (entry.kind === 'capability') {
           let rawOutput = entry.output ?? ''
           try {
@@ -858,23 +1055,66 @@ export const ChatTimeline = React.memo(function ChatTimeline({
         }
 
         if (entry.kind === 'system') {
+          // Generic system notification. Plain text, optionally collapsible
+          // if `detail` is present. `subtype` is forwarded verbatim — the
+          // core stays agnostic; no plugin-specific branches here.
+          const hasDetail = !!entry.detail
           return (
             <div key={i} style={{ marginBottom: '2px' }}>
               <div
                 style={{
                   padding: '3px 8px',
-                  borderRadius: '4px',
+                  borderRadius: hasDetail ? (entry.expanded ? '4px 4px 0 0' : '4px') : '4px',
                   fontSize: '10px',
                   borderLeft: '3px solid #f1fa8c',
                   background: '#1a1e2e',
                   color: '#f1fa8c',
                   whiteSpace: 'pre-wrap',
                   fontFamily: 'var(--font-mono)',
+                  cursor: hasDetail ? 'pointer' : 'default',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
                 }}
+                onClick={hasDetail ? () => onToggleExpand(i) : undefined}
               >
-                {entry.text}
+                <span style={{ flex: 1 }}>{entry.text}</span>
+                {hasDetail && (
+                  <span style={{ opacity: 0.5, flexShrink: 0 }}>
+                    {entry.expanded ? '▾' : '▸'}
+                  </span>
+                )}
               </div>
+              {hasDetail && entry.expanded && (
+                <div style={{
+                  padding: '6px 10px 6px 14px',
+                  background: '#0d1117',
+                  borderLeft: '3px solid #f1fa8c44',
+                  borderRadius: '0 0 4px 4px',
+                  fontSize: '10px',
+                  color: '#c8c860',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word' as const,
+                  lineHeight: '1.5',
+                  fontFamily: 'var(--font-mono)',
+                  maxHeight: '300px',
+                  overflowY: 'auto' as const,
+                }}>
+                  {entry.detail}
+                </div>
+              )}
             </div>
+          )
+        }
+
+        if (entry.kind === 'timeline_entry') {
+          return (
+            <TimelineEntryRenderer
+              key={i}
+              index={i}
+              entry={entry}
+              onToggleExpand={onToggleExpand}
+            />
           )
         }
 

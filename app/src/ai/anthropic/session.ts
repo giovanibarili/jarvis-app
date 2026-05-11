@@ -62,7 +62,7 @@ export class AnthropicSession implements AISession {
   private messages: MessageParam[] = [];
   private label: string;
   private abortController?: AbortController;
-  private contextInjector?: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>;
+  private contextInjector?: (sessionId: string) => string[] | Promise<string[]>;
   private bus?: EventBus;
   private betaDisabledUntil = 0;
   private static BETA_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
@@ -169,7 +169,7 @@ export class AnthropicSession implements AISession {
     });
   }
 
-  setContextInjector(injector: () => Array<{ role: "user"; content: string; cache_control?: { type: "ephemeral" } }>): void {
+  setContextInjector(injector: (sessionId: string) => string[]): void {
     this.contextInjector = injector;
   }
 
@@ -245,11 +245,27 @@ export class AnthropicSession implements AISession {
       lastMessageRole: this.messages[this.messages.length - 1]?.role,
     }, "AnthropicSession: sendAndStream (entry)");
 
-    // Inject message-mode context (e.g. skills with injection: message)
-    this.injectEphemeralContext();
+    // Build user message content — prepend ephemeral context block if available.
+    // Concat approach: memory block + prompt in one user message content array.
+    // No extra messages, no alternation issues, no markers needed.
+    const memoryBlocks = this.contextInjector ? await this.contextInjector(this.label) : [];
+    const memoryText = memoryBlocks.join("\n\n").trim();
+
+    // Strip cache_control from any prior memory blocks in the history.
+    // We add a fresh ephemeral cache_control on the new memory block below,
+    // and Anthropic enforces a hard limit of 4 cache_control blocks per request
+    // (system + tools + messages combined). Old memory blocks shouldn't keep
+    // their cache_control — they're stale, won't get cache hits, and just eat
+    // breakpoints. Only the most recent memory block (this turn) is worth caching.
+    if (memoryText) {
+      this.stripStaleMemoryCacheControl();
+    }
 
     if (images && images.length > 0) {
       const content: ContentBlockParam[] = [];
+      if (memoryText) {
+        content.push({ type: "text", text: memoryText, cache_control: { type: "ephemeral" } } as any);
+      }
       for (const img of images) {
         content.push({
           type: "image" as any,
@@ -259,6 +275,14 @@ export class AnthropicSession implements AISession {
       }
       content.push({ type: "text", text: prompt });
       this.messages.push({ role: "user", content });
+    } else if (memoryText) {
+      this.messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: memoryText, cache_control: { type: "ephemeral" } } as any,
+          { type: "text", text: prompt },
+        ],
+      });
     } else {
       this.messages.push({ role: "user", content: prompt });
     }
@@ -270,6 +294,42 @@ export class AnthropicSession implements AISession {
     this.warnIfBadAlternation();
 
     yield* this.streamFromAPI();
+  }
+
+  /**
+   * Remove cache_control from old memory/context text blocks in history.
+   *
+   * Background: every turn that injects memory adds a `cache_control: ephemeral`
+   * marker on the memory text block. Without cleanup these accumulate, and
+   * Anthropic rejects requests with more than 4 cache_control blocks total
+   * (system + tools + messages). The actor pool was hitting "Found 6" / "Found 5"
+   * after a few dozen turns.
+   *
+   * Strategy: a memory block is identifiable as a user-role text block whose
+   * text starts with "<system-reminder>" (the wrapper Mnemosyne uses) AND
+   * carries cache_control. Strip the marker — leave the text intact so the
+   * model still sees the past memories, just without paying for a stale
+   * cache breakpoint.
+   *
+   * We also strip any other text blocks in user messages that have
+   * cache_control set, to be defensive against future injectors that follow
+   * the same pattern.
+   */
+  private stripStaleMemoryCacheControl(): void {
+    let stripped = 0;
+    for (const m of this.messages) {
+      if (m.role !== "user") continue;
+      if (!Array.isArray(m.content)) continue;
+      for (const block of m.content as any[]) {
+        if (block?.type === "text" && block?.cache_control) {
+          delete block.cache_control;
+          stripped++;
+        }
+      }
+    }
+    if (stripped > 0) {
+      log.info({ label: this.label, stripped }, "AnthropicSession: stripped stale cache_control markers from prior memory blocks");
+    }
   }
 
   /**
@@ -357,7 +417,14 @@ export class AnthropicSession implements AISession {
   }
 
   getMessages(): unknown[] {
-    return this.messages;
+    // Filter out any injected ephemeral messages before exposing the history
+    // (defensive — they're normally removed before saves, but if a save races
+    // with an in-flight API call, this prevents leaking them to disk and
+    // accumulating across restarts).
+    return this.messages.filter((m: any) => {
+      if (!Array.isArray(m.content)) return true;
+      return !m.content.some((b: any) => b?._injected === true);
+    });
   }
 
   setMessages(messages: unknown[]): void {
@@ -660,7 +727,11 @@ export class AnthropicSession implements AISession {
             system: this.getSystemPrompt(),
             messages: this.messages,
             tools,
-            cache_control: { type: "ephemeral" as const },
+            // NOTE: top-level cache_control intentionally removed — it added an extra
+            // cache breakpoint on top of the explicit cache_control we already place on
+            // (a) the last system block, (b) the last tool, and (c) the ephemeral
+            // memory block prepended to the user message. Combined, that pushed us over
+            // Anthropic's hard limit of 4 cache_control blocks per request.
             betas,
             metadata,
             ...(effort !== undefined ? { output_config: { effort } } : {}),
@@ -694,7 +765,7 @@ export class AnthropicSession implements AISession {
           system: this.getSystemPrompt(),
           messages: this.messages,
           tools,
-          cache_control: { type: "ephemeral" as const },
+          // top-level cache_control removed — see comment in beta path above.
           metadata,
           ...(effort !== undefined ? { output_config: { effort } } : {}),
         } as any, { signal: this.abortController.signal });
@@ -825,8 +896,6 @@ export class AnthropicSession implements AISession {
         },
       }, "AnthropicSession: API call complete");
 
-      // Clean up ephemeral injected context so it doesn't persist in saved history
-      this.removeInjectedContext();
       this.abortController = undefined;
 
     } catch (err: any) {
@@ -861,41 +930,11 @@ export class AnthropicSession implements AISession {
    */
   /**
    * Inject ephemeral context from message-mode skills.
-   * These are added as user messages right before the actual user prompt,
-   * preserving system prompt cache. Ephemeral = removed after each API call
-   * to avoid accumulating in history.
+   * Memory blocks from contextInjector are concatenated into the user message
+   * as an ephemeral block — no extra messages, no alternation issues.
+   * This field is kept for compaction reset only (no longer tracks injected messages).
    */
-  private injectedContextCount = 0;
-
-  private injectEphemeralContext(): void {
-    // Remove previously injected context messages (they're always at the end, before the new user message)
-    this.removeInjectedContext();
-
-    if (!this.contextInjector) return;
-    const contexts = this.contextInjector();
-    if (contexts.length === 0) return;
-
-    for (const ctx of contexts) {
-      this.messages.push({
-        role: "user",
-        content: [{ type: "text", text: ctx.content, ...(ctx.cache_control ? { cache_control: ctx.cache_control } : {}) }],
-      } as any);
-      // Anthropic requires alternating user/assistant — add a synthetic assistant ack
-      this.messages.push({
-        role: "assistant",
-        content: [{ type: "text", text: "Understood." }],
-      });
-    }
-    this.injectedContextCount = contexts.length * 2; // user + assistant pairs
-    log.debug({ label: this.label, injected: contexts.length }, "AnthropicSession: ephemeral context injected");
-  }
-
-  private removeInjectedContext(): void {
-    if (this.injectedContextCount > 0) {
-      this.messages.splice(this.messages.length - this.injectedContextCount, this.injectedContextCount);
-      this.injectedContextCount = 0;
-    }
-  }
+  private injectedContextCount = 0; // kept for compaction reset compat
 
   private stripImagesFromMessages(): number {
     let count = 0;

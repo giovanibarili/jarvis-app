@@ -3,7 +3,7 @@
 import type { CapabilityCall, CapabilityResult } from "./tools.js";
 import type { HudPieceData } from "./piece.js";
 
-export type Channel = "ai.request" | "ai.stream" | "capability.request" | "capability.result" | "hud.update" | "system.event" | "chat.anchor";
+export type Channel = "ai.request" | "ai.stream" | "capability.request" | "capability.result" | "hud.update" | "system.event" | "chat.anchor" | "chat.timeline";
 
 export interface BusMessage {
   id: string;
@@ -140,7 +140,43 @@ export interface ChatAnchorMessage extends BusMessage {
   anchorId?: string;
 }
 
-export type AnyBusMessage = AIRequestMessage | AIStreamMessage | CapabilityRequestMessage | CapabilityResultMessage | HudUpdateMessage | SystemEventMessage | ChatAnchorMessage;
+/**
+ * A single notification entry for the chat timeline.
+ *
+ * `text` is always shown as a plain-text fallback.
+ * `rendererKind` + `renderer` follow the same contract as ChatAnchor:
+ *   built-in kinds are handled natively; custom kinds load the plugin
+ *   renderer from /plugins/<plugin>/renderers/<file>.js.
+ * `payload` carries structured data for the renderer — never UI instructions.
+ */
+export interface ChatTimelineEntry {
+  /** Session scope — entries never cross sessions. */
+  sessionId: string;
+  /** Owner for diagnostics (piece id, plugin name, etc). */
+  source: string;
+  /** Plain-text fallback — always shown when no renderer is present. */
+  text: string;
+  /**
+   * Semantic discriminator for renderer dispatch.
+   * The core stays agnostic — it bridges the entry verbatim.
+   * Unknown kinds fall back to `text`.
+   */
+  rendererKind?: string;
+  /**
+   * Optional external renderer loaded from the plugin's renderers/ dir.
+   * When present and the bundle loads successfully, replaces the fallback.
+   */
+  renderer?: { plugin: string; file: string };
+  /** Structured data passed verbatim to the renderer component. */
+  payload?: unknown;
+}
+
+export interface ChatTimelineMessage extends BusMessage {
+  channel: "chat.timeline";
+  entry: ChatTimelineEntry;
+}
+
+export type AnyBusMessage = AIRequestMessage | AIStreamMessage | CapabilityRequestMessage | CapabilityResultMessage | HudUpdateMessage | SystemEventMessage | ChatAnchorMessage | ChatTimelineMessage;
 
 // Distributive Omit — preserves union discrimination when omitting keys
 type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never;

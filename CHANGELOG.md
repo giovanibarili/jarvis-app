@@ -5,6 +5,46 @@ All notable changes to JARVIS will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-08
+
+### Added
+
+- **`registerContextInjector` API** (`@jarvis/core`). Plugins can now register ephemeral context injectors via `PluginContext`. The core composes multiple injectors and installs an aggregator on every owned `AISession` (current and future, via `SessionManager.onSessionCreated`). The injector callback receives `sessionId` so plugins can scope per-session caches, privacy filters, or multi-tenant logic — return `[]` to opt out. Motivation: plugins like Mnemosyne were injecting mutable memory blocks via `Piece.systemContext`, which mutates the system-prompt prefix and **invalidates prompt cache on every turn**. The new API inserts ephemeral content as user-message blocks with `cache_control:ephemeral` — the (large, stable) system prompt cache stays warm. Projected ~80% input-cost reduction for plugins that mutate context per turn.
+- **Async `ContextInjectorFn`.** Injectors may now return `string[] | Promise<string[]>`. `sendAndStream` awaits the aggregator; `plugin-manager` runs injectors in parallel via `Promise.allSettled`. Fixes a silent cache-miss where async injectors returned a Promise and the previous sync aggregator dropped them via `Array.isArray`.
+- **`chat.timeline` bus channel.** New `ChatTimelineEntry` + `ChatTimelineMessage` types in `@jarvis/core`, exposed via `PluginContext.addChatTimelineEntry()`. Lets plugins push structured, renderable entries into the chat timeline (not just plain text). Re-exported from `app/src/core/types.ts`.
+- **Plugin-renderable timeline entries.** `ChatTimeline.tsx` now supports a generic `timeline_entry` kind that lazy-loads a renderer from `/plugins/<plugin>/renderers/<file>.js` inside a Suspense boundary — plugins ship their own UI for their timeline entries.
+- **`thinking_text` timeline kind.** Intermediate assistant text between tool calls is recorded as `thinking_text` (live=true) — de-emphasized, collapsible, shows a tool-use preview, and collapses automatically on `done`/`error`/`tool_result`.
+- **MCP tool calls cancellable via ESC.** `McpManager` subscribes to `ai.stream` `"aborted"` events and cancels the matching session's in-flight tool call. Each tool handler creates a per-`__sessionId` `AbortController`, passes its signal to `client.callTool`, and cleans up in a `finally`. Aborted calls return `{ error: "aborted" }` instead of throwing.
+- **Mnemosyne pieces enabled by default.** `settings.json` now activates `mnemosyne-observer`, `encoder`, `retriever`, `consolidator`, and `panel` out of the box.
+- **`jarvis_reset` requires explicit confirmation.** `capabilities/reset.json` updated to require explicit user consent before resetting.
+- **`jarvis-plugin-reminders` design & implementation plan** (docs only — plugin to be built separately). Generic reminder engine with configurable injection policy across 4 dimensions (trigger, scope, format, gating), 8 LLM tools + HTTP routes, markdown-per-file persistence in `~/.jarvis/reminders/`, full HUD panel, and 20 BDD scenarios. Engine split into pure functions + I/O.
+
+### Changed
+
+- **Memory injection: concat into user message, not extra messages.** Replaces the previous multi-message injection (`user-injected` + `Understood.` + `user-real`) with a single user message of two blocks: `[memory(ephemeral), prompt]`. Removes the `_injected` markers, `removeInjectedContext()` scans, `stripInjectedMarkers()`, `hasPendingToolUse()` guards, and the synthetic `Understood.` assistant turn. Structurally sound — no alternation issues, no orphan blocks in persisted history, `cache_control:ephemeral` correctly marks a cache breakpoint without persisting. `ContextInjectorFn` signature simplified: returns `string[]` instead of `InjectedContext[]`; `role` and `cache_control` are now fixed by the core.
+- **`injectEphemeralContext` runs AFTER user-message push.** Previously injection ran before `messages.push(user)`, so the retriever's `lastUserMsg` was empty on the first turn and always returned `[]`. Now retrievers can read the current prompt on the very first call.
+- **`start-kokoro.sh` removed** (unused).
+- **`plugin-manager` outdated check.** Plugins that are *ahead* of remote (local commits not pushed yet) are no longer flagged as outdated — only plugins truly behind remote are reported.
+- **`.gitignore`: `app/*.log` and `tmp/`** added — runtime logs and scratch directories no longer pollute the working tree.
+
+### Fixed
+
+- **Renderer banner no longer clashes with bundled deps.** The renderer compilation banner used `const { createElement, ... }`. When a plugin renderer transitively imported a heavy lib (e.g. `neovis.js` → `vis-network`), esbuild emitted a top-level `var createElement` inside the lib's flattened IIFE, colliding with the banner's `const createElement` and crashing the HUD panel renderer with `SyntaxError: Identifier 'createElement' has already been declared`. The original banner also destructured the same name twice in one declaration (`const { createElement: __jarvis_jsx, createElement, ... }`) — a SyntaxError on its own. Fixed by (1) switching React/HUD bindings from `const` to `var` (function-scoped, tolerates redeclaration), (2) splitting JSX factory aliases (`__jarvis_jsx`, `__jarvis_Fragment`) into their own `var` declarations, (3) reading `window.__JARVIS_REACT` / `__JARVIS_HUD_HOOKS` once into a stable namespace var and exposing each hook via individual `var` assignments. JSX still resolves to `__jarvis_jsx`; all hooks remain available as bare globals.
+
+### Internal
+
+- `SessionManager.listActive()` for retroactive aggregator install across already-running sessions.
+- `PluginManager` owns the multi-injector aggregator + lifecycle hook.
+- `AnthropicSession.contextInjector` now receives `sessionId`.
+- `chat-piece.broadcastTimelineEntry()` publishes `chat.timeline` SSE to session clients; subscribes to the `chat.timeline` bus channel and forwards.
+- `main.ts`: `pluginManager.setChatPiece(chatPiece)` wires the `addChatTimelineEntry` API; `.env` loader hoisted to the top of the file (before any SDK imports).
+
+### Plugin compat
+
+- `@jarvis/core` 0.3.0 — `registerContextInjector` is the recommended path for any plugin that injects mutable context per-turn. The legacy `Piece.systemContext` path still works but invalidates prompt cache. See `packages/core/CHANGELOG.md` for the full core changelog.
+
+---
+
 ## [0.2.7] - 2026-05-02
 
 ### Fixed

@@ -13,4 +13,6 @@ export type {
   SystemEventMessage,
   ChatAnchor,
   ChatAnchorMessage,
+  ChatTimelineEntry,
+  ChatTimelineMessage,
 } from "@jarvis/core";

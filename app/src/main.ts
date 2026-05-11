@@ -1,4 +1,26 @@
 // src/main.ts
+// Load app/.env BEFORE any module that reads process.env (Anthropic SDK in
+// session.ts, factories, etc.). Zero-dep: tiny parser, sets keys with override
+// so app/.env is always the source of truth — wins over stale shell exports.
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+(function loadDotEnv() {
+  const envPath = join(process.cwd(), ".env");
+  if (!existsSync(envPath)) return;
+  try {
+    const raw = readFileSync(envPath, "utf-8");
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!m) continue;
+      let val = m[2];
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      process.env[m[1]] = val;
+    }
+  } catch { /* ignore — fall back to shell env */ }
+})();
+
 import { EventBus } from "./core/bus.js";
 import { SessionManager } from "./core/session-manager.js";
 import { JarvisCore } from "./core/jarvis.js";
@@ -414,6 +436,7 @@ async function main() {
     chatPiece.broadcastEvent(sessionId, { type: "system", text: "✅ Context compacted.", session: sessionId });
   });
   pluginManager.setHttpServer(server);
+  pluginManager.setChatPiece(chatPiece);
 
   // ─── Provider-scoped HUD scope routes ───
   // POST /providers/anthropic/scope { scope: "ALL" | "<sessionId>" }

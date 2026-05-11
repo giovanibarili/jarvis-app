@@ -90,6 +90,17 @@ export class SessionManager {
   }
 
   /**
+   * List session IDs of all currently-managed sessions.
+   * Used for retroactive operations (e.g. installing a new context injector
+   * on sessions that already exist).
+   *
+   * @since 0.4.0
+   */
+  listActive(): string[] {
+    return Array.from(this.sessions.keys());
+  }
+
+  /**
    * Listeners fired when a session is created (by `get()` or `getWithPrompt()`).
    * Used by the ModelRouter to apply sticky model overrides on the FIRST turn —
    * the router's bus subscriber runs before the session exists, so peek()

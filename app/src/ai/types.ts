@@ -54,12 +54,14 @@ export interface ImageBlock {
   mediaType: string;
 }
 
-/** Ephemeral context injected as user messages before each API call */
-export interface InjectedContext {
-  role: "user";
-  content: string;
-  cache_control?: { type: "ephemeral" };
-}
+/**
+ * Callback invoked by AISession before each API call to gather ephemeral
+ * context to prepend (as a cache_control:ephemeral block) to the user message.
+ * Returns string[] — each string is a context block. Multiple blocks are
+ * joined and prepended to the user message content with cache_control:ephemeral.
+ * Return [] to contribute nothing for this call.
+ */
+export type ContextInjectorFn = (sessionId: string) => string[];
 
 export interface AISession {
   readonly sessionId: string;
@@ -75,7 +77,7 @@ export interface AISession {
   /** Clean up message history after abort during waiting_tools */
   cleanupAbortedTools?(pendingCalls: CapabilityCall[]): void;
   /** Set a callback to provide ephemeral context injected as messages (not system prompt) */
-  setContextInjector?(injector: () => InjectedContext[]): void;
+  setContextInjector?(injector: ContextInjectorFn): void;
   /** Force context compaction (Engine B) regardless of token threshold */
   forceCompact?(): AsyncGenerator<AIStreamEvent, void>;
 
