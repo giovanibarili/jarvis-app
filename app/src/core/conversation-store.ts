@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { log } from "../logger/index.js";
+import { jarvisPath } from "./paths.js";
 
 export interface StoredConversation {
   /** Stable label for this session (e.g. "main", "actor-jarvis"). */
@@ -17,7 +18,7 @@ export interface StoredConversation {
   messageCount: number;
 }
 
-const SESSIONS_DIR = join(process.cwd(), ".jarvis", "sessions");
+const SESSIONS_DIR = jarvisPath("sessions");
 const MAX_MESSAGES = 200; // Keep last N messages to avoid context overflow
 
 function ensureDir(): void {
@@ -202,7 +203,7 @@ export function listSavedSessions(): string[] {
 // A one-shot message file that JARVIS reads on boot and sends as first ai.request.
 // Written by jarvis_reset or manually. Deleted after reading.
 
-const STARTUP_PROMPT_PATH = join(process.cwd(), ".jarvis", "startup-prompt.txt");
+const STARTUP_PROMPT_PATH = jarvisPath("startup-prompt.txt");
 
 /** Save a startup prompt to be sent on next boot */
 export function saveStartupPrompt(text: string): void {

@@ -1,6 +1,7 @@
 // src/mcp/oauth.ts
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { jarvisPath } from "../core/paths.js";
 import { createServer } from "node:http";
 import { log } from "../logger/index.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -10,7 +11,7 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 
-const OAUTH_DIR = join(process.cwd(), ".jarvis", "oauth");
+const OAUTH_DIR = jarvisPath("oauth");
 
 export class JarvisOAuthProvider implements OAuthClientProvider {
   private serverName: string;

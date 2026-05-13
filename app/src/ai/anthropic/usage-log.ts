@@ -1,7 +1,7 @@
 /**
  * Per-API-call usage log.
  *
- * Writes one JSON object per line ("JSONL") to `app/.jarvis/logs/usage.log`.
+ * Writes one JSON object per line ("JSONL") to `~/.jarvis/logs/usage.log`.
  * Every Anthropic API response that carries `message.usage` is appended,
  * regardless of which session triggered it. Intent: provide a flat,
  * grep/jq-friendly trail to analyse token consumption per session, model,
@@ -35,8 +35,9 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { jarvisPath } from "../../core/paths.js";
 
-const USAGE_LOG_DIR = join(process.cwd(), ".jarvis", "logs");
+const USAGE_LOG_DIR = jarvisPath("logs");
 const USAGE_LOG_FILE = process.env.JARVIS_USAGE_LOG_FILE ?? join(USAGE_LOG_DIR, "usage.log");
 
 let initialized = false;

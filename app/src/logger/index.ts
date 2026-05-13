@@ -29,9 +29,10 @@ export function onLogEntry(fn: (entry: LogEntry) => void): () => void {
 
 import { mkdirSync, existsSync, renameSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { jarvisPath } from "../core/paths.js";
 
 // Always write logs to file
-const LOG_DIR = join(process.cwd(), ".jarvis", "logs");
+const LOG_DIR = jarvisPath("logs");
 mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = process.env.JARVIS_LOG_FILE ?? join(LOG_DIR, "jarvis.log");
 
