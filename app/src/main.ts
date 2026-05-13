@@ -1,11 +1,16 @@
 // src/main.ts
-// Load app/.env BEFORE any module that reads process.env (Anthropic SDK in
+// Load ~/.jarvis/.env BEFORE any module that reads process.env (Anthropic SDK in
 // session.ts, factories, etc.). Zero-dep: tiny parser, sets keys with override
-// so app/.env is always the source of truth — wins over stale shell exports.
+// so ~/.jarvis/.env is always the source of truth — wins over stale shell exports.
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 (function loadDotEnv() {
-  const envPath = join(process.cwd(), ".env");
+  // Canonical: ~/.jarvis/.env. Fallback: app/.env (legacy / tests).
+  const home = process.env.JARVIS_HOME ?? join(homedir(), ".jarvis");
+  const envPath = existsSync(join(home, ".env"))
+    ? join(home, ".env")
+    : join(process.cwd(), ".env");
   if (!existsSync(envPath)) return;
   try {
     const raw = readFileSync(envPath, "utf-8");
@@ -484,7 +489,10 @@ async function main() {
 
   console.log("JARVIS starting...");
   console.log(`HUD  ${server.url}\n`);
-  launchHud(server.url);
+  // Skip Electron HUD when running in headless/test mode (e.g. setup.sh validation)
+  if (process.env.JARVIS_NO_HUD !== "1") {
+    launchHud(server.url);
+  }
   jarvisCore.ready();
   console.log("JARVIS online\n");
 

@@ -5,6 +5,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../logger/index.js";
+import { jarvisHome } from "./paths.js";
 
 export interface PieceSettings {
   enabled: boolean;
@@ -64,7 +65,7 @@ export interface Settings {
   cron?: CronSettings;
 }
 
-const SETTINGS_DIR = join(process.cwd(), ".jarvis");
+const SETTINGS_DIR = jarvisHome();
 const DEFAULT_PATH = join(SETTINGS_DIR, "settings.json");
 const USER_PATH = join(SETTINGS_DIR, "settings.user.json");
 

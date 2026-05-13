@@ -456,23 +456,11 @@ export class AnthropicSession implements AISession {
     useCompaction: boolean;
     contextManagement?: Record<string, unknown>;
   } {
-    const settings = getCompactionSettings(loadSettings());
-    if (!settings.enabled || Date.now() < this.betaDisabledUntil) {
-      return { useCompaction: false };
-    }
-    const maxCtx = getMaxContext(this.getModel());
-    const threshold = Math.max(50_000, Math.floor(maxCtx * settings.thresholdPercent / 100));
-    return {
-      useCompaction: true,
-      contextManagement: {
-        edits: [{
-          type: "compact_20260112",
-          trigger: { type: "input_tokens", value: threshold },
-          pause_after_compaction: settings.pauseAfterCompaction,
-          ...(settings.instructions ? { instructions: settings.instructions } : {}),
-        }],
-      },
-    };
+    // Engine A (server-side compact-2026-01-12 beta) is intentionally disabled.
+    // It compacts silently without any visible summary or user notification,
+    // causing undetected context loss. Engine B (fallbackCompact / doCompact)
+    // is the only active compaction path — it produces a visible summary in chat.
+    return { useCompaction: false };
   }
 
   /**
@@ -686,12 +674,8 @@ export class AnthropicSession implements AISession {
 
       this.abortController = new AbortController();
 
-      const compactionConfig = this.getCompactionConfig();
       const betaHeaders = this.getBetaHeaders(modelForCall);
       const betas: string[] = [...betaHeaders];
-      if (compactionConfig.useCompaction && Date.now() >= this.betaDisabledUntil) {
-        betas.push("compact-2026-01-12");
-      }
       // effort is only supported by Sonnet and Opus — Haiku rejects it.
       const modelSupportsEffort = !modelForCall.includes("haiku");
       if (modelSupportsEffort && !betas.includes("effort-2025-11-24")) {
@@ -719,7 +703,6 @@ export class AnthropicSession implements AISession {
             label: this.label,
             model: modelForCall,
             betas,
-            useCompaction: compactionConfig.useCompaction && betas.includes("compact-2026-01-12"),
           }, "AnthropicSession: attempting beta API call");
           const betaStream = (this.client.beta.messages as any).stream({
             model: modelForCall,
@@ -735,9 +718,7 @@ export class AnthropicSession implements AISession {
             betas,
             metadata,
             ...(effort !== undefined ? { output_config: { effort } } : {}),
-            ...(betas.includes("compact-2026-01-12") && compactionConfig.contextManagement
-              ? { context_management: compactionConfig.contextManagement }
-              : {}),
+
           }, { signal: this.abortController.signal });
 
           betaStream.on("text", () => {});
