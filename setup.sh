@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 cd "$(dirname "$0")"
 REPO_DIR="$(pwd)"
@@ -25,6 +25,7 @@ warn()    { printf "${YELLOW}⚠ ${RESET}%s\n" "$1"; }
 fail()    { printf "${RED}✗ ${RESET}%s\n" "$1"; exit 1; }
 header()  { printf "\n${BOLD}${CYAN}▸ %s${RESET}\n\n" "$1"; }
 dim()     { printf "${DIM}  %s${RESET}\n" "$1"; }
+step()    { printf "  ${DIM}→${RESET} %s\n" "$1"; }
 
 ask() {
   local prompt="$1" default="$2" result
@@ -67,7 +68,7 @@ confirm() {
 }
 
 spinner() {
-  local pid=$1 label="$2"
+  local pid=$1 label="$2" log_file="${3:-}"
   local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
   local i=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -75,10 +76,23 @@ spinner() {
     i=$(( (i + 1) % ${#chars} ))
     sleep 0.1
   done
-  wait "$pid" 2>/dev/null
-  local exit_code=$?
+  local exit_code=0
+  wait "$pid" 2>/dev/null || exit_code=$?
   printf "\r\033[K"
-  return $exit_code
+  if [ "$exit_code" -ne 0 ] && [ -n "$log_file" ]; then
+    warn "$label failed (exit $exit_code)"
+    dim "Log: $log_file"
+    return "$exit_code"
+  fi
+  return "$exit_code"
+}
+
+run_step() {
+  local label="$1" log_file="$2"
+  shift 2
+  "$@" > "$log_file" 2>&1 &
+  local pid=$!
+  spinner "$pid" "$label" "$log_file"
 }
 
 mask_key() {
@@ -88,6 +102,10 @@ mask_key() {
   else
     echo "${key:0:8}...${key: -4}"
   fi
+}
+
+port_in_use() {
+  lsof -i ":$1" &>/dev/null 2>&1
 }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -156,9 +174,7 @@ else
   dim "ripgrep not found — grep will be used instead"
   if $IS_MAC && $HAS_BREW; then
     if confirm "Install ripgrep for faster file search?" "y"; then
-      brew install ripgrep &>/dev/null &
-      spinner $! "Installing ripgrep..."
-      success "ripgrep installed"
+      run_step "Installing ripgrep..." /tmp/jarvis-setup-rg.log brew install ripgrep && success "ripgrep installed" || warn "ripgrep install failed — continuing without it"
     fi
   fi
 fi
@@ -170,9 +186,7 @@ else
   dim "poppler not found — PDF reading will be unavailable"
   if $IS_MAC && $HAS_BREW; then
     if confirm "Install poppler for PDF support?"; then
-      brew install poppler &>/dev/null &
-      spinner $! "Installing poppler..."
-      success "poppler installed"
+      run_step "Installing poppler..." /tmp/jarvis-setup-poppler.log brew install poppler && success "poppler installed" || warn "poppler install failed — continuing without it"
     fi
   fi
 fi
@@ -187,26 +201,25 @@ ANTHROPIC_KEY=""
 OPENAI_KEY=""
 DEFAULT_MODEL=""
 
+JARVIS_DIR="${JARVIS_HOME:-$HOME/.jarvis}"
+
 # --- Key detection ---
-# Search in multiple locations, in priority order:
-#   1. Environment variables (already exported)
-#   2. Existing app/.env file
-#   3. Shell config files (~/.zshrc, ~/.bashrc, ~/.bash_profile, ~/.zprofile)
+# Priority: environment → ~/.jarvis/.env → shell config files
 
 detect_key() {
   local var_name="$1"
   local found=""
 
   # 1. Current environment
-  eval "found=\"\${$var_name}\""
+  eval "found=\"\${$var_name:-}\""
   if [ -n "$found" ]; then
     echo "$found"
     return 0
   fi
 
-  # 2. Existing .env in app/
-  if [ -f "app/.env" ]; then
-    found=$(grep "^${var_name}=" "app/.env" 2>/dev/null | head -1 | cut -d= -f2-)
+  # 2. ~/.jarvis/.env
+  if [ -f "$JARVIS_DIR/.env" ]; then
+    found=$(grep "^${var_name}=" "$JARVIS_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)
     if [ -n "$found" ]; then
       echo "$found"
       return 0
@@ -230,37 +243,26 @@ detect_key() {
 describe_source() {
   local var_name="$1"
 
-  # Check environment
-  eval "local env_val=\"\${$var_name}\""
-  if [ -n "$env_val" ]; then
-    echo "environment variable"
-    return
+  eval "local env_val=\"\${$var_name:-}\""
+  [ -n "$env_val" ] && { echo "environment variable"; return; }
+
+  if [ -f "$JARVIS_DIR/.env" ]; then
+    local v
+    v=$(grep "^${var_name}=" "$JARVIS_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)
+    [ -n "$v" ] && { echo "~/.jarvis/.env"; return; }
   fi
 
-  # Check .env
-  if [ -f "app/.env" ]; then
-    local env_file_val=$(grep "^${var_name}=" "app/.env" 2>/dev/null | head -1 | cut -d= -f2-)
-    if [ -n "$env_file_val" ]; then
-      echo "app/.env"
-      return
-    fi
-  fi
-
-  # Check shell configs
   for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.bash_profile"; do
     if [ -f "$rc" ]; then
-      local rc_val=$(grep "export ${var_name}=" "$rc" 2>/dev/null | tail -1)
-      if [ -n "$rc_val" ]; then
-        echo "$(basename "$rc")"
-        return
-      fi
+      local rcv
+      rcv=$(grep "export ${var_name}=" "$rc" 2>/dev/null | tail -1)
+      [ -n "$rcv" ] && { echo "$(basename "$rc")"; return; }
     fi
   done
 
   echo "unknown"
 }
 
-# Detect Anthropic key
 DETECTED_ANTHROPIC=$(detect_key "ANTHROPIC_API_KEY" || true)
 DETECTED_OPENAI=$(detect_key "OPENAI_API_KEY" || true)
 
@@ -278,15 +280,12 @@ if [ -n "$DETECTED_OPENAI" ]; then
   success "Found OpenAI API key — $(mask_key "$DETECTED_OPENAI") (from $OPENAI_SOURCE)"
 fi
 
-if ! $FOUND_ANY; then
-  dim "No existing API keys found in environment, .env, or shell config."
-fi
+$FOUND_ANY || dim "No existing API keys found in environment, .env, or shell config."
 
 echo ""
 
 # Decision flow
 if [ -n "$DETECTED_ANTHROPIC" ] && [ -n "$DETECTED_OPENAI" ]; then
-  # Both found
   info "Both providers detected."
   echo ""
   echo "  [1] Use both (recommended)"
@@ -294,36 +293,32 @@ if [ -n "$DETECTED_ANTHROPIC" ] && [ -n "$DETECTED_OPENAI" ]; then
   echo "  [3] OpenAI only"
   echo "  [4] Enter different keys"
   echo ""
-  read -p "  Choice [1]: " KEY_CHOICE
+  read -r -p "  Choice [1]: " KEY_CHOICE
   KEY_CHOICE=${KEY_CHOICE:-1}
 
   case $KEY_CHOICE in
     1) ANTHROPIC_KEY="$DETECTED_ANTHROPIC"; OPENAI_KEY="$DETECTED_OPENAI"; DEFAULT_MODEL="claude-sonnet-4-6" ;;
     2) ANTHROPIC_KEY="$DETECTED_ANTHROPIC"; DEFAULT_MODEL="claude-sonnet-4-6" ;;
     3) OPENAI_KEY="$DETECTED_OPENAI"; DEFAULT_MODEL="gpt-4o" ;;
-    4) ;; # Fall through to manual entry below
+    4) : ;;  # fall through to manual entry
     *) fail "Invalid choice." ;;
   esac
 
 elif [ -n "$DETECTED_ANTHROPIC" ]; then
-  # Only Anthropic found
   if confirm "Use detected Anthropic key?" "y"; then
     ANTHROPIC_KEY="$DETECTED_ANTHROPIC"
     DEFAULT_MODEL="claude-sonnet-4-6"
   fi
-
   if confirm "Also configure OpenAI?"; then
     OPENAI_KEY=$(ask_secret "Enter your OpenAI API key (sk-...)")
-    [ -z "$OPENAI_KEY" ] && warn "Skipped — you can add it later in app/.env"
+    [ -z "$OPENAI_KEY" ] && warn "Skipped — you can add it later in ~/.jarvis/.env"
   fi
 
 elif [ -n "$DETECTED_OPENAI" ]; then
-  # Only OpenAI found
   if confirm "Use detected OpenAI key?" "y"; then
     OPENAI_KEY="$DETECTED_OPENAI"
     DEFAULT_MODEL="gpt-4o"
   fi
-
   if confirm "Also configure Anthropic? (recommended)"; then
     ANTHROPIC_KEY=$(ask_secret "Enter your Anthropic API key (sk-ant-...)")
     [ -n "$ANTHROPIC_KEY" ] && DEFAULT_MODEL="claude-sonnet-4-6"
@@ -339,7 +334,7 @@ if [ -z "$ANTHROPIC_KEY" ] && [ -z "$OPENAI_KEY" ]; then
   echo "  [2] OpenAI (GPT-4o, o3, etc.)"
   echo "  [3] Both"
   echo ""
-  read -p "  Choice [1]: " PROVIDER_CHOICE
+  read -r -p "  Choice [1]: " PROVIDER_CHOICE
   PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 
   case $PROVIDER_CHOICE in
@@ -370,10 +365,8 @@ if [ -n "$ANTHROPIC_KEY" ] && [[ ! "$ANTHROPIC_KEY" =~ ^sk-ant- ]]; then
   warn "Anthropic key doesn't start with sk-ant- — this may not work"
 fi
 
-# Default model fallback
 [ -z "$DEFAULT_MODEL" ] && DEFAULT_MODEL="claude-sonnet-4-6"
 
-# Summary
 echo ""
 PROVIDER_LABEL=""
 [ -n "$ANTHROPIC_KEY" ] && PROVIDER_LABEL="Anthropic"
@@ -388,20 +381,19 @@ header "Step 3/6 — Dependencies"
 
 NPM_OPTS="--registry https://registry.npmjs.org/"
 
-# Root
-(npm install $NPM_OPTS --silent 2>&1 > /tmp/jarvis-setup-npm.log) &
-spinner $! "Installing root dependencies..."
-success "Root dependencies"
+# The root workspace install covers app/ and packages/* in one shot.
+# We run app/ui separately because it has a Vite build step that npm
+# workspaces doesn't trigger automatically.
 
-# App
-(cd app && npm install $NPM_OPTS --silent 2>&1 > /tmp/jarvis-setup-npm.log) &
-spinner $! "Installing app dependencies..."
-success "App dependencies"
+run_step "Installing dependencies..." /tmp/jarvis-setup-npm-root.log \
+  npm install $NPM_OPTS --silent \
+  && success "Dependencies installed" \
+  || fail "npm install failed — check /tmp/jarvis-setup-npm-root.log"
 
-# UI
-(cd app/ui && npm install $NPM_OPTS --silent 2>&1 > /tmp/jarvis-setup-npm.log) &
-spinner $! "Installing UI dependencies..."
-success "UI dependencies"
+run_step "Installing UI dependencies..." /tmp/jarvis-setup-npm-ui.log \
+  sh -c "cd '$REPO_DIR/app/ui' && npm install $NPM_OPTS --silent" \
+  && success "UI dependencies installed" \
+  || fail "UI npm install failed — check /tmp/jarvis-setup-npm-ui.log"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Step 4: Build UI
@@ -409,12 +401,17 @@ success "UI dependencies"
 
 header "Step 4/6 — Building HUD"
 
-(cd app/ui && npm run build --silent 2>&1 > /tmp/jarvis-setup-build.log) &
-spinner $! "Building Electron HUD..."
-if [ -d "app/ui/dist" ]; then
-  success "HUD built"
+run_step "Building Electron HUD..." /tmp/jarvis-setup-build.log \
+  sh -c "cd '$REPO_DIR/app/ui' && npm run build --silent"
+
+if [ -d "$REPO_DIR/app/ui/dist" ] && [ -n "$(ls -A "$REPO_DIR/app/ui/dist" 2>/dev/null)" ]; then
+  success "HUD built successfully"
 else
   warn "HUD build may have failed — check /tmp/jarvis-setup-build.log"
+  if confirm "Show build log?" "y"; then
+    tail -30 /tmp/jarvis-setup-build.log
+  fi
+  fail "Cannot continue without a working HUD build."
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -423,32 +420,32 @@ fi
 
 header "Step 5/6 — Configuration"
 
-mkdir -p app/.jarvis
+mkdir -p "$JARVIS_DIR"
+step "Config dir: $JARVIS_DIR"
+echo ""
 
 # --- settings.user.json ---
-SETTINGS_USER="app/.jarvis/settings.user.json"
+SETTINGS_USER="$JARVIS_DIR/settings.user.json"
 
 if [ -f "$SETTINGS_USER" ]; then
-  info "Existing settings.user.json found"
-  # Update model if different
-  CURRENT_MODEL=$(grep '"model"' "$SETTINGS_USER" 2>/dev/null | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+  CURRENT_MODEL=$(node -e "try{const s=JSON.parse(require('fs').readFileSync('$SETTINGS_USER','utf8'));console.log(s.model||'')}catch{}" 2>/dev/null || true)
   if [ -n "$CURRENT_MODEL" ] && [ "$CURRENT_MODEL" != "$DEFAULT_MODEL" ]; then
-    if confirm "Update model from $CURRENT_MODEL to $DEFAULT_MODEL?"; then
-      # Use a temp file for safe JSON editing
-      if command -v node &>/dev/null; then
-        node -e "
-          const fs = require('fs');
-          const s = JSON.parse(fs.readFileSync('$SETTINGS_USER', 'utf8'));
-          s.model = '$DEFAULT_MODEL';
-          fs.writeFileSync('$SETTINGS_USER', JSON.stringify(s, null, 2) + '\n');
-        "
-        success "Model updated to $DEFAULT_MODEL"
-      fi
+    info "Existing settings found (model: $CURRENT_MODEL)"
+    if confirm "Update model to $DEFAULT_MODEL?"; then
+      node -e "
+        const fs = require('fs');
+        const path = process.argv[1];
+        const s = JSON.parse(fs.readFileSync(path, 'utf8'));
+        s.model = process.argv[2];
+        fs.writeFileSync(path, JSON.stringify(s, null, 2) + '\n');
+      " "$SETTINGS_USER" "$DEFAULT_MODEL"
+      success "Model updated to $DEFAULT_MODEL"
     else
       dim "Keeping model: $CURRENT_MODEL"
+      DEFAULT_MODEL="$CURRENT_MODEL"
     fi
   else
-    success "Settings OK (model: ${CURRENT_MODEL:-$DEFAULT_MODEL})"
+    success "settings.user.json OK (model: ${CURRENT_MODEL:-$DEFAULT_MODEL})"
   fi
 else
   cat > "$SETTINGS_USER" << EOJSON
@@ -460,37 +457,42 @@ EOJSON
   success "Created settings.user.json (model: $DEFAULT_MODEL)"
 fi
 
-# --- .env ---
-ENV_FILE="app/.env"
-WROTE_ENV=false
+# --- .env (chmod 600 — API keys are sensitive) ---
+ENV_FILE="$JARVIS_DIR/.env"
+
+write_env() {
+  : > "$ENV_FILE"
+  [ -n "$ANTHROPIC_KEY" ] && echo "ANTHROPIC_API_KEY=$ANTHROPIC_KEY" >> "$ENV_FILE"
+  [ -n "$OPENAI_KEY" ]    && echo "OPENAI_API_KEY=$OPENAI_KEY"    >> "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+}
 
 if [ -f "$ENV_FILE" ]; then
-  # Merge: keep existing keys, add/update new ones
-  EXISTING_ANTHROPIC=$(grep "^ANTHROPIC_API_KEY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
-  EXISTING_OPENAI=$(grep "^OPENAI_API_KEY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+  EXISTING_ANTHROPIC=$(grep "^ANTHROPIC_API_KEY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  EXISTING_OPENAI=$(grep "^OPENAI_API_KEY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
 
-  if [ -n "$ANTHROPIC_KEY" ] && [ "$ANTHROPIC_KEY" != "$EXISTING_ANTHROPIC" ]; then
-    WROTE_ENV=true
-  fi
-  if [ -n "$OPENAI_KEY" ] && [ "$OPENAI_KEY" != "$EXISTING_OPENAI" ]; then
-    WROTE_ENV=true
-  fi
-fi
+  NEEDS_UPDATE=false
+  [ -n "$ANTHROPIC_KEY" ] && [ "$ANTHROPIC_KEY" != "$EXISTING_ANTHROPIC" ] && NEEDS_UPDATE=true
+  [ -n "$OPENAI_KEY" ]    && [ "$OPENAI_KEY"    != "$EXISTING_OPENAI"    ] && NEEDS_UPDATE=true
 
-if $WROTE_ENV || [ ! -f "$ENV_FILE" ]; then
-  > "$ENV_FILE"
-  [ -n "$ANTHROPIC_KEY" ] && echo "ANTHROPIC_API_KEY=$ANTHROPIC_KEY" >> "$ENV_FILE"
-  [ -n "$OPENAI_KEY" ] && echo "OPENAI_API_KEY=$OPENAI_KEY" >> "$ENV_FILE"
-  success "API keys saved to app/.env"
+  if $NEEDS_UPDATE; then
+    write_env
+    success "~/.jarvis/.env updated"
+  else
+    success "~/.jarvis/.env is up to date"
+  fi
 else
-  success "app/.env is up to date"
+  write_env
+  success "~/.jarvis/.env created (permissions: 600)"
 fi
 
 # --- mcp.json (create default if missing) ---
-MCP_FILE="app/mcp.json"
+MCP_FILE="$JARVIS_DIR/mcp.json"
 if [ ! -f "$MCP_FILE" ]; then
   echo '{ "mcpServers": {} }' > "$MCP_FILE"
-  dim "Created empty mcp.json — add MCP servers later"
+  success "~/.jarvis/mcp.json created (empty — add MCP servers later)"
+else
+  success "~/.jarvis/mcp.json exists"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -522,13 +524,22 @@ if $IS_MAC; then
 
   if $INSTALL_APP; then
     if [ -f "scripts/install-macos-app.sh" ]; then
-      bash scripts/install-macos-app.sh 2>&1 | while IFS= read -r line; do
-        dim "$line"
-      done
-      if [ -d "$APP_DIR" ]; then
-        success "JARVIS.app installed — launch via Spotlight (⌘+Space → JARVIS)"
+      APP_INSTALL_LOG=/tmp/jarvis-setup-app.log
+      bash scripts/install-macos-app.sh > "$APP_INSTALL_LOG" 2>&1
+      APP_EXIT=$?
+      if [ $APP_EXIT -eq 0 ] && [ -d "$APP_DIR" ]; then
+        # Validate the launcher points to this repo
+        LAUNCHER_REPO=$(grep "JARVIS_DIR=" "$APP_DIR/Contents/MacOS/jarvis" 2>/dev/null | head -1 | sed 's/.*JARVIS_DIR="\(.*\)"/\1/')
+        if [ "$LAUNCHER_REPO" = "$REPO_DIR/app" ]; then
+          success "JARVIS.app installed — launch via Spotlight (⌘+Space → JARVIS)"
+        else
+          warn "JARVIS.app installed but launcher points to: ${LAUNCHER_REPO:-unknown}"
+          dim "Expected: $REPO_DIR/app — run setup again to fix"
+        fi
       else
-        warn "macOS app installation may have failed (non-critical)"
+        warn "macOS app installation failed (exit $APP_EXIT)"
+        dim "Log: $APP_INSTALL_LOG"
+        tail -5 "$APP_INSTALL_LOG" | while IFS= read -r line; do dim "  $line"; done
       fi
     else
       warn "install-macos-app.sh not found. Skipping app creation."
@@ -537,55 +548,212 @@ if $IS_MAC; then
 else
   header "Step 6/6 — Platform"
   success "Linux/other detected — skipping macOS app creation"
-  dim "Start JARVIS with: cd app && npx tsx src/main.ts"
+  dim "Start JARVIS with: cd $REPO_DIR/app && npx tsx src/main.ts"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Startup Test
+# Validation — Full System Check
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 echo ""
-if confirm "Run a quick startup test?" "y"; then
-  cd app
+if confirm "Run full system validation?" "y"; then
 
-  # Source env
-  set -a
-  source .env 2>/dev/null || true
-  set +a
+  HUD_PORT=50052
+  JARVIS_TEST_LOG=/tmp/jarvis-setup-test.log
+  CHECKS_PASSED=0
+  CHECKS_FAILED=0
 
-  # Start JARVIS in background
-  npx tsx src/main.ts > /tmp/jarvis-setup-test.log 2>&1 &
-  JARVIS_PID=$!
+  check_pass() { printf "  ${GREEN}✓${RESET} %s\n" "$1"; CHECKS_PASSED=$((CHECKS_PASSED + 1)); }
+  check_fail() { printf "  ${RED}✗${RESET} %s\n" "$1"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+  check_warn() { printf "  ${YELLOW}⚠${RESET} %s\n" "$1"; }
 
-  # Wait for server to be ready (retry up to 20 seconds)
-  READY=false
-  for i in $(seq 1 20); do
-    printf "\r  ${BLUE}⠋${RESET} Waiting for JARVIS... (%ds)" "$i"
-    if curl -s http://localhost:50052/hud 2>/dev/null | grep -q "reactor\|pieces" 2>/dev/null; then
-      READY=true
-      break
-    fi
-    sleep 1
-  done
-  printf "\r\033[K"
+  echo ""
+  printf "  ${BOLD}Running checks...${RESET}\n"
+  echo ""
 
-  # Clean up — graceful
-  kill "$JARVIS_PID" 2>/dev/null || true
-  sleep 1
-  # Only kill remaining Electron windows that WE started
-  if kill -0 "$JARVIS_PID" 2>/dev/null; then
-    kill -9 "$JARVIS_PID" 2>/dev/null || true
-  fi
-  wait "$JARVIS_PID" 2>/dev/null || true
-
-  cd ..
-
-  if $READY; then
-    success "JARVIS startup verified — server responded on http://localhost:50052"
+  # ── Check 1: Port availability ──────────────────
+  if port_in_use "$HUD_PORT"; then
+    check_warn "Port $HUD_PORT already in use — testing against running instance"
+    JARVIS_PID=""
+    RUNNING_INSTANCE=true
   else
-    warn "JARVIS didn't respond within 20s — check /tmp/jarvis-setup-test.log"
-    dim "This might be normal on first run. Try starting manually: cd app && npx tsx src/main.ts"
+    RUNNING_INSTANCE=false
+
+    # Source ~/.jarvis/.env for keys
+    set -a
+    # shellcheck disable=SC1090
+    [ -f "$ENV_FILE" ] && source "$ENV_FILE" || true
+    set +a
+
+    # Start headless (no Electron window during test)
+    cd "$REPO_DIR/app"
+    JARVIS_NO_HUD=1 npx tsx src/main.ts > "$JARVIS_TEST_LOG" 2>&1 &
+    JARVIS_PID=$!
+    cd "$REPO_DIR"
+
+    # Wait for HTTP server to be ready
+    SERVER_READY=false
+    for i in $(seq 1 30); do
+      printf "\r  ${BLUE}⠋${RESET} Starting JARVIS... (%ds)" "$i"
+      if curl -sf "http://localhost:$HUD_PORT/hud" &>/dev/null; then
+        SERVER_READY=true
+        break
+      fi
+      if ! kill -0 "$JARVIS_PID" 2>/dev/null; then
+        break  # process died
+      fi
+      sleep 1
+    done
+    printf "\r\033[K"
+
+    if ! $SERVER_READY; then
+      check_fail "Server did not start within 30s"
+      dim "Log: $JARVIS_TEST_LOG"
+      if confirm "Show startup log?"; then
+        echo ""
+        tail -25 "$JARVIS_TEST_LOG" | while IFS= read -r line; do dim "  $line"; done
+        echo ""
+      fi
+      # Kill and bail out of validation
+      kill "$JARVIS_PID" 2>/dev/null || true
+      wait "$JARVIS_PID" 2>/dev/null || true
+      CHECKS_FAILED=$((CHECKS_FAILED + 1))
+      # Skip remaining checks
+      SKIP_CHECKS=true
+    else
+      SKIP_CHECKS=false
+    fi
   fi
+
+  if [ "${SKIP_CHECKS:-false}" = "false" ]; then
+
+    # ── Check 2: HTTP server responding ─────────────
+    HUD_RESPONSE=$(curl -sf "http://localhost:$HUD_PORT/hud" 2>/dev/null || true)
+    if echo "$HUD_RESPONSE" | grep -q '"reactor"'; then
+      check_pass "HTTP server responding on port $HUD_PORT"
+    else
+      check_fail "HTTP server not responding correctly on port $HUD_PORT"
+    fi
+
+    # ── Check 3: Core pieces running ────────────────
+    CORE_PIECES="jarvis-core capability-executor capability-loader chat-output chat-input"
+    ALL_RUNNING=true
+    FAILED_PIECES=""
+    for piece in $CORE_PIECES; do
+      STATUS=$(echo "$HUD_RESPONSE" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for c in d.get('components',[]):
+    if c['id']=='$piece':
+        print(c.get('status','unknown'))
+        break
+" 2>/dev/null || true)
+      if [ "$STATUS" != "running" ] && [ "$STATUS" != "waiting_tools" ] && [ "$STATUS" != "processing" ]; then
+        ALL_RUNNING=false
+        FAILED_PIECES="$FAILED_PIECES $piece($STATUS)"
+      fi
+    done
+    if $ALL_RUNNING; then
+      check_pass "All core pieces running"
+    else
+      check_fail "Some core pieces not running:$FAILED_PIECES"
+    fi
+
+    # ── Check 4: AI provider reachable ──────────────
+    PROVIDER_OK=false
+    if [ -n "$ANTHROPIC_KEY" ] || [ -n "$(grep '^ANTHROPIC_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)" ]; then
+      # Minimal Anthropic API ping — count tokens only, no actual message
+      ANTHRO_KEY="${ANTHROPIC_KEY:-$(grep '^ANTHROPIC_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)}"
+      HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "https://api.anthropic.com/v1/messages" \
+        -H "x-api-key: $ANTHRO_KEY" \
+        -H "anthropic-version: 2023-06-01" \
+        -H "content-type: application/json" \
+        -d '{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+        --max-time 10 2>/dev/null || echo "000")
+      if [ "$HTTP_STATUS" = "200" ]; then
+        check_pass "Anthropic API key valid (HTTP 200)"
+        PROVIDER_OK=true
+      elif [ "$HTTP_STATUS" = "401" ]; then
+        check_fail "Anthropic API key invalid (HTTP 401 — check ~/.jarvis/.env)"
+      elif [ "$HTTP_STATUS" = "000" ]; then
+        check_warn "Anthropic API unreachable (network timeout)"
+      else
+        check_warn "Anthropic API returned HTTP $HTTP_STATUS"
+      fi
+    fi
+
+    if ! $PROVIDER_OK && { [ -n "$OPENAI_KEY" ] || grep -q '^OPENAI_API_KEY=' "$ENV_FILE" 2>/dev/null; }; then
+      OAPI_KEY="${OPENAI_KEY:-$(grep '^OPENAI_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)}"
+      HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X GET "https://api.openai.com/v1/models" \
+        -H "Authorization: Bearer $OAPI_KEY" \
+        --max-time 10 2>/dev/null || echo "000")
+      if [ "$HTTP_STATUS" = "200" ]; then
+        check_pass "OpenAI API key valid (HTTP 200)"
+        PROVIDER_OK=true
+      elif [ "$HTTP_STATUS" = "401" ]; then
+        check_fail "OpenAI API key invalid (HTTP 401 — check ~/.jarvis/.env)"
+      elif [ "$HTTP_STATUS" = "000" ]; then
+        check_warn "OpenAI API unreachable (network timeout)"
+      else
+        check_warn "OpenAI API returned HTTP $HTTP_STATUS"
+      fi
+    fi
+
+    # ── Check 5: Settings file valid JSON ───────────
+    if node -e "JSON.parse(require('fs').readFileSync('$SETTINGS_USER','utf8'))" 2>/dev/null; then
+      check_pass "settings.user.json is valid JSON"
+    else
+      check_fail "settings.user.json is malformed JSON"
+    fi
+
+    # ── Check 6: .env permissions ───────────────────
+    if [ -f "$ENV_FILE" ]; then
+      ENV_PERMS=$(stat -f "%A" "$ENV_FILE" 2>/dev/null || stat -c "%a" "$ENV_FILE" 2>/dev/null || echo "unknown")
+      if [ "$ENV_PERMS" = "600" ]; then
+        check_pass "~/.jarvis/.env permissions: 600 (secure)"
+      else
+        check_warn "~/.jarvis/.env permissions: $ENV_PERMS (expected 600)"
+        chmod 600 "$ENV_FILE" && dim "  → fixed to 600"
+      fi
+    fi
+
+    # ── Check 7: macOS app (if applicable) ──────────
+    if $IS_MAC; then
+      APP_DIR="$HOME/Applications/JARVIS.app"
+      if [ -d "$APP_DIR" ] && [ -x "$APP_DIR/Contents/MacOS/jarvis" ]; then
+        LAUNCHER_REPO=$(grep "JARVIS_DIR=" "$APP_DIR/Contents/MacOS/jarvis" 2>/dev/null | head -1 | sed 's/.*JARVIS_DIR="\(.*\)"/\1/')
+        if [ "$LAUNCHER_REPO" = "$REPO_DIR/app" ]; then
+          check_pass "JARVIS.app installed and points to this repo"
+        else
+          check_warn "JARVIS.app points to different repo: $LAUNCHER_REPO"
+        fi
+      else
+        check_warn "JARVIS.app not installed (run setup again to install)"
+      fi
+    fi
+
+    # Shutdown test instance
+    if [ -n "$JARVIS_PID" ]; then
+      kill "$JARVIS_PID" 2>/dev/null || true
+      sleep 1
+      kill -0 "$JARVIS_PID" 2>/dev/null && kill -9 "$JARVIS_PID" 2>/dev/null || true
+      wait "$JARVIS_PID" 2>/dev/null || true
+    fi
+
+  fi  # end SKIP_CHECKS
+
+  # ── Result ──────────────────────────────────────
+  echo ""
+  TOTAL=$((CHECKS_PASSED + CHECKS_FAILED))
+  if [ "$CHECKS_FAILED" -eq 0 ]; then
+    printf "  ${GREEN}${BOLD}All $TOTAL checks passed.${RESET}\n"
+  else
+    printf "  ${YELLOW}${BOLD}$CHECKS_PASSED/$TOTAL checks passed, $CHECKS_FAILED failed.${RESET}\n"
+    dim "Fix the issues above, then run setup again."
+  fi
+
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -598,7 +766,6 @@ echo ""
 printf "${GREEN}${BOLD}  ✓ JARVIS setup complete!${RESET}\n"
 echo ""
 
-# Config summary
 printf "  ${BOLD}Provider${RESET}   $PROVIDER_LABEL\n"
 printf "  ${BOLD}Model${RESET}      $DEFAULT_MODEL\n"
 printf "  ${BOLD}HUD${RESET}        http://localhost:50052\n"
@@ -610,17 +777,18 @@ echo ""
 
 if $IS_MAC && [ -d "$HOME/Applications/JARVIS.app" ]; then
   echo "    • Spotlight: ⌘+Space → JARVIS"
-  echo "    • Terminal:  cd app && npx tsx src/main.ts"
+  echo "    • Terminal:  cd $REPO_DIR/app && npx tsx src/main.ts"
 else
-  echo "    cd app && npx tsx src/main.ts"
+  echo "    cd $REPO_DIR/app && npx tsx src/main.ts"
 fi
 
 echo ""
-printf "  ${BOLD}Configuration files:${RESET}\n"
+printf "  ${BOLD}Configuration:${RESET}\n"
 echo ""
-echo "    app/.env                       API keys"
-echo "    app/.jarvis/settings.user.json  Model, pieces, plugins"
-echo "    app/mcp.json                   MCP server connections"
+printf "    ${DIM}~/.jarvis/.env${RESET}               API keys ${DIM}(chmod 600)${RESET}\n"
+printf "    ${DIM}~/.jarvis/settings.user.json${RESET}  Model, pieces, plugins\n"
+printf "    ${DIM}~/.jarvis/mcp.json${RESET}            MCP server connections\n"
+printf "    ${DIM}~/.jarvis/plugins/${RESET}            Installed plugins\n"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
